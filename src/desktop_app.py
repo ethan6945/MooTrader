@@ -68,8 +68,6 @@ def main() -> None:
         except Exception:
             pass
         for boot_step in (web_server._self_review_catchup_on_boot,
-                          lambda: web_server._launch_menubar()
-                          if web_server._scheduler_running() else None,
                           web_server._start_opend):
             try:
                 boot_step()

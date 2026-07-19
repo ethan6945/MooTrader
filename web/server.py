@@ -60,7 +60,6 @@ SIGNAL_MONITOR_FILE = ROOT / "data" / "signal_monitor_state.json"
 SIGNAL_ALERTS_FILE = ROOT / "data" / "signal_alerts.json"
 SELF_REVIEW_FILE = ROOT / "data" / "self_review_last.json"
 SCHED_PID = ROOT / "logs" / "scheduler.pid"
-MENUBAR_PID = ROOT / "logs" / "menubar.pid"
 OPEND_PID = ROOT / "logs" / "opend.pid"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 
@@ -334,24 +333,6 @@ def _stop_opend() -> bool:
     except FileNotFoundError:
         pass
     return True
-
-
-def _launch_menubar() -> None:
-    """Spawn the menu-bar status app if it isn't already running. It mirrors the
-    scheduler's life: it quits itself once the scheduler stops, so its presence in
-    the menu bar == 'scheduler is running in the background'. Best-effort — a
-    failure here must never block starting the scheduler."""
-    if _pid_running(MENUBAR_PID) is not None:
-        return
-    try:
-        log = (ROOT / "logs" / "menubar.log").open("a")
-        proc = subprocess.Popen(
-            _worker_cmd("src.menubar_app"),
-            cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
-        )
-        MENUBAR_PID.write_text(str(proc.pid))
-    except Exception as e:
-        print(f"menubar launch skipped: {e}", file=sys.stderr)
 
 
 def _stop_pid(pid_file: Path) -> bool:
@@ -949,7 +930,6 @@ def _spawn_scheduler() -> int:
         cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
     )
     SCHED_PID.write_text(str(proc.pid))
-    _launch_menubar()
     return proc.pid
 
 
@@ -1301,15 +1281,11 @@ def _self_review_catchup_on_boot() -> None:
 # ── exit UI: kill everything (OpenD + scheduler + web server) ──────────────────
 @app.route("/api/exit", methods=["POST"])
 def api_exit():
-    """Exit the entire moo-trader system: stops OpenD, scheduler, menubar,
+    """Exit the entire moo-trader system: stops OpenD and the scheduler,
     then kills this web server. The browser will show a brief confirmation
     before the connection drops."""
     _stop_opend()
     _stop_pid(SCHED_PID)
-    try:
-        _stop_pid(MENUBAR_PID)
-    except Exception:
-        pass
 
     def _shutdown():
         time.sleep(0.5)
@@ -1321,10 +1297,6 @@ def api_exit():
 
 def main():
     _self_review_catchup_on_boot()
-    # If the scheduler is already running (e.g. started yesterday), make sure the
-    # menu-bar status icon is up too — so opening the dashboard reattaches the icon.
-    if _scheduler_running():
-        _launch_menubar()
     port = int(os.getenv("WEB_PORT", "8770"))
     # Env override wins; otherwise the in-app toggle (persisted to .env) decides;
     # default localhost-only.
