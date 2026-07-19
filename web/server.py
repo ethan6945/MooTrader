@@ -43,7 +43,7 @@ from flask import Flask, jsonify, make_response, redirect, request, send_from_di
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import ai, approvals, clock, db, keepawake, risk_manager  # noqa: E402
-from src.config import BUNDLE_DIR, IS_FROZEN, ROOT, settings  # noqa: E402
+from src.config import BUNDLE_DIR, ROOT, settings  # noqa: E402
 
 # In the frozen .app the static assets ship inside the bundle; in dev
 # BUNDLE_DIR == repo root, so this resolves to web/static either way.
@@ -65,11 +65,7 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 
 def _worker_cmd(module: str, *args: str) -> list[str]:
-    """Command that runs `python -m <module> <args…>` in dev (repo venv) or
-    re-execs the bundled binary as that worker in the frozen .app (the binary's
-    entry point dispatches on `--worker`, see src/desktop_app.py)."""
-    if IS_FROZEN:
-        return [sys.executable, "--worker", module, *args]
+    """Command that runs `python -m <module> <args…>` in the repo venv."""
     return [str(VENV_PY), "-m", module, *args]
 
 

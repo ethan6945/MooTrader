@@ -240,6 +240,15 @@ cp .env.example .env
 
 它会自动：拉起 OpenD（若未运行）→ 启动 Web 仪表盘 → 打开浏览器 `http://127.0.0.1:8770`。
 
+想要原生 macOS 应用体验（窗口 + 菜单栏状态图标 + 审批系统通知），构建一次 Swift 壳：
+
+```bash
+macos/build.sh          # 只需 Command Line Tools，无需 Xcode
+open macos/dist/MooTrader.app
+```
+
+MooTrader.app 会自动拉起（或接管已在运行的）Web 服务器；关掉它交易照常继续。
+
 然后在面板上点 **▶ Start** 启动交易调度器（独立进程，关掉浏览器照样交易）。
 
 ```bash
@@ -583,6 +592,7 @@ moo-trader/
 │   └── universe_pool.json            # 流动性候选池（选股输入）
 ├── cron/optimize_and_apply.sh        # 每日增量 / 每周全网格优化（crontab）
 ├── scripts/                          # 回测 / 校准 / 验证脚本
+├── macos/                            # 原生 SwiftUI 壳（窗口 + 菜单栏，build.sh 构建）
 ├── data/                             # 运行时状态（gitignored）
 ├── logs/                             # 日志（gitignored）
 │
@@ -688,7 +698,7 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 | AI | Google Gemini（复核 / 优化器 / 看图）· Tavily（新闻） |
 | 量化 | pandas + pandas-ta-classic · Optuna · yfinance |
 | 存储 | SQLite + JSON 快照 |
-| 界面 | Flask 单页仪表盘 · python-telegram-bot · rumps（macOS 菜单栏） |
+| 界面 | Flask 单页仪表盘 · python-telegram-bot · 原生 SwiftUI 壳（`macos/`，窗口 + 菜单栏） |
 
 ---
 
