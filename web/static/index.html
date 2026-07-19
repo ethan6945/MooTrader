@@ -447,10 +447,11 @@
           <button class="danger sm" id="btnResetSet">重设</button></div>
       </div>
 
-      <div class="set-sec" id="secLicense"><h3>授权 License</h3>
-        <div class="set-row"><div style="flex:1"><b>License 状态</b>
-          <div class="setdesc" id="licInfo">—</div></div>
-          <button class="sm" onclick="location.href='/activate'">管理</button></div>
+      <div class="set-sec" id="secSupport"><h3>支持 Support</h3>
+        <div class="set-row"><div style="flex:1"><b>支持这个项目 Support this project</b>
+          <div class="setdesc">本软件免费开源。如果它帮到了你，欢迎请作者喝杯咖啡 ☕</div></div>
+          <button class="sm" onclick="window.open('https://buymeacoffee.com/YOUR_HANDLE','_blank')">☕ Buy me a coffee</button>
+          <button class="sm" onclick="window.open('https://github.com/ethan6945/moomoo-trader','_blank')">⭐ GitHub</button></div>
       </div>
 
       <div class="set-sec" id="secAccess"><h3>访问 Access</h3>
@@ -924,18 +925,6 @@ async function loadSettings(){
   loadWebAccess();
   loadTradeEnv();
   loadAiEngine();
-  loadLicense();
-}
-
-async function loadLicense(){
-  try{const d=await api('/api/license/status');
-    $('#licInfo').innerHTML = !d.enforced
-      ? '开发模式（未强制 license）'
-      : d.activated
-        ? `${d.valid?'✅ 订阅有效':'⚠️ 订阅失效'} · ${d.key_masked||''}${d.email?' · '+d.email:''}`
-          +`${d.expires_at?' · 本期至 '+new Date(d.expires_at*1000).toLocaleDateString():''} · 本机 ${d.machine||''}`
-        : '❌ 未激活 — 点「管理」输入 license key';
-  }catch(e){ $('#licInfo').textContent='—'; }
 }
 
 // ── AI engine (Gemini ⟷ DeepSeek) + live model dropdown ──

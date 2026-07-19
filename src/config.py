@@ -1,10 +1,47 @@
 import logging
 import os
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parent.parent
+# ── app home ───────────────────────────────────────────────────────────────────
+# Dev (running from the repo): everything lives next to the code, as always.
+# Frozen (PyInstaller .app): the bundle is read-only, so all mutable state
+# (.env, data/, logs/, config/) moves to ~/Library/Application Support/…, and
+# read-only bundled resources (web/static, config templates) come from the
+# bundle via BUNDLE_DIR. MMT_HOME overrides for tests / secondary instances.
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+
+
+def _app_home() -> Path:
+    env = os.getenv("MMT_HOME", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if IS_FROZEN:
+        return Path.home() / "Library" / "Application Support" / "MooMooTrader"
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _app_home()
+
+if IS_FROZEN:
+    # First run: create the writable home and seed config templates from the
+    # bundle (never overwrite the user's existing files on later runs).
+    for _d in ("data", "logs", "config", "cron"):
+        (ROOT / _d).mkdir(parents=True, exist_ok=True)
+    # Deterministic CWD no matter how the .app was launched (Finder, terminal,
+    # re-exec'd worker) — anything that resolves relative paths sees the home.
+    os.chdir(ROOT)
+    _tpl_dir = BUNDLE_DIR / "config"
+    if _tpl_dir.is_dir():
+        for _tpl in _tpl_dir.iterdir():
+            _dst = ROOT / "config" / _tpl.name
+            if _tpl.is_file() and not _dst.exists():
+                shutil.copy2(_tpl, _dst)
+
 load_dotenv(ROOT / ".env")
 
 
@@ -247,6 +284,12 @@ class Settings:
     dynamic_universe_enabled: bool = os.getenv("DYNAMIC_UNIVERSE_ENABLED",
                                                "false").lower() in ("1", "true", "yes")
     universe_top_n: int = int(os.getenv("UNIVERSE_TOP_N", "15"))
+    # Max names per sector bucket in the momentum-ranked universe (0 = off).
+    # 2026-07-18: pure 6-1 momentum concentrated the whole watchlist into one
+    # correlation cluster (15/15 semis/enterprise-hardware) and the book
+    # crashed as one trade on 07-15. Diversification rule, not performance
+    # curation — the pool stays liquidity-only.
+    universe_sector_cap: int = int(os.getenv("UNIVERSE_SECTOR_CAP", "5"))
 
     # Drawdown circuit breaker — discovered from the 142-day backtest where
     # Nov 2025 alone lost -$761 (17% of account) before the strategy recovered.

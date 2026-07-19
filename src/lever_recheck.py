@@ -27,7 +27,7 @@ from .config import settings
 from . import runtime_config as rc
 
 log = logging.getLogger(__name__)
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = settings.root
 
 # How much a different value must beat the current one (on $/day) before we
 # bother the owner with a suggestion — keeps month-to-month noise quiet.

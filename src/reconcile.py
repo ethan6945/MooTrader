@@ -29,9 +29,71 @@ OPEN_TRADES_FILE = settings.root / "data" / "open_trades.json"
 RECONCILE_FILE = settings.root / "data" / "reconcile.json"
 NY = pytz.timezone("America/New_York")
 
+# In-flight close grace: after the bot places a closing sell, the broker can
+# keep showing the position until the fill lands. Within this window a
+# just-closed symbol is NOT an orphan (2026-07-16: AMAT SL sell placed, 2s
+# later reconcile adopted the in-flight position as a "manual buy" and sent
+# the owner a 检测到手动持仓 alert). A real leftover — fill genuinely failed —
+# outlives the window and still adopts on a later scan.
+RECENT_CLOSE_GRACE_S = 15 * 60
+
+
+def _iso_age_s(ts, now: datetime | None = None) -> float | None:
+    """Seconds elapsed since ISO timestamp `ts` (naive = UTC). None if unparsable."""
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", ""))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(pytz.utc).replace(tzinfo=None)
+    return ((now or datetime.utcnow()) - dt).total_seconds()
+
+
+def record_recent_close(symbol: str) -> None:
+    """Tombstone a bot-side close so the orphan scan ignores the broker's
+    still-filling position for RECENT_CLOSE_GRACE_S. Called by
+    executor._close_and_log on every close. Map is pruned to 24h so it
+    stays bounded."""
+    def _upd(state: dict) -> dict:
+        now = datetime.utcnow()
+        closes = state.get("recent_closes") or {}
+        keep = {}
+        for s, t in closes.items():
+            age = _iso_age_s(t, now)
+            # age 0.0 is falsy — compare against None explicitly, else a
+            # tombstone written the same second gets pruned right away.
+            if age is not None and age < 24 * 3600:
+                keep[s] = t
+        keep[symbol] = now.isoformat()
+        return {"recent_closes": keep}
+    try:
+        db.atomic_state(_upd)
+    except Exception as e:
+        log.debug("record_recent_close %s failed: %s", symbol, e)
+
+
+def _recent_close_age_s(symbol: str) -> float | None:
+    try:
+        ts = (db.get_state().get("recent_closes") or {}).get(symbol)
+    except Exception:
+        return None
+    return _iso_age_s(ts) if ts else None
+
 
 def reconcile(broker_positions: pd.DataFrame, auto_fix: bool = True,
               client=None) -> dict:
+    """Thread-safe wrapper — reconcile's load→fix→save on the open-trades
+    store must not interleave with the manage/fast-stop ticks' own
+    load→mutate→save cycles (2026-07-16: a manage tick's in-memory copy
+    resurrected the ghost AMAT reconcile had just dropped, so the same ghost
+    was dropped twice, 15 min apart)."""
+    from . import executor
+    with executor._TRADES_LOCK:
+        return _reconcile_locked(broker_positions, auto_fix, client)
+
+
+def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
+                      client=None) -> dict:
     """Compare our internal records to broker positions.
 
     2026-05-30 update: auto-fix the safe drifts instead of just logging.
@@ -91,6 +153,19 @@ def reconcile(broker_positions: pd.DataFrame, auto_fix: bool = True,
          "broker_cost": broker_holdings[s]["cost_price"]}
         for s in sorted(broker_syms - our_syms)
     ]
+    # Filter out in-flight closes BEFORE classification (not just before
+    # adoption) so they don't raise a Reconcile alert or count toward the
+    # severe streak either.
+    _still = []
+    for o in orphans:
+        age = _recent_close_age_s(o["symbol"])
+        if age is not None and age < RECENT_CLOSE_GRACE_S:
+            log.info("reconcile: %s closed by bot %.0fs ago — sell fill in "
+                     "flight, not an orphan (grace %ds)",
+                     o["symbol"], age, RECENT_CLOSE_GRACE_S)
+        else:
+            _still.append(o)
+    orphans = _still
     ghosts = [
         {"symbol": s,
          "our_qty": our_trades[s].get("qty"),
@@ -102,6 +177,17 @@ def reconcile(broker_positions: pd.DataFrame, auto_fix: bool = True,
         our_qty = int(our_trades[s].get("qty", 0))
         broker_qty = broker_holdings[s]["qty"]
         if our_qty != broker_qty:
+            # Same in-flight grace as orphans: a scale-out (TP1/TP2) places its
+            # tranche sell and decrements our qty moments before reconcile
+            # compares against a broker snapshot still holding the pre-sale
+            # qty. "Adopting" that stale qty re-inflates the record — the next
+            # stop fire would then OVERSELL. Genuine drift outlives the window.
+            age = _recent_close_age_s(s)
+            if age is not None and age < RECENT_CLOSE_GRACE_S:
+                log.info("reconcile: %s qty drift (ours=%d broker=%d) within "
+                         "close-grace window (%.0fs) — fill in flight, not a "
+                         "mismatch", s, our_qty, broker_qty, age)
+                continue
             mismatches.append({
                 "symbol": s, "our_qty": our_qty, "broker_qty": broker_qty
             })

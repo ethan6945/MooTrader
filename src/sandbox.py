@@ -29,11 +29,10 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 ET = ZoneInfo("America/New_York")
 
-from src.config import settings
+from src.config import ROOT, settings
 from src import indicators, strategy_momentum, strategy_mr, strategy_pattern
 from src import regime as regime_mod, breadth, kill_switch, sector, risk_manager, blacklist
 from src import runtime_config

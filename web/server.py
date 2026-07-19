@@ -40,13 +40,14 @@ from pathlib import Path
 
 from flask import Flask, jsonify, make_response, redirect, request, send_from_directory
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import ai, approvals, clock, db, keepawake, license_client, risk_manager  # noqa: E402
-from src.config import settings  # noqa: E402
+from src import ai, approvals, clock, db, keepawake, risk_manager  # noqa: E402
+from src.config import BUNDLE_DIR, IS_FROZEN, ROOT, settings  # noqa: E402
 
-STATIC = Path(__file__).resolve().parent / "static"
+# In the frozen .app the static assets ship inside the bundle; in dev
+# BUNDLE_DIR == repo root, so this resolves to web/static either way.
+STATIC = BUNDLE_DIR / "web" / "static"
 # Override only for running an isolated/secondary instance (e.g. tests). Default = repo .env.
 ENV_FILE = Path(os.getenv("WEB_ENV_FILE") or (ROOT / ".env"))
 ACCOUNT_FILE = ROOT / "data" / "account.json"
@@ -62,6 +63,16 @@ SCHED_PID = ROOT / "logs" / "scheduler.pid"
 MENUBAR_PID = ROOT / "logs" / "menubar.pid"
 OPEND_PID = ROOT / "logs" / "opend.pid"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
+
+
+def _worker_cmd(module: str, *args: str) -> list[str]:
+    """Command that runs `python -m <module> <args…>` in dev (repo venv) or
+    re-execs the bundled binary as that worker in the frozen .app (the binary's
+    entry point dispatches on `--worker`, see src/desktop_app.py)."""
+    if IS_FROZEN:
+        return [sys.executable, "--worker", module, *args]
+    return [str(VENV_PY), "-m", module, *args]
+
 
 app = Flask(__name__, static_folder=None)
 
@@ -82,7 +93,6 @@ AUTH_COOKIE = "wt_auth"
 _PUBLIC_PATHS = {
     "/login", "/api/login", "/api/logout", "/favicon.ico",
     "/static/favicon.svg", "/static/favicon-32.png", "/static/apple-touch-icon.png",
-    "/activate", "/api/license/activate", "/api/license/status",
 }
 _pw_cache = {"mtime": -1.0, "v": ""}
 _secret_cache = {"v": ""}
@@ -166,26 +176,6 @@ def _authed() -> bool:
     return hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), _auth_token(pw))
 
 
-# ── license gate (Lemon Squeezy activation) ───────────────────────────────────
-# Registered BEFORE the password gate, so an unactivated install always lands
-# on /activate first. /api/license/deactivate stays license-exempt (a machine
-# with a revoked/stale license must still be able to unbind) but is NOT in
-# _PUBLIC_PATHS, so the password gate below still protects it.
-_LICENSE_OPEN = _PUBLIC_PATHS | {"/api/license/deactivate"}
-
-
-@app.before_request
-def _require_license():
-    if request.path in _LICENSE_OPEN:
-        return None
-    ok, _ = license_client.validate()
-    if ok:
-        return None
-    if request.path.startswith("/api/"):
-        return jsonify({"ok": False, "error": "license required"}), 402
-    return redirect("/activate")
-
-
 @app.before_request
 def _require_auth():
     if not _web_password():
@@ -231,39 +221,6 @@ def api_logout():
     resp.delete_cookie(AUTH_COOKIE)
     return resp
 
-
-# ── license endpoints ──────────────────────────────────────────────────────────
-
-@app.route("/activate")
-def activate_page():
-    return send_from_directory(STATIC, "activate.html")
-
-
-@app.route("/api/license/status")
-def api_license_status():
-    return jsonify(license_client.status())
-
-
-@app.route("/api/license/activate", methods=["POST"])
-def api_license_activate():
-    # Reuse the login throttle: keys must not be guessable through this proxy.
-    ip = request.remote_addr or "?"
-    if _login_locked(ip):
-        return jsonify({"ok": False, "error": "尝试过多，请稍后再试"}), 429
-    key = ((request.json or {}).get("key") or "").strip()
-    ok, msg = license_client.activate(key)
-    _login_record(ip, ok)
-    if ok:
-        return jsonify({"ok": True})
-    return jsonify({"ok": False, "error": msg}), 400
-
-
-@app.route("/api/license/deactivate", methods=["POST"])
-def api_license_deactivate():
-    ok, msg = license_client.deactivate()
-    if ok:
-        return jsonify({"ok": True, "msg": msg})
-    return jsonify({"ok": False, "error": msg}), 400
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -389,7 +346,7 @@ def _launch_menubar() -> None:
     try:
         log = (ROOT / "logs" / "menubar.log").open("a")
         proc = subprocess.Popen(
-            [str(VENV_PY), "-m", "src.menubar_app"],
+            _worker_cmd("src.menubar_app"),
             cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
         )
         MENUBAR_PID.write_text(str(proc.pid))
@@ -988,7 +945,7 @@ def _spawn_scheduler() -> int:
         raise RuntimeError(err)
     log = (ROOT / "logs" / "scheduler.log").open("a")
     proc = subprocess.Popen(
-        ["/usr/bin/caffeinate", "-is", str(VENV_PY), "-m", "src.main", "run"],
+        ["/usr/bin/caffeinate", "-is", *_worker_cmd("src.main", "run")],
         cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
     )
     SCHED_PID.write_text(str(proc.pid))
@@ -1169,6 +1126,12 @@ def api_web_access():
                         "error": "请先设置「网页访问密码」再开启手机/局域网访问。"}), 400
     host = "0.0.0.0" if mode == "lan" else "127.0.0.1"
     _write_env_key("WEB_HOST", host)   # persist for future manual launches
+    if IS_FROZEN:
+        # Packaged app: the web server is a thread of the GUI process — no
+        # detached self-restart possible. The setting is saved; takes effect
+        # on the next app launch.
+        return jsonify({"ok": True, "mode": mode, "restarting": False,
+                        "note": "设置已保存 — 重启 App 后生效"})
     _schedule_web_restart(port, host)  # but relaunch binds `host` explicitly
     return jsonify({"ok": True, "mode": mode, "restarting": True})
 
@@ -1178,7 +1141,7 @@ def api_signal_run(mode):
     if mode not in ("brief", "review", "close", "premarket", "intraday", "monitor"):
         return jsonify({"ok": False,
                         "error": "mode must be brief|review|close|premarket|intraday|monitor"}), 400
-    subprocess.Popen([str(VENV_PY), "-m", "src.signal_reporter", mode],
+    subprocess.Popen(_worker_cmd("src.signal_reporter", mode),
                      cwd=str(ROOT), start_new_session=True)
     return jsonify({"ok": True, "mode": mode})
 
@@ -1215,7 +1178,7 @@ def api_signal_scheduler(action):
         SIGNAL_LOG.parent.mkdir(parents=True, exist_ok=True)
         log = SIGNAL_LOG.open("a")
         proc = subprocess.Popen(
-            [str(VENV_PY), "-m", "src.signal_reporter", "run"],
+            _worker_cmd("src.signal_reporter", "run"),
             cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
         )
         SIGNAL_PID.write_text(str(proc.pid))
@@ -1269,7 +1232,7 @@ def api_self_review_run():
     Runs detached; the dashboard polls /api/self-review for the fresh result."""
     log = (ROOT / "logs" / "self_review.log").open("a")
     subprocess.Popen(
-        [str(VENV_PY), "-m", "src.main", "review"],
+        _worker_cmd("src.main", "review"),
         cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
     )
     return jsonify({"ok": True, "started": True})
@@ -1328,7 +1291,7 @@ def _self_review_catchup_on_boot() -> None:
         print(f"🧠 Self-review overdue (last run: {last or 'never'}) — running catchup now.")
         log = (ROOT / "logs" / "self_review.log").open("a")
         subprocess.Popen(
-            [str(VENV_PY), "-m", "src.main", "review"],
+            _worker_cmd("src.main", "review"),
             cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
         )
     except Exception as e:
@@ -1378,7 +1341,9 @@ def main():
         print("⚠️  Plain HTTP — password + session cookie travel UNENCRYPTED on the "
               "LAN. On open WiFi, reach it via Tailscale (encrypted) rather than the "
               "raw LAN IP.", file=sys.stderr)
-    app.run(host=host, port=port, threaded=True)
+    # load_dotenv=False: Flask would otherwise silently load .env/.flaskenv from
+    # the CWD into os.environ — our env story is owned by src/config.py alone.
+    app.run(host=host, port=port, threaded=True, load_dotenv=False)
 
 
 if __name__ == "__main__":

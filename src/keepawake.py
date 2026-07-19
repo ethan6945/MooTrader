@@ -21,7 +21,8 @@ import subprocess
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from .config import ROOT
+
 CAFFEINATE_PID = ROOT / "logs" / "caffeinate.pid"
 LID_STATE_FILE = ROOT / "data" / "lid_setup.json"
 

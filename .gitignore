@@ -1,8 +1,11 @@
 # ============== Secrets — NEVER commit these ==============
 .env
 .env.local
+.env.*.local
 *.pem
 *.key
+# (.env.example IS tracked — it's the template, no real values)
+!.env.example
 
 # ============== Runtime / generated data ==============
 # Live trade history, balances, open positions, audit logs.
@@ -34,17 +37,23 @@ venv/
 env/
 ENV/
 
-# pytest / coverage
+# pytest / coverage / linters
 .pytest_cache/
 .coverage
 htmlcov/
+.ruff_cache/
+.mypy_cache/
 
-# ============== macOS / IDE ==============
+# ============== macOS / Windows / IDE ==============
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Claude Code local settings
+.claude/settings.local.json
 
 # ============== Optional: keep config templates in repo ==============
 # (config/watchlist.json IS tracked — auto-refreshes weekly)

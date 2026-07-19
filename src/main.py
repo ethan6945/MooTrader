@@ -21,7 +21,7 @@ from moomoo import KLType
 from . import (
     adaptive_sizing, ai, ai_validator, approvals, audit, blacklist, breadth,
     clock, cron_state, db, executor, gap_sentinel, history, indicators,
-    kill_switch, license_client, notifier, portfolio,
+    kill_switch, notifier, portfolio,
     regime as regime_mod, risk_manager, runtime_config, sector, self_improve,
     self_review, strategy_momentum, strategy_mr, strategy_pattern,
     tg_approvals,
@@ -826,10 +826,12 @@ def scan_once() -> None:
             try:
                 opened = executor.open_position(c, sig, qty)
                 if opened is None:
-                    # Market ran past the signal price — same no-fill the
-                    # backtest's open-only model books. Not an error.
-                    audit.record("skip", symbol=sig.symbol, gate="chase",
-                                 reason="market ran past signal price")
+                    # Executor declined the entry (chase / stale signal /
+                    # cooldown / malformed levels). Not an error — audit the
+                    # real gate so skips stay distinguishable.
+                    _gate, _why = executor.last_entry_skip()
+                    audit.record("skip", symbol=sig.symbol, gate=_gate,
+                                 reason=_why)
                     continue
                 if not is_stack_candidate:
                     new_names_opened += 1
@@ -850,8 +852,15 @@ def scan_once() -> None:
                         ai_score, ai_reason = 50, "AI budget exhausted — neutral"
                 audit.record("buy", symbol=sig.symbol, score=sig.score,
                              reason=ai_reason,
-                             extra={"qty": qty, "price": sig.price,
-                                    "stop": sig.stop_loss, "tp": sig.take_profit,
+                             extra={"qty": qty,
+                                    # 2026-07-16: record the trade's ACTUAL
+                                    # fill-anchored levels (executor re-anchors
+                                    # stop/TP to the entry price); keep the
+                                    # signal-bar price for staleness forensics.
+                                    "price": opened.get("entry_price", sig.price),
+                                    "signal_price": sig.price,
+                                    "stop": opened.get("stop_loss", sig.stop_loss),
+                                    "tp": opened.get("take_profit", sig.take_profit),
                                     "vix": vix, "regime": regime.label,
                                     "conviction": conviction,
                                     # 2026-06-11: persist the numeric advisory
@@ -1212,6 +1221,12 @@ def _weekly_sandbox_diff_job() -> None:
     loop. Telegram ONLY on breach or on the check itself failing (owner
     preference: actionable events only) — a clean pass is logged + audited.
     """
+    from .config import IS_FROZEN
+    if IS_FROZEN:
+        # Dev-only cross-check: scripts/ isn't shipped in the packaged .app, and
+        # re-exec'ing the bundled binary with a script path wouldn't work anyway.
+        log.info("weekly sandbox diff: skipped (packaged build)")
+        return
     log.info("weekly sandbox diff: starting")
     try:
         import subprocess
@@ -1681,14 +1696,6 @@ def main() -> None:
         print(__doc__)
         sys.exit(1)
     cmd = sys.argv[1]
-    # License gate — only at process START, deliberately not mid-run: a running
-    # scheduler managing open positions (stops/exits) must never be killed by a
-    # license-server outage. The web panel re-validates daily and locks there.
-    if cmd in ("scan", "run"):
-        lic_ok, lic_msg = license_client.validate()
-        if not lic_ok:
-            print(f"✗ License：{lic_msg}\n  请在 Web 面板完成激活（浏览器打开 /activate 页面）。")
-            sys.exit(3)
     if cmd == "scan":
         scan_once()
     elif cmd == "run":

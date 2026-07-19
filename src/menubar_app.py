@@ -23,8 +23,7 @@ import rumps
 from AppKit import NSApplication
 
 from src import keepawake
-
-ROOT = Path(__file__).resolve().parent.parent
+from src.config import ROOT
 SCHED_PID = ROOT / "logs" / "scheduler.pid"
 MENUBAR_PID = ROOT / "logs" / "menubar.pid"
 WEB_PID = ROOT / "logs" / "web.pid"

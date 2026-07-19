@@ -64,10 +64,19 @@ def momentum_6_1(closes: pd.Series) -> float | None:
 
 def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
                     asof: date,
-                    top_n: int) -> list[str]:
+                    top_n: int,
+                    sector_cap: int | None = None) -> list[str]:
     """Top-N pool names by 6-1 momentum using ONLY daily bars dated strictly
     before `asof`. Deterministic (momentum desc, then symbol asc for ties) so
-    live and backtest reproduce each other exactly."""
+    live and backtest reproduce each other exactly.
+
+    sector_cap (2026-07-18, default settings.universe_sector_cap, 0 = off):
+    at most this many names per sector bucket, filled in momentum order —
+    when a bucket is full the walk continues deeper down the ranking. Pure
+    momentum concentrated the whole list into one correlation cluster (15/15
+    semis/enterprise-hardware) and the book crashed as a single trade on
+    07-15. This is a diversification RULE, part of the replayable selection —
+    not performance editing; the pool itself stays liquidity-only."""
     cutoff = pd.Timestamp(asof, tz="US/Eastern")
     scores: dict[str, float] = {}
     for sym, df in daily_by_sym.items():
@@ -95,7 +104,24 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
         if mom is not None:
             scores[sym] = mom
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [sym for sym, _ in ranked[:top_n]]
+    if sector_cap is None:
+        sector_cap = settings.universe_sector_cap
+    if sector_cap <= 0:
+        return [sym for sym, _ in ranked[:top_n]]
+    from .sector import get_sector
+    picked: list[str] = []
+    counts: dict[str, int] = {}
+    for sym, _ in ranked:
+        if len(picked) >= top_n:
+            break
+        sec = get_sector(sym)
+        # Unknown-sector names bypass the cap (same no-false-negatives policy
+        # as check_sector_exposure); the whole pool is mapped today.
+        if sec != "unknown" and counts.get(sec, 0) >= sector_cap:
+            continue
+        picked.append(sym)
+        counts[sec] = counts.get(sec, 0) + 1
+    return picked
 
 
 def compute_live_universe(client, top_n: int | None = None) -> list[str]:

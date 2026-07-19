@@ -21,6 +21,21 @@ from . import ai, news_fetcher
 log = logging.getLogger(__name__)
 
 
+def _extract_json(text: str) -> dict:
+    """First JSON object in an AI reply, tolerant of the three malformations
+    deepseek produces in the wild (all seen 2026-07-15, each one a fail-open):
+    markdown fences, trailing text/second object after the verdict ("Extra
+    data"), and raw control chars inside strings ("Invalid control character").
+    """
+    start = text.find("{")
+    if start < 0:
+        raise ValueError(f"no JSON object in AI reply: {text[:80]!r}")
+    obj, _ = json.JSONDecoder(strict=False).raw_decode(text[start:])
+    if not isinstance(obj, dict):
+        raise ValueError("AI reply JSON is not an object")
+    return obj
+
+
 PROMPT = """You are a risk gate for an automated short-term US-stock trading bot.
 
 The technical scorer wants to BUY {symbol} at ${price}. Indicator breakdown:
@@ -89,8 +104,7 @@ def validate(signal: Signal) -> tuple[bool, int, str]:
         else:
             text, model_name = ai.generate(prompt)
 
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        payload = json.loads(match.group(0) if match else text)
+        payload = _extract_json(text)
         verdict = payload.get("verdict", "pass")
         confidence = int(payload.get("confidence", 50))
         reason = payload.get("reason", "")
@@ -127,10 +141,75 @@ Do NOT try to predict an earnings NUMBER — you cannot, and an unknown coin-fli
 is NOT a reason to sell. Sell ONLY on concrete negative news above.
 
 Respond with STRICT JSON, no markdown fence:
-{{"action": "sell" | "hold", "confidence": 0-100, "reason": "one sentence citing the specific headline; if holding, say why"}}
+{{"action": "sell" | "hold", "confidence": 0-100, "reason": "one sentence citing the specific headline; if holding, say why", "evidence_ticker": "ticker of the company whose price move your reason relies on, or null", "evidence_move_pct": claimed % price move of that company (negative = drop), or null}}
 
+If your reason relies on a specific price move (e.g. "XYZ plunged 23%"), you MUST
+fill evidence_ticker and evidence_move_pct — the bot verifies the claim against
+real price data and IGNORES sell verdicts whose claimed move did not happen.
 If you have no concrete negative catalyst, default to "hold".
 """
+
+# A sell verdict claiming a peer/self price move ≥ this magnitude gets checked
+# against actual price data before we act on it. (2026-07-15: deepseek closed
+# DELL twice citing "IBM's 23% plunge" — IBM's biggest move that week was -2.6%.)
+CLAIM_VERIFY_MIN_PCT = 5.0
+
+
+def _verify_price_claim(ticker: str, claimed_pct: float) -> tuple[bool, str]:
+    """Check a claimed % move against real daily data (last ~4 trading days).
+
+    Returns (verified, detail). Fabricated OR unverifiable (bad ticker, no
+    data, fetch error) → (False, why) — caller holds, per the sentinel's
+    fail-safe policy: we never sell a real position on an unverifiable claim.
+    """
+    ticker = str(ticker).strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker):
+        return False, f"un-checkable ticker {ticker!r}"
+    try:
+        import yfinance as yf
+        h = yf.Ticker(ticker).history(period="7d", interval="1d", auto_adjust=False)
+    except Exception as e:
+        return False, f"price fetch for {ticker} failed ({e})"
+    if h is None or len(h) < 2:
+        return False, f"no recent price data for {ticker}"
+    closes = h["Close"].tail(5)
+    day_moves = (closes.pct_change().dropna().abs() * 100).tolist()
+    intraday = ((h["Close"] - h["Open"]) / h["Open"]).tail(4).abs() * 100
+    max_actual = max(day_moves + intraday.tolist(), default=0.0)
+    # Generous bar on purpose: the move only has to be half the claimed size —
+    # we're catching fabrications, not grading the model's precision.
+    if max_actual >= abs(claimed_pct) / 2:
+        return True, f"{ticker} actual max move {max_actual:.1f}% supports claim"
+    return False, (f"{ticker} claimed {claimed_pct:+.1f}% but actual max move "
+                   f"over recent sessions is {max_actual:.1f}%")
+
+
+def _coerce_pct(value) -> float | None:
+    """'−23%', '-23', -23.0 → -23.0; garbage → None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        s = str(value).strip().replace("%", "").replace("−", "-")
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _check_sell_evidence(symbol: str, payload: dict, model_name: str) -> tuple[bool, str]:
+    """Gate a SELL verdict on its own cited evidence. Only quantitative price
+    claims are checkable; a sell citing one that fails (or can't) verify is
+    downgraded to hold — fail-safe, same policy as every other doubt path."""
+    ticker = payload.get("evidence_ticker")
+    claimed = _coerce_pct(payload.get("evidence_move_pct"))
+    if not ticker or claimed is None or abs(claimed) < CLAIM_VERIFY_MIN_PCT:
+        return True, ""   # no checkable quantitative claim — let the verdict stand
+    ok, detail = _verify_price_claim(ticker, claimed)
+    if ok:
+        log.info("gap sentinel evidence verified for %s: %s", symbol, detail)
+        return True, ""
+    log.warning("gap sentinel [%s] SELL on %s REJECTED — claim failed "
+                "verification: %s", model_name, symbol, detail)
+    return False, f"sell verdict rejected (unverified claim: {detail}) — hold"
 
 
 def assess_gap_risk(symbol: str) -> tuple[bool, int, str]:
@@ -162,13 +241,16 @@ def assess_gap_risk(symbol: str) -> tuple[bool, int, str]:
 
     try:
         text, model_name = ai.generate(prompt)
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        payload = json.loads(match.group(0) if match else text)
+        payload = _extract_json(text)
         action = str(payload.get("action", "hold")).lower()
         confidence = int(payload.get("confidence", 0))
         reason = payload.get("reason", "")
         should_sell = action == "sell"
         log.info("gap sentinel [%s] %s → %s (%d)", model_name, symbol, action, confidence)
+        if should_sell:
+            ok, detail = _check_sell_evidence(symbol, payload, model_name)
+            if not ok:
+                return False, 0, detail
         return should_sell, confidence, reason
     except Exception as e:
         # FAIL-SAFE hold (never sell on AI unavailability).
@@ -202,8 +284,11 @@ a real catalyst. If the position is in profit AND a concrete catalyst threatens
 it, SELL to bank the gain. If nothing concrete, HOLD.
 
 Respond with STRICT JSON, no markdown fence:
-{{"action": "sell" | "hold", "confidence": 0-100, "reason": "one sentence citing the specific catalyst/technical; if holding, say why"}}
+{{"action": "sell" | "hold", "confidence": 0-100, "reason": "one sentence citing the specific catalyst/technical; if holding, say why", "evidence_ticker": "ticker of the company whose price move your reason relies on, or null", "evidence_move_pct": claimed % price move of that company (negative = drop), or null}}
 
+If your reason relies on a specific price move (e.g. "XYZ plunged 23%"), you MUST
+fill evidence_ticker and evidence_move_pct — the bot verifies the claim against
+real price data and IGNORES sell verdicts whose claimed move did not happen.
 If you have no concrete reason, default to "hold".
 """
 
@@ -240,13 +325,16 @@ def assess_exit(symbol: str, tech_summary: str, entry: float = 0.0,
 
     try:
         text, model_name = ai.generate(prompt)
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        payload = json.loads(match.group(0) if match else text)
+        payload = _extract_json(text)
         action = str(payload.get("action", "hold")).lower()
         confidence = int(payload.get("confidence", 0))
         reason = payload.get("reason", "")
         should_sell = action == "sell"
         log.info("smart-exit [%s] %s → %s (%d)", model_name, symbol, action, confidence)
+        if should_sell:
+            ok, detail = _check_sell_evidence(symbol, payload, model_name)
+            if not ok:
+                return False, 0, detail
         return should_sell, confidence, reason
     except Exception as e:
         log.warning("smart-exit: AI unavailable for %s (%s) — holding (fail-safe)", symbol, e)
@@ -308,8 +396,7 @@ def assess_sentiment(signal, options_summary: str = "") -> tuple[str, int, str]:
 
     try:
         text, model_name = ai.generate(prompt)
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        payload = json.loads(match.group(0) if match else text)
+        payload = _extract_json(text)
         verdict = str(payload.get("verdict", "neutral")).lower()
         score = int(payload.get("score", 50))
         reason = payload.get("reason", "")

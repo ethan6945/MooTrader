@@ -9,10 +9,12 @@ were just before it, or into the 15:30 ET MOC zone you're supposed to avoid.
 This module:
   • Returns NY-aware datetimes via `ny_now()` (drop-in replacement for the
     old `datetime.now(pytz.timezone('America/New_York'))` calls).
-  • Periodically (default: hourly) hits a public time API to compute the
-    offset between the network and the local clock.
+  • Periodically (default: hourly) queries NTP (NIST / Apple) — falling back
+    to two public HTTP time APIs that must AGREE with each other — to compute
+    the offset between the network and the local clock.
   • If drift > MAX_DRIFT_SEC, applies the offset so every subsequent call
-    returns the network-authoritative time.
+    returns the network-authoritative time.  A single unverified HTTP source
+    is never enough to apply a correction.
   • Caches the offset; non-validation calls are zero-cost.
   • Falls through to plain pytz if all network sources fail (so we never
     hard-fail when offline — just log a warning).
@@ -42,10 +44,15 @@ CHECK_INTERVAL_SEC = 3600              # once per hour is plenty
 MAX_DRIFT_SEC = 5.0
 # HTTP request timeout (seconds).
 HTTP_TIMEOUT = 4.0
-# NTP server (RFC 5905). NIST is the canonical US reference.
-NTP_SERVER = "time.nist.gov"
+# NTP servers (RFC 5905), tried in order. NIST is the canonical US reference;
+# Apple is what macOS itself syncs against.
+NTP_SERVERS = ("time.nist.gov", "time.apple.com")
 NTP_PORT = 123
 NTP_TIMEOUT = 3.0
+# Two HTTP time APIs must agree within this window before we trust either.
+# (2026-07-15: timeapi.io's own server clock drifted ~5 min while the local
+# clock was NTP-accurate — a single HTTP source can NOT be authoritative.)
+HTTP_AGREEMENT_TOL_SEC = 2.0
 
 # Shared state (thread-safe via _lock).
 _lock = threading.Lock()
@@ -98,12 +105,12 @@ def _from_worldtimeapi() -> Optional[datetime]:
         return None
 
 
-def _from_ntp() -> Optional[datetime]:
-    """RFC 5905 NTP query — last-resort fallback when HTTP is blocked."""
+def _from_ntp(server: str) -> Optional[datetime]:
+    """RFC 5905 NTP query — the actual time-sync protocol, preferred source."""
     try:
         import socket
         msg = b"\x1b" + 47 * b"\0"
-        addr = (NTP_SERVER, NTP_PORT)
+        addr = (server, NTP_PORT)
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(NTP_TIMEOUT)
         try:
@@ -115,23 +122,44 @@ def _from_ntp() -> Optional[datetime]:
             return None
         # Transmit timestamp is at byte 40 (8 bytes: seconds + fraction).
         seconds = struct.unpack("!I", data[40:44])[0] - 2208988800  # NTP epoch → Unix epoch
-        return datetime.fromtimestamp(seconds, tz=timezone.utc).astimezone(NY_TZ)
+        fraction = struct.unpack("!I", data[44:48])[0] / 2**32
+        return datetime.fromtimestamp(seconds + fraction, tz=timezone.utc).astimezone(NY_TZ)
     except Exception as e:
-        log.debug("NTP query failed: %s", e)
+        log.debug("NTP query to %s failed: %s", server, e)
         return None
 
 
 def _fetch_authoritative_ny() -> tuple[Optional[datetime], str]:
-    """Try HTTP sources in order, then NTP. Returns (ny_time, source_label)."""
-    for fetcher, label in (
-        (_from_timeapi_io, "timeapi.io"),
-        (_from_worldtimeapi, "worldtimeapi.org"),
-        (_from_ntp, "ntp"),
-    ):
-        t = fetcher()
+    """Return (ny_time, source_label), or (None, reason) when no TRUSTWORTHY
+    source is available.
+
+    Trust policy (2026-07-15): NTP first — it is the purpose-built protocol and
+    the same reference the OS syncs against. The HTTP time APIs are convenience
+    fallbacks whose own server clocks can drift (timeapi.io did, by ~5 min), so
+    a lone HTTP answer is never authoritative: both must agree within
+    HTTP_AGREEMENT_TOL_SEC or we refuse to correct anything.
+    """
+    for server in NTP_SERVERS:
+        t = _from_ntp(server)
         if t is not None:
-            return t, label
-    return None, "system"
+            return t, f"ntp({server})"
+
+    t1 = _from_timeapi_io()
+    t2 = _from_worldtimeapi()
+    if t1 is not None and t2 is not None:
+        gap = abs((t1 - t2).total_seconds())
+        if gap <= HTTP_AGREEMENT_TOL_SEC:
+            return t2, "timeapi.io+worldtimeapi.org"
+        log.warning(
+            "clock: HTTP time sources disagree by %.1fs (timeapi.io vs "
+            "worldtimeapi.org) — refusing to correct off either", gap,
+        )
+        return None, "http sources disagree"
+    if (t1 is None) != (t2 is None):
+        log.info("clock: only one HTTP time source reachable — "
+                 "unverified, not correcting")
+        return None, "single unverified http source"
+    return None, "no source reachable"
 
 
 # ---------- public API ----------
@@ -147,8 +175,10 @@ def _maybe_refresh() -> None:
         net, source = _fetch_authoritative_ny()
         _last_check = sys_ny
         if net is None:
-            _last_source = "system (network unreachable)"
-            log.info("clock: network sources unreachable — using system + pytz")
+            _last_source = f"system ({source})"
+            log.info("clock: no trustworthy time source (%s) — "
+                     "using system + pytz, offset unchanged (%+.1fs)",
+                     source, _offset_sec)
             return
         drift = (net - sys_ny).total_seconds()
         _last_drift = drift

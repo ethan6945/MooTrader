@@ -41,6 +41,25 @@ PROTECTIVE_EXIT_SLIP = 0.03
 # fill model wouldn't have filled there either.
 ENTRY_CHASE_TOL = 0.002
 
+# 2026-07-16: the mirror guard for the crash side. If the live quote sits more
+# than this fraction BELOW the signal bar close, the score/ATR/stop were all
+# computed on data that no longer describes the market — skip the entry.
+# (2026-07-15 night: hourly klines lagged a full session during the IBM-crash
+# open; six entries fired with signal prices 3–8% above the live market and
+# every one died inside an hour, DELL with its "stop" ABOVE its entry.)
+STALE_SIGNAL_TOL = 0.02
+
+# Why open_position() most recently returned None — (gate, reason) consumed by
+# main.py's skip audit so cooldown / chase / stale-signal skips are labelled
+# truthfully instead of all landing under gate="chase". Entries only run on the
+# scan thread (under _TRADES_LOCK), so a single slot is safe.
+_LAST_ENTRY_SKIP: tuple[str, str] = ("chase", "market ran past signal price")
+
+
+def last_entry_skip() -> tuple[str, str]:
+    """(gate, reason) for the most recent open_position() skip (None return)."""
+    return _LAST_ENTRY_SKIP
+
 # Serializes every load→mutate→save cycle on the open-trades store. The scan
 # job and the 5-min manage tick run on different scheduler threads; without
 # this, one writer can clobber the other's whole-dict save (a freshly opened
@@ -148,6 +167,44 @@ def _save_open_trades(trades: dict) -> None:
         log.warning("legacy JSON mirror write failed: %s", e)
 
 
+# --- same-day re-entry cooldown (2026-07-15) ---
+# A sentinel/AI risk-off close (GAP_RISK / SMART_EXIT) means "too dangerous to
+# hold today" — but the very next scan often still ranks the name top-N and
+# buys it straight back (DELL 2026-07-14: gap-closed 01:11, re-bought 01:16,
+# gap-closed again 01:21 — two spreads paid for nothing). Block re-entry for
+# the rest of the NY trading day. Persisted in db state so a restart keeps it.
+
+def _ny_today() -> str:
+    from . import clock
+    return clock.ny_now().date().isoformat()
+
+
+def _set_reentry_cooldown(symbol: str, exit_reason: str) -> None:
+    try:
+        today = _ny_today()
+
+        def _upd(state: dict) -> dict:
+            cd = dict(state.get("reentry_cooldown") or {})
+            cd = {k: v for k, v in cd.items() if v.get("date") == today}
+            cd[symbol] = {"date": today, "reason": exit_reason}
+            return {"reentry_cooldown": cd}
+
+        db.atomic_state(_upd)
+    except Exception as e:
+        log.warning("could not persist re-entry cooldown for %s: %s", symbol, e)
+
+
+def reentry_cooldown_reason(symbol: str) -> str | None:
+    """Exit reason if `symbol` was risk-off closed TODAY (NY date), else None."""
+    try:
+        entry = (db.get_state().get("reentry_cooldown") or {}).get(symbol)
+    except Exception:
+        return None
+    if entry and entry.get("date") == _ny_today():
+        return entry.get("reason") or "risk-off close"
+    return None
+
+
 def open_position(client: MooClient, signal: Signal, qty: int) -> dict | None:
     """Buy at limit. REAL → attach OCO bracket (STOP + TP); SIMULATE → soft-track.
 
@@ -166,6 +223,15 @@ def open_position(client: MooClient, signal: Signal, qty: int) -> dict | None:
 
 
 def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict | None:
+    global _LAST_ENTRY_SKIP
+    cooldown = reentry_cooldown_reason(signal.symbol)
+    if cooldown:
+        _LAST_ENTRY_SKIP = ("cooldown",
+                            f"re-entry blocked — {cooldown} close earlier this session")
+        log.info("%s: re-entry blocked — %s close earlier this session "
+                 "(cooldown until next NY trading day)", signal.symbol, cooldown)
+        return None
+
     trades = _load_open_trades()
     existing = trades.get(signal.symbol)
     is_stack = existing is not None and int(existing.get("qty", 0)) > 0
@@ -180,11 +246,49 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
     last = _last_price(client, signal.symbol)
     if last is not None:
         if last > signal.price * (1 + ENTRY_CHASE_TOL):
+            _LAST_ENTRY_SKIP = ("chase",
+                                f"market ran past signal (${last:.2f} > ${signal.price:.2f})")
             log.info("%s: market ran past signal ($%.2f > $%.2f +%.1f bps) — entry skipped",
                      signal.symbol, last, signal.price, ENTRY_CHASE_TOL * 1e4)
             return None
+        # 2026-07-16: crash-side freshness gate. Live far BELOW the signal bar
+        # means the bar (and everything scored off it) is stale — refuse to
+        # trade a setup the market has already invalidated.
+        if last < signal.price * (1 - STALE_SIGNAL_TOL):
+            _LAST_ENTRY_SKIP = ("stale_signal",
+                                f"live ${last:.2f} is {(signal.price - last) / signal.price:.1%} "
+                                f"below signal bar ${signal.price:.2f} — signal stale/invalidated")
+            log.warning("%s: live $%.2f sits %.1f%% below signal bar $%.2f — score/stop "
+                        "were computed on stale data; entry skipped",
+                        signal.symbol, last, (signal.price - last) / signal.price * 100,
+                        signal.price)
+            return None
         limit_px = round(min(last * 1.001,
                              signal.price * (1 + ENTRY_CHASE_TOL)), 2)
+    else:
+        log.warning("%s: no live quote — signal freshness unverified; proceeding "
+                    "at signal price with fill-anchored stops", signal.symbol)
+
+    # 2026-07-16: anchor protective levels to the ACTUAL entry price, not the
+    # signal bar close. Keeps the ATR distances the strategy chose, but measured
+    # from where we really bought (2026-07-15: DELL's signal-anchored "stop"
+    # 435.25 sat ABOVE its 418.91 entry → stopped out 7 seconds after entry).
+    # The structural (swing-low) stop is an absolute level — honor it only when
+    # it still sits below the entry.
+    stop_px = round(limit_px - runtime_config.sl_atr_mult() * float(signal.atr), 2)
+    tp_px = round(limit_px + runtime_config.tp_atr_mult() * float(signal.atr), 2)
+    if signal.structural_stop is not None and float(signal.structural_stop) < limit_px:
+        stop_px = max(stop_px, round(float(signal.structural_stop), 2))
+    if not (0 < stop_px < limit_px < tp_px):
+        # Garbage ATR (0/NaN from bad klines) or degenerate rounding — never
+        # enter a position whose protective levels are malformed.
+        _LAST_ENTRY_SKIP = ("bad_levels",
+                            f"malformed protective levels (entry {limit_px}, "
+                            f"stop {stop_px}, tp {tp_px}, atr {signal.atr})")
+        log.error("%s: refusing entry — malformed protective levels "
+                  "(entry %.2f, stop %.2f, tp %.2f, atr %s)",
+                  signal.symbol, limit_px, stop_px, tp_px, signal.atr)
+        return None
 
     buy_order_id = client.place_limit_order(
         signal.symbol, qty, limit_px, TrdSide.BUY
@@ -196,8 +300,8 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         new_total_qty = old_qty + qty
         new_avg_entry = (old_qty * old_entry + qty * limit_px) / new_total_qty
         # Stop/TP trail UP only — never weaken protection on the original lot.
-        new_stop = max(float(existing.get("stop_loss", 0)), signal.stop_loss)
-        new_tp = max(float(existing.get("take_profit", 0)), signal.take_profit)
+        new_stop = max(float(existing.get("stop_loss", 0)), stop_px)
+        new_tp = max(float(existing.get("take_profit", 0)), tp_px)
         stacks = int(existing.get("stacks", 1)) + 1
 
         # On REAL, replace the OCO bracket so it covers the new combined qty
@@ -250,7 +354,7 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         # (soft scale-out/trailing/stop) so live matches the honest backtest.
         if settings.moo_trade_env == "REAL" and not settings.real_use_soft_exits:
             stop_order_id, tp_order_id = place_bracket(
-                client, signal.symbol, qty, signal.stop_loss, signal.take_profit
+                client, signal.symbol, qty, stop_px, tp_px
             )
             if not (stop_order_id and tp_order_id):
                 log.warning("Bracket incomplete for %s (stop=%s tp=%s) — soft tracking active as fallback",
@@ -258,21 +362,21 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         else:
             mode = "REAL soft-exits" if settings.moo_trade_env == "REAL" else "SIMULATE"
             log.info("%s: soft stop @ $%.2f & TP @ $%.2f tracked locally (scale-out enabled)",
-                     mode, signal.stop_loss, signal.take_profit)
+                     mode, stop_px, tp_px)
 
         trade = {
             "symbol": signal.symbol,
             "qty": qty,
             "entry_price": limit_px,
-            "stop_loss": signal.stop_loss,
-            "take_profit": signal.take_profit,
+            "stop_loss": stop_px,
+            "take_profit": tp_px,
             "atr": signal.atr,
             "half_closed": False,
             # Scale-out state (used only when USE_SCALE_OUT=true). qty_initial
             # anchors the 1/3 tranche size to the ORIGINAL lot; init_risk_per_share
             # is the R unit (entry − initial stop) for the +TP1_R / +TP2_R levels.
             "qty_initial": qty,
-            "init_risk_per_share": max(float(limit_px) - float(signal.stop_loss), 0.0),
+            "init_risk_per_share": max(float(limit_px) - float(stop_px), 0.0),
             "tp1_done": False,
             "tp2_done": False,
             "buy_order_id": buy_order_id,
@@ -331,6 +435,13 @@ def _close_and_log(symbol: str, trade: dict, qty: int, exit_price: float, reason
             "stop=%.2f entry=%.2f → R will fallback to entry-stop calculation. "
             "If breakeven raised stop to entry, R will show 0.0.",
             symbol, float(trade.get("stop_loss", 0)), float(trade.get("entry_price", 0)))
+    # Tombstone the close so reconcile's orphan scan ignores the broker's
+    # still-filling position during the grace window (in-flight sell ≠ manual buy).
+    try:
+        from .reconcile import record_recent_close
+        record_recent_close(symbol)
+    except Exception as e:
+        log.debug("recent-close tombstone %s failed: %s", symbol, e)
     return pnl
 
 
@@ -510,6 +621,10 @@ def _force_close(client: MooClient, symbol: str, trade: dict,
     client.place_limit_order(symbol, trade["qty"],
                              last * (1 - PROTECTIVE_EXIT_SLIP), TrdSide.SELL)
     pnl = _close_and_log(symbol, trade, trade["qty"], last, reason)
+    # An AI/sentinel risk-off close means "don't hold this today" — block the
+    # scanner from buying it straight back this session (DELL churn, 2026-07-14).
+    if reason in ("GAP_RISK", "SMART_EXIT"):
+        _set_reentry_cooldown(symbol, reason)
     return pnl, {"type": reason.lower(), "symbol": symbol, "price": last,
                  "qty": trade["qty"], "pnl": pnl}
 
@@ -622,6 +737,17 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
         reason = ("BREAKEVEN" if trade.get("breakeven_set")
                   and float(trade["stop_loss"]) >= float(trade["entry_price"])
                   else "SL")
+        # 2026-07-18: label by the price the close is actually booked at, not
+        # the stop level. On a gap/fast tape `last` can sit far below the
+        # raised-to-entry stop (07-15 HPE: "BREAKEVEN" at -1.36R), and the
+        # label decides whether the SL re-entry cooldown fires. Anything worse
+        # than -0.25R is a stop-out, whatever the stop was raised to.
+        if reason == "BREAKEVEN":
+            _risk = float(trade.get("init_risk_per_share") or 0.0)
+            _entry = float(trade["entry_price"])
+            _loss_r = ((last - _entry) / _risk) if _risk > 0 else 0.0
+            if _loss_r <= -0.25 or (_risk <= 0 and last < _entry * 0.995):
+                reason = "SL"
         client.place_limit_order(symbol, trade["qty"], last * (1 - PROTECTIVE_EXIT_SLIP), TrdSide.SELL)
         pnl = _close_and_log(symbol, trade, trade["qty"], last, reason)
         actions.append({"type": "stop_hit", "symbol": symbol, "price": last,
@@ -960,6 +1086,8 @@ def close_position(client: MooClient, symbol: str, reason: str = "MANUAL") -> di
     pnl = _close_and_log(symbol, trade, trade["qty"], last, reason)
     trades.pop(symbol)
     _save_open_trades(trades)
+    if reason in ("GAP_RISK", "SMART_EXIT"):
+        _set_reentry_cooldown(symbol, reason)
     return {"type": reason.lower(), "symbol": symbol, "qty": trade["qty"],
             "price": last, "pnl": pnl}
 

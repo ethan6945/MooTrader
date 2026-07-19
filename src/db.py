@@ -687,12 +687,20 @@ def last_sl_close_for_symbol(symbol: str) -> dict | None:
     Used by `risk_manager.in_sl_cooldown` to refuse re-entry on a name that
     just stopped out — the 142-day audit found 29 rebleed losses worth -$425
     when the bot bought the same ticker the very next bar after a stop.
+
+    2026-07-18: losing BREAKEVEN closes count too. A "breakeven" exit that
+    booked a loss IS a stop-out (fill slipped below the raised stop — 07-15
+    HPE re-entered 9 min after a -1.36R "BREAKEVEN"); executor now relabels
+    the bad ones SL at write time, this clause covers legacy rows and small
+    scratch losses.
     """
     with conn() as c:
         row = c.execute(
             """
             SELECT * FROM closed_trades
-            WHERE symbol = ? AND exit_reason IN ('SL', 'SL_BRACKET')
+            WHERE symbol = ?
+              AND (exit_reason IN ('SL', 'SL_BRACKET')
+                   OR (exit_reason = 'BREAKEVEN' AND pnl < 0))
             ORDER BY id DESC LIMIT 1
             """,
             (symbol,),

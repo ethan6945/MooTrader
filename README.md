@@ -13,11 +13,12 @@
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-Gemini%20%2B%20Optuna-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
-![License](https://img.shields.io/badge/license-private-red)
+![License](https://img.shields.io/badge/license-MIT-green)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/YOUR_HANDLE)
 
 <br/>
 
-[✨ 核心功能](#-核心功能) · [🚀 快速上手](#-快速上手) · [🔬 交易流水线](#-交易流水线) · [🤖 AI 自治](#-ai-自治系统) · [❓ FAQ](#-常见问题)
+[✨ 核心功能](#-核心功能) · [🚀 快速上手](#-快速上手) · [🔬 交易流水线](#-交易流水线) · [🤖 AI 自治](#-ai-自治系统) · [❓ FAQ](#-常见问题) · [☕ 支持项目](#-支持项目)
 
 </div>
 
@@ -700,6 +701,22 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 - 务必 paper trade ≥ 4 周再用真钱；真钱第一次只投你能完全亏掉的金额。
 
 **作者不对任何使用本程序产生的金钱亏损负责。**
+
+---
+
+## ☕ 支持项目
+
+本项目**完全免费开源**（MIT License），没有任何付费墙或授权码。
+
+如果它帮到了你，欢迎用以下方式支持后续开发：
+
+- ⭐ 给仓库点一个 Star
+- ☕ [Buy Me a Coffee](https://buymeacoffee.com/YOUR_HANDLE)
+- 💖 [GitHub Sponsors](https://github.com/sponsors/ethan6945)
+
+## License
+
+[MIT](LICENSE) © 2026
 
 <div align="center">
 <br/>
