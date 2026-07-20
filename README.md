@@ -698,7 +698,7 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 | AI | Google Gemini（复核 / 优化器 / 看图）· Tavily（新闻） |
 | 量化 | pandas + pandas-ta-classic · Optuna · yfinance |
 | 存储 | SQLite + JSON 快照 |
-| 界面 | Flask 单页仪表盘 · python-telegram-bot · 原生 SwiftUI 壳（`macos/`，窗口 + 菜单栏） |
+| 界面 | 原生 SwiftUI 应用（`macos/`：总览/审批/信号/历史/设置 + 菜单栏）· Flask 单页仪表盘 · python-telegram-bot |
 
 ---
 
