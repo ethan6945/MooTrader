@@ -690,8 +690,7 @@ def api_reset_stats():
 # ── settings: .env key management ─────────────────────────────────────────────
 SETTING_KEYS = {
     "WEB_PASSWORD": "网页访问密码 — 设了之后，从手机/局域网打开面板要先登录(本机也是)。空=不需要密码(仅本机可用)。这是开放手机访问的前提。",
-    "GEMINI_API_KEYS": "Gemini AI Key(逗号分隔多个,自动轮换)— 所有 AI 分析(信号/情绪/退出/优化)。支持图表视觉确认。",
-    "DEEPSEEK_API_KEY": "DeepSeek API Key(可逗号分隔多个)— 切到 DeepSeek 引擎时用它做全部 AI 分析(纯文本,无图表视觉)。Gemini 不可用时的备份。",
+    "DEEPSEEK_API_KEY": "DeepSeek API Key(可逗号分隔多个)— 所有 AI 分析(信号/情绪/退出/优化/入场验证)都用它。",
     "TAVILY_API_KEY": "Tavily 新闻搜索 Key — 给 AI 提供实时新闻上下文。",
     "TELEGRAM_TOKEN": "Telegram Bot Token — 推送交易通知 + 审批卡片。",
     "TELEGRAM_CHAT_ID": "Telegram Chat ID — 接收通知的聊天 ID。",

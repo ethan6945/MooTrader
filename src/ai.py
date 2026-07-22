@@ -30,8 +30,13 @@ from .config import settings, GEMINI_FREE_CASCADE
 
 log = logging.getLogger(__name__)
 
-PROVIDERS = ("gemini", "deepseek")
-PROVIDER_LABELS = {"gemini": "Gemini", "deepseek": "DeepSeek"}
+# DeepSeek-only (2026-07-22): Gemini removed as a selectable engine. The
+# helper functions (_gemini, _list_gemini, the ensemble's gemini branch) stay
+# defined but unreachable — keeping them makes re-adding Gemini a one-line
+# revert. Consequences of the switch: the entry validator runs single-engine
+# (DeepSeek), and chart-pattern vision (Gemini-only) no longer runs.
+PROVIDERS = ("deepseek",)
+PROVIDER_LABELS = {"deepseek": "DeepSeek"}
 
 # Static fallbacks for the model dropdown when a live fetch fails (offline / no
 # key). Kept tiny and current; the live fetch is the source of truth.
@@ -54,9 +59,9 @@ def _state() -> dict:
 def active_provider() -> str:
     """Effective provider — db-state override else .env default. Always one of
     PROVIDERS (an unknown/typo value falls back to gemini)."""
-    p = (_state().get("ai_provider") or settings.ai_provider or "gemini")
+    p = (_state().get("ai_provider") or settings.ai_provider or "deepseek")
     p = str(p).strip().lower()
-    return p if p in PROVIDERS else "gemini"
+    return p if p in PROVIDERS else "deepseek"
 
 
 def default_model(provider: str) -> str:
@@ -155,7 +160,10 @@ def generate_ensemble(prompt: str, *,
     """
     import concurrent.futures
 
-    gemini_ok = has_key("gemini")
+    # "gemini" is no longer a provider → the ensemble collapses to single-engine
+    # DeepSeek (verdict="single", confidence 60). Gate on PROVIDERS so re-adding
+    # Gemini restores the dual-engine consensus automatically.
+    gemini_ok = "gemini" in PROVIDERS and has_key("gemini")
     deepseek_ok = has_key("deepseek")
     result: dict = {
         "text": "",
