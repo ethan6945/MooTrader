@@ -11,7 +11,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
-![AI](https://img.shields.io/badge/AI-Gemini%20%2B%20Optuna-8E75B2)
+![AI](https://img.shields.io/badge/AI-DeepSeek%20%2B%20Optuna-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ethan6945)
@@ -22,11 +22,11 @@
 
 </div>
 
-<!-- 📸 建议：把 Web 仪表盘截图放到 docs/screenshots/dashboard.png 后取消下面的注释
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" width="85%" alt="Web 仪表盘"/>
+  <img src="docs/screenshots/overview.png" width="92%" alt="原生 macOS 应用 · 总览"/>
+  <br/>
+  <em>原生 macOS 应用（<code>macos/</code>）· 总览页（账户金额已打码）</em>
 </p>
--->
 
 > [!WARNING]
 > **交易有亏损本金的实质风险。** 本程序不保证盈利，必须先 paper trade（模拟盘）**至少 4 周**才可切真钱。作者不对任何亏损负责。详见[免责声明](#免责声明)。
@@ -72,7 +72,7 @@
 <td valign="top">
 
 #### 🤖 AI 上下文复核
-Gemini + Tavily 实时新闻，排查「技术指标看不到的雷」（诉讼、爆雷、监管……）。默认建议模式，只记录不拦单，保持回测口径一致。
+DeepSeek + Tavily 实时新闻，排查「技术指标看不到的雷」（诉讼、爆雷、监管……）。默认建议模式，只记录不拦单，保持回测口径一致。
 
 </td>
 <td valign="top">
@@ -119,8 +119,8 @@ Optuna 贝叶斯调参 + AI 优化器 + 每日增量 sweep。护栏内的建议�
 </td>
 <td valign="top">
 
-#### 📊 Web 仪表盘
-持仓、净值曲线、美股板块热力图、审批队列、全部配置热更新（免重启），一键启停调度器；中英双语，手机可访问（需设密码）。
+#### 🖥 原生 macOS 应用 + Web 仪表盘
+原生 SwiftUI 应用（`macos/`）：总览/持仓/审批/历史/信号/设置 + 菜单栏状态图标 + 审批系统通知，中英切换、深浅色主题。回测等完整面板一键在浏览器打开；同一套后端手机也能访问（需设密码）。
 
 </td>
 </tr>
@@ -191,7 +191,7 @@ flowchart TB
 | 服务 | 用途 | 注册 | 免费额度 |
 |------|------|------|---------|
 | 券商 OpenAPI | 行情 + 交易 | [openapi.moomoo.com](https://openapi.moomoo.com) | 免费 |
-| Google Gemini | AI 复核 / 优化器 | [aistudio.google.com](https://aistudio.google.com) | 1500 req/天 |
+| DeepSeek | AI 复核 / 优化器 | [platform.deepseek.com](https://platform.deepseek.com) | 按量付费（极低） |
 | Tavily | 新闻搜索（喂给 AI） | [app.tavily.com](https://app.tavily.com) | 1000 req/月 |
 | Telegram Bot | 通知 + 审批 | [@BotFather](https://t.me/BotFather) | 免费 |
 
@@ -227,7 +227,7 @@ cp .env.example .env
 | 键 | 说明 |
 |----|------|
 | `MOO_TRADE_PWD` | 6 位**交易密码**（和登录密码分开，App → 设置 → 交易密码） |
-| `GEMINI_API_KEYS` | 逗号分隔，可多 key 轮换 |
+| `DEEPSEEK_API_KEY` | 可逗号分隔多个，自动轮换 |
 | `TAVILY_API_KEY` | 新闻搜索 |
 | `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | @BotFather 创建 |
 | `ACCOUNT_USD` | 你分配的预算上限——程序**绝不**投入超过这个数 |
@@ -316,7 +316,7 @@ flowchart LR
 
 **策略 ③ 均值回归**（默认关）：oversold 超卖（RSI<25 + 跌破布林下轨）25 / reversal 反转（锤子线、收复下轨）25 / volume 20 / non_trend（ADX<25 才有效）20。
 
-**策略 ④ 形态识别**（默认关）：pattern_quality 形态质量 30 / trigger 是否突破关键位 25 / volume 20 / trend_alignment 15。可选 `pattern_vision`（Gemini 渲染 K 线图后看图确认），也默认关。
+**策略 ④ 形态识别**（默认关）：pattern_quality 形态质量 30 / trigger 是否突破关键位 25 / volume 20 / trend_alignment 15。可选 `pattern_vision`（看图确认，需支持视觉的多模态模型；当前纯 DeepSeek 下不生效），也默认关。
 
 </details>
 
@@ -334,7 +334,7 @@ flowchart LR
 | 6 | 隔夜跳空 | \|跳空\| > 4% → 拒（不追高、不接刀） | `indicators` |
 | 7 | 财报屏蔽 | 距下次财报 ≤ 2 天 → 拒 | `earnings` |
 | 8 | 买卖价差 | bid-ask spread > 0.5% → 拒（流动性差） | `moo_client` |
-| 9 | AI 复核 | Gemini + Tavily 查「指标看不到的雷」；**建议模式不拦单**，下单后才问以省延迟 | `ai_validator` |
+| 9 | AI 复核 | DeepSeek + Tavily 查「指标看不到的雷」；**建议模式不拦单**，下单后才问以省延迟 | `ai_validator` |
 | 10 | 风控闸 | 24h 止损冷却 / 持仓数上限 / 现金 / 预算上限 | `risk_manager` |
 | 11 | 每轮新股上限 | 每轮最多 2 只新股，加仓老仓不占额度 | `main` |
 
@@ -521,7 +521,9 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 | `INVERSE_SLEEVE_ENABLED` | 反向 ETF 对冲（现金账户不能做空）。**唯一会以新方式亏钱的功能**，必须先跑专属回测过双窗闸门 |
 | `USE_SCALE_OUT` | 分批止盈**故意空转**：回测证明压低梯子让它真触发反而降 $/天（过早落袋杀肥尾） |
 
-**已删除**（不再是开关）：ML/XGBoost 子系统（AUC≈0.5 证明无效）；DeepSeek（全系统统一 Gemini）；DAILY 交易周期（HOUR_1 回测完胜，DAILY 数据仍用于多周期确认/regime）。
+**已删除**（不再是开关）：ML/XGBoost 子系统（AUC≈0.5 证明无效）；DAILY 交易周期（HOUR_1 回测完胜，DAILY 数据仍用于多周期确认/regime）。
+
+> **AI 引擎**：全系统统一用 **DeepSeek**（`DEEPSEEK_API_KEY`），入场复核走单引擎。Gemini 已从可选引擎中移除；看图形态确认（需视觉模型）随之停用。
 
 </details>
 
@@ -559,7 +561,7 @@ moo-trader/
 │   ├── strategy_pattern.py           # 策略④ 形态识别（默认关）
 │   ├── pattern_detect.py             # 纯 numpy 几何/K 线形态检测
 │   │
-│   ├── ai_validator.py               # Gemini+Tavily：买入复核 / 跳空 / 情绪
+│   ├── ai_validator.py               # DeepSeek+Tavily：买入复核 / 跳空 / 情绪
 │   ├── regime.py                     # SPY 50/200MA 市场环境（VIX 感知）
 │   ├── earnings.py / gap_sentinel.py # 财报屏蔽 / 跳空哨兵
 │   │
@@ -646,9 +648,9 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 </details>
 
 <details>
-<summary><b>Gemini 免费配额会爆吗？</b></summary>
+<summary><b>AI 会很花钱吗？</b></summary>
 
-免费层 1500 req/天。买入 AI 复核每轮最多 10 次，交易时段约 12 轮/天，远在额度内。AI 是 FAIL-SAFE 设计：额度耗尽降级为中性「pass」，绝不因 AI 不可用而乱卖。
+用 DeepSeek，纯文本按量计费、单价极低。买入 AI 复核每轮最多 10 次，交易时段约 12 轮/天，一天下来花费可忽略。AI 是 FAIL-SAFE 设计：调用失败降级为中性「pass」，绝不因 AI 不可用而乱卖。
 
 </details>
 
@@ -695,7 +697,7 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 |----|------|
 | 语言 / 运行时 | Python 3.11 · APScheduler |
 | 券商接口 | moomoo-api SDK（行情 + 交易） |
-| AI | Google Gemini（复核 / 优化器 / 看图）· Tavily（新闻） |
+| AI | DeepSeek（复核 / 优化器 / 情绪）· Tavily（新闻） |
 | 量化 | pandas + pandas-ta-classic · Optuna · yfinance |
 | 存储 | SQLite + JSON 快照 |
 | 界面 | 原生 SwiftUI 应用（`macos/`：总览/审批/信号/历史/设置 + 菜单栏）· Flask 单页仪表盘 · python-telegram-bot |
