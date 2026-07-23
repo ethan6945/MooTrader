@@ -14,7 +14,7 @@
 ![AI](https://img.shields.io/badge/AI-Gemini%20%2B%20Optuna-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
 ![License](https://img.shields.io/badge/license-MIT-green)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/YOUR_HANDLE)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ethan6945)
 
 <br/>
 
@@ -721,7 +721,7 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 如果它帮到了你，欢迎用以下方式支持后续开发：
 
 - ⭐ 给仓库点一个 Star
-- ☕ [Buy Me a Coffee](https://buymeacoffee.com/YOUR_HANDLE)
+- ☕ [Buy Me a Coffee](https://buymeacoffee.com/ethan6945)
 - 💖 [GitHub Sponsors](https://github.com/sponsors/ethan6945)
 
 ## License
