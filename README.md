@@ -142,6 +142,33 @@ Optuna 贝叶斯调参 + AI 优化器 + 每日增量 sweep。护栏内的建议�
 
 ---
 
+## 🖥 原生 macOS 应用
+
+`macos/` 下是一个**原生 SwiftUI 应用**（SwiftPM 构建，只需 Command Line Tools、无需 Xcode）。日常操作都做成了原生界面，回测等完整面板一键在默认浏览器打开。**中英一键切换、深/浅色主题（可跟随系统）、菜单栏常驻状态图标 + 审批系统通知**；同一套后端手机也能访问（需设密码）。
+
+```bash
+macos/build.sh
+open macos/dist/MooTrader.app     # 首次右键 → 打开
+```
+
+> 📸 下面截图中账户金额、盈亏、IP、API Key 尾号均已打码。账户为**模拟盘**（paper）。
+
+**总览 Overview** — 见页首大图。账户卡片（净值 / 持仓市值 / 未实现 / 已实现 / 预算）、引擎与市场状态胶囊、一键启停调度器与防睡眠、战绩、跟随最新的实时日志、持仓表（含止损→止盈区间条与策略标签）、随持仓数自适应缩放的**美股板块热力图**。
+
+**历史 History** — 净值曲线 + 每日盈亏（Swift Charts）+ 已平仓交易表。
+
+<p align="center"><img src="docs/screenshots/history.png" width="92%" alt="历史页"/></p>
+
+**设置 Settings** — 交易环境（模拟↔实盘切换，含二次确认与未平仓闸门）、预算与自动复利、AI 引擎与模型、`.env` 密钥就地编辑、面板访问范围（局域网 / 密码 / 在浏览器打开完整面板）、外观 & 语言、维护、支持。
+
+<p align="center"><img src="docs/screenshots/settings.png" width="92%" alt="设置页"/></p>
+
+**审批 Approvals** — 待处理审批一键 ✓ / ✗，已处理记录留档；有新审批到达时发系统通知。
+**信号 Signals（盯盘）** — 自选股监控磁贴（价格 / RSI / 量比 / VWAP / 技术评分）、警报流、盯盘启停与六种单次运行。
+**菜单栏 Menu bar** — 常驻牛头图标：调度器状态 + PID、OpenD 红绿灯、防睡眠开关、启停调度器、「退出 App（交易继续）」/「全部退出」两档。
+
+---
+
 ## 系统架构
 
 三个**互相独立**的进程，通过共享的 `data/`（SQLite + JSON 快照）和 `.env` 解耦：
