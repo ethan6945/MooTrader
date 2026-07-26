@@ -2,14 +2,15 @@
 
 # 📈 Moo Trader
 
-**AI 驱动的美股全自动短线交易系统**
+**An AI-driven, fully autonomous US-stock swing-trading system**
 
-<em>An autonomous, risk-guarded US-stock swing-trading bot — multi-strategy scoring, AI context review, honest backtesting, web dashboard & Telegram approvals.</em>
+<em>自治、带硬风控的美股短线交易机器人 — 多策略打分、AI 上下文复核、诚实回测、Web 面板与 Telegram 审批。</em>
 
 <br/>
 
+[![release](https://img.shields.io/github/v/release/ethan6945/moomoo-trader?color=2ea44f&label=release)](https://github.com/ethan6945/moomoo-trader/releases/latest)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
-![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
+![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek%20%2B%20Optuna-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
@@ -18,123 +19,127 @@
 
 <br/>
 
-[✨ 核心功能](#-核心功能) · [🚀 快速上手](#-快速上手) · [🔬 交易流水线](#-交易流水线) · [🤖 AI 自治](#-ai-自治系统) · [❓ FAQ](#-常见问题) · [☕ 支持项目](#-支持项目)
+English · [简体中文](README.zh-CN.md)
+
+<br/>
+
+[✨ Features](#-features) · [🚀 Quick start](#-quick-start) · [🔬 Pipeline](#-trading-pipeline) · [🤖 AI autonomy](#-ai-autonomy) · [❓ FAQ](#-faq) · [☕ Support](#-support)
 
 </div>
 
 <p align="center">
-  <img src="docs/screenshots/overview.png" width="92%" alt="原生 macOS 应用 · 总览"/>
+  <img src="docs/screenshots/overview.png" width="92%" alt="Native macOS app · Overview"/>
   <br/>
-  <em>原生 macOS 应用（<code>macos/</code>）· 总览页（账户金额已打码）</em>
+  <em>Native macOS app (<code>macos/</code>) · Overview (account figures are masked)</em>
 </p>
 
 > [!WARNING]
-> **交易有亏损本金的实质风险。** 本程序不保证盈利，必须先 paper trade（模拟盘）**至少 4 周**才可切真钱。作者不对任何亏损负责。详见[免责声明](#免责声明)。
+> **Trading carries a real risk of losing your capital.** This program makes no guarantee of profit. You **must** paper-trade for **at least 4 weeks** before switching to real money. The author is not liable for any losses. See the [Disclaimer](#disclaimer).
 
 ---
 
-## 这是什么
+## What is this
 
-一个**自治的美股短线 swing 交易机器人**。它在美股交易时段每 30 分钟扫描一个每周自动重建的股票池，用 4 套技术策略打分，过 11 道风控/上下文过滤闸，自动下限价单并管理止损/止盈，全程通过 **Web 仪表盘 + Telegram** 监控和审批。
+An **autonomous US-stock swing-trading bot**. During US market hours it scans a stock universe (rebuilt automatically every week) every 30 minutes, scores each name with 4 technical strategies, runs it through 11 risk/context gates, places limit orders, and manages stops/targets — all monitored and approved through a **web dashboard + Telegram**.
 
-**设计目标：~95% 自动化。** 你平时只需要看 Telegram 推送，偶尔在 Web 面板批一下优化器提出的参数建议。
+**Design goal: ~95% automation.** Day to day you just watch the Telegram feed and occasionally approve a parameter suggestion from the optimizer in the web panel.
 
-### 🧭 两条贯穿全系统的铁律
+### 🧭 Two rules that run through the whole system
 
-> **① Live ↔ 回测口径一致（parity）**
-> 实盘成交的单子必须和「算出 $/day 的那套诚实回测」是同一批。任何会让实盘偏离回测的功能（如 AI 否决）默认设为「建议 / 不拦单」。
+> **① Live ↔ backtest parity**
+> The orders filled in live trading must be the *same set* the honest backtest (the one that computed the $/day numbers) would have taken. Any feature that could make live diverge from the backtest (e.g. AI veto) defaults to "advisory / does not block orders."
 >
-> **② 未验证不上线**
-> 新策略 / 新退出逻辑只有在双窗口回测里**既提升收益又不恶化回撤**才允许开启。过不了这关就一直关着——代码留着，等数据。
+> **② Nothing ships unvalidated**
+> A new strategy or exit rule is only enabled if a two-window backtest shows it **both raises returns and doesn't worsen drawdown**. If it can't clear that bar it stays off — the code stays, waiting for data.
 
-理解这两条，就能理解为什么下文很多功能「默认关」。
+Understand these two and you'll understand why so many features below are "off by default."
 
 ---
 
-## ✨ 核心功能
+## ✨ Features
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-#### 🎯 多策略信号引擎
-趋势、动量突破、均值回归、形态识别 4 套独立策略，统一 `Signal` 接口打分 0–100，综合分 ≥ 70 才进入候选。
+#### 🎯 Multi-strategy signal engine
+Trend, momentum-breakout, mean-reversion, and pattern-recognition — 4 independent strategies scoring 0–100 through one unified `Signal` interface; only a composite score ≥ 70 becomes a candidate.
 
 </td>
 <td width="50%" valign="top">
 
-#### 🧱 11 道候选过滤闸
-交易时段、市场 regime、黑名单、熔断、多周期确认、跳空、财报、买卖价差、AI 复核、硬风控、每轮限额——任何一道不过即放弃。
+#### 🧱 11 candidate gates
+Session, market regime, blacklist, circuit breakers, multi-timeframe confirmation, gaps, earnings, bid-ask spread, AI review, hard risk limits, per-scan cap — fail any one and the name is dropped.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-#### 🤖 AI 上下文复核
-DeepSeek + Tavily 实时新闻，排查「技术指标看不到的雷」（诉讼、爆雷、监管……）。默认建议模式，只记录不拦单，保持回测口径一致。
+#### 🤖 AI context review
+DeepSeek + Tavily real-time news, to catch what the indicators can't see (lawsuits, blow-ups, regulation…). Advisory by default — it records but never blocks orders, keeping backtest parity intact.
 
 </td>
 <td valign="top">
 
-#### 🛡️ 多层硬风控
-单笔风险 5%、单股上限 40%、日内回撤熔断、账户回撤减仓/停盘、连亏冷却、VIX 缩仓。**AI 无权绕过任何一条。**
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-#### 📉 跳空哨兵
-持仓股财报临近、或盘前 AI 判定有实锤利空 → 开盘自动清仓。止损单挡不住隔夜跳空，哨兵可以。
-
-</td>
-<td valign="top">
-
-#### 🧠 自适应仓位与黑名单
-按近 30 笔交易的 Sortino 动态调整风险倍数（0.5×–1.25×）；连亏股自动进观察期黑名单，恢复自动放出。
+#### 🛡️ Layered hard risk control
+5% per-trade risk, 40% single-name cap, intraday drawdown halt, account-drawdown de-risk/halt, loss-streak cooldown, VIX sizing. **AI has no power to bypass any of it.**
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-#### 🔄 每周动态选股
-按 6-1 动量从流动性池自动重建 watchlist，走样本外回放避免幸存者偏差，每次变动 Telegram 通知——绝不静默漂移。
+#### 📉 Gap sentinel
+A held name near earnings, or a pre-market AI read of hard bad news → auto-liquidate at the open. Stop orders can't stop an overnight gap; the sentinel can.
 
 </td>
 <td valign="top">
 
-#### 🧪 诚实回测 + 双窗口闸门
-账户级时间步进模拟（与实盘同一套行为）、Monte Carlo 1000 次、Sharpe/Sortino/Calmar 全套指标；另有独立 sandbox 引擎每周与回测做交易级对账。
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-#### ⚙️ 全自动参数优化
-Optuna 贝叶斯调参 + AI 优化器 + 每日增量 sweep。护栏内的建议自动应用、退化自动回滚；越界的必须人工审批。
-
-</td>
-<td valign="top">
-
-#### 🖥 原生 macOS 应用 + Web 仪表盘
-原生 SwiftUI 应用（`macos/`）：总览/持仓/审批/历史/信号/设置 + 菜单栏状态图标 + 审批系统通知，中英切换、深浅色主题。回测等完整面板一键在浏览器打开；同一套后端手机也能访问（需设密码）。
+#### 🧠 Adaptive sizing & blacklist
+Scales the risk multiplier (0.5×–1.25×) by the Sortino of the last ~30 trades; repeat-loser names go onto a probation blacklist and are released automatically on recovery.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-#### 📱 Telegram 通知与审批
-下单 / 止损 / 状态实时推送，「批准 / 拒绝」按钮直接处理审批队列。重要变更没有你点头不会生效。
+#### 🔄 Weekly dynamic universe
+Rebuilds the watchlist from a liquidity pool by 6-1 momentum, with out-of-sample replay to avoid survivorship bias, and a Telegram note on every change — never silent drift.
 
 </td>
 <td valign="top">
 
-#### 💰 现金不闲置（可选）
-熊市策略停开新仓时，自动把闲钱买入国债 ETF（SGOV）吃无风险收益；已实现盈利可自动复利滚入预算。均默认关。
+#### 🧪 Honest backtest + two-window gate
+Account-level time-stepped simulation (same behavior as live), Monte Carlo ×1000, full Sharpe/Sortino/Calmar suite; plus an independent sandbox engine that reconciles against the backtest at the trade level weekly.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+#### ⚙️ Fully automated tuning
+Optuna Bayesian search + an AI optimizer + a daily incremental sweep. In-guardrail suggestions auto-apply and auto-roll-back on regression; out-of-bounds ones require human approval.
+
+</td>
+<td valign="top">
+
+#### 🖥 Native macOS app + web dashboard
+Native SwiftUI app (`macos/`): Overview / Positions / Approvals / History / Signals / Settings + a menu-bar status icon + approval notifications, EN/中文 toggle, light/dark themes. The full panel (backtests etc.) opens in the browser in one click; the same backend is reachable from your phone (password required).
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+#### 📱 Telegram alerts & approvals
+Live pushes for orders / stops / status, with "Approve / Reject" buttons that clear the approval queue directly. Important changes don't take effect without your nod.
+
+</td>
+<td valign="top">
+
+#### 💰 Idle cash to work (optional)
+When bear-market rules stop new entries, park idle cash in a T-bill ETF (SGOV) for a risk-free yield; realized profit can auto-compound into the budget. Both off by default.
 
 </td>
 </tr>
@@ -142,98 +147,98 @@ Optuna 贝叶斯调参 + AI 优化器 + 每日增量 sweep。护栏内的建议�
 
 ---
 
-## 🖥 原生 macOS 应用
+## 🖥 Native macOS app
 
-`macos/` 下是一个**原生 SwiftUI 应用**（SwiftPM 构建，只需 Command Line Tools、无需 Xcode）。日常操作都做成了原生界面，回测等完整面板一键在默认浏览器打开。**中英一键切换、深/浅色主题（可跟随系统）、菜单栏常驻状态图标 + 审批系统通知**；同一套后端手机也能访问（需设密码）。
+`macos/` is a **native SwiftUI app** (built with SwiftPM — only Command Line Tools needed, no Xcode). Everyday actions are native UI; the full panel (backtests etc.) opens in your default browser in one click. **One-tap EN/中文 switch, light/dark theme (can follow the system), a persistent menu-bar status icon + approval notifications**; the same backend is reachable from your phone (password required).
 
 ```bash
 macos/build.sh
-open macos/dist/MooTrader.app     # 首次右键 → 打开
+open macos/dist/MooTrader.app     # first launch: right-click → Open
 ```
 
-> 📸 下面截图中账户金额、盈亏、IP、API Key 尾号均已打码。账户为**模拟盘**（paper）。
+> 📸 In the screenshots below, account balances, P&L, IPs, and API-key suffixes are all masked. The account is a **paper** account.
 
-**总览 Overview** — 见页首大图。账户卡片（净值 / 持仓市值 / 未实现 / 已实现 / 预算）、引擎与市场状态胶囊、一键启停调度器与防睡眠、战绩、跟随最新的实时日志、持仓表（含止损→止盈区间条与策略标签）、随持仓数自适应缩放的**美股板块热力图**。
+**Overview** — see the banner image above. Account cards (equity / position value / unrealized / realized / budget), engine & market-state pills, one-click start/stop of the scheduler and sleep-prevention, trade record, a live log that follows the latest line, a positions table (with a stop→target range bar and strategy tags), and a **US-sector heatmap** that scales with the position count.
 
-**历史 History** — 净值曲线 + 每日盈亏（Swift Charts）+ 已平仓交易表。
+**History** — equity curve + daily P&L (Swift Charts) + a closed-trades table.
 
-<p align="center"><img src="docs/screenshots/history.png" width="92%" alt="历史页"/></p>
+<p align="center"><img src="docs/screenshots/history.png" width="92%" alt="History tab"/></p>
 
-**设置 Settings** — 交易环境（模拟↔实盘切换，含二次确认与未平仓闸门）、预算与自动复利、AI 引擎与模型、`.env` 密钥就地编辑、面板访问范围（局域网 / 密码 / 在浏览器打开完整面板）、外观 & 语言、维护、支持。
+**Settings** — trade environment (paper↔real switch, with double confirmation and a flat-position gate), budget & auto-compounding, AI engine & model, in-place `.env` key editing, panel access scope (LAN / password / open the full panel in the browser), appearance & language, maintenance, support.
 
-<p align="center"><img src="docs/screenshots/settings.png" width="92%" alt="设置页"/></p>
+<p align="center"><img src="docs/screenshots/settings.png" width="92%" alt="Settings tab"/></p>
 
-**审批 Approvals** — 待处理审批一键 ✓ / ✗，已处理记录留档；有新审批到达时发系统通知。
-**信号 Signals（盯盘）** — 自选股监控磁贴（价格 / RSI / 量比 / VWAP / 技术评分）、警报流、盯盘启停与六种单次运行。
-**菜单栏 Menu bar** — 常驻牛头图标：调度器状态 + PID、OpenD 红绿灯、防睡眠开关、启停调度器、「退出 App（交易继续）」/「全部退出」两档。
+**Approvals** — one-click ✓ / ✗ on pending items, an archive of handled ones; a system notification fires when a new approval arrives.
+**Signals (watch)** — watchlist monitor tiles (price / RSI / volume ratio / VWAP / technical score), an alert stream, watch start/stop, and six one-shot runs.
+**Menu bar** — a persistent bull-head icon: scheduler status + PID, OpenD status light, sleep-prevention toggle, start/stop scheduler, and a two-tier "Quit app (trading continues)" / "Quit everything."
 
 ---
 
-## 系统架构
+## Architecture
 
-三个**互相独立**的进程，通过共享的 `data/`（SQLite + JSON 快照）和 `.env` 解耦：
+Three **mutually independent** processes, decoupled through a shared `data/` (SQLite + JSON snapshots) and `.env`:
 
 ```mermaid
 flowchart TB
-    subgraph HOST["🖥 常驻 Mac（建议 Mac mini + 电源常插）"]
-        OPEND["OpenD<br/>官方券商网关 · :11111"]
-        SCHED["① 交易调度器<br/>python -m src.main run<br/>扫描 · 下单 · 管仓 · 定时任务"]
-        WEB["② Web 仪表盘<br/>Flask · :8770<br/>监控 · 配置 · 审批 · 启停调度器"]
-        DATA[("data/<br/>SQLite + JSON 快照")]
+    subgraph HOST["🖥 Always-on Mac (a Mac mini on wall power is ideal)"]
+        OPEND["OpenD<br/>official broker gateway · :11111"]
+        SCHED["① Trading scheduler<br/>python -m src.main run<br/>scan · order · manage · cron jobs"]
+        WEB["② Web dashboard<br/>Flask · :8770<br/>monitor · configure · approve · start/stop scheduler"]
+        DATA[("data/<br/>SQLite + JSON snapshots")]
     end
-    MKT["美股市场"] <--> OPEND
-    OPEND <-->|"行情 / 下单"| SCHED
-    SCHED -->|"写状态"| DATA
-    DATA -->|"只读"| WEB
-    WEB -->|"改 .env / 审批 / ▶ 启动"| SCHED
-    SCHED -->|"推送"| TG["③ Telegram Bot"]
-    TG -->|"批准 / 拒绝"| SCHED
-    USER(("👤 你")) --> WEB
+    MKT["US market"] <--> OPEND
+    OPEND <-->|"quotes / orders"| SCHED
+    SCHED -->|"write state"| DATA
+    DATA -->|"read-only"| WEB
+    WEB -->|"edit .env / approve / ▶ start"| SCHED
+    SCHED -->|"push"| TG["③ Telegram bot"]
+    TG -->|"approve / reject"| SCHED
+    USER(("👤 you")) --> WEB
     USER <--> TG
 ```
 
-| 进程 | 职责 | 说明 |
+| Process | Role | Notes |
 |------|------|------|
-| **OpenD** | 行情 + 下单网关 | 券商官方本地网关，须全程运行；`start-web.command` 会自动拉起 |
-| **① 调度器** | 真正的交易大脑 | APScheduler 驱动所有扫描、管仓、定时任务；从 Web 面板 ▶ Start 启动 |
-| **② Web 仪表盘** | 监控 + 控制台 | **本身不交易**，只读快照、改配置、处理审批；停掉不影响交易 |
-| **③ Telegram** | 通知 + 审批 | 推送下单/止损/状态，按钮处理审批队列 |
+| **OpenD** | Quotes + order gateway | The broker's official local gateway; must run the whole time. `start-web.command` launches it automatically |
+| **① Scheduler** | The actual trading brain | APScheduler drives all scanning, position management, and cron jobs; started with ▶ Start from the web panel |
+| **② Web dashboard** | Monitor + console | **Doesn't trade itself** — it reads snapshots, edits config, handles approvals; stopping it doesn't affect trading |
+| **③ Telegram** | Notify + approve | Pushes orders/stops/status; buttons work the approval queue |
 
-> 调度器与 Web 之间不直接通信。Web 上改模式/预算/审批，实际是写 db-state override 或 `.env`，调度器在下一轮扫描读到即生效（热参数**无需重启**）。
+> The scheduler and the web app don't talk directly. Changing mode/budget/approvals in the web UI writes a db-state override or `.env`; the scheduler picks it up on the next scan (hot params need **no restart**).
 
 ---
 
-## 🚀 快速上手
+## 🚀 Quick start
 
-### 环境要求
+### Requirements
 
-| 依赖 | 用途 | 获取 |
+| Dependency | Purpose | Get it |
 |------|------|------|
-| macOS + Python 3.11+ | 运行环境 | 安装脚本会自动处理 Python |
-| OpenD | 行情 + 下单网关 | [openapi.moomoo.com](https://openapi.moomoo.com) 下载安装并登录 |
-| 券商 App | 开户 + 设交易密码 | 到 [openapi.moomoo.com](https://openapi.moomoo.com) 所属券商官网 / App Store 下载官方 App（审核 1–3 工作日，开通 Paper Trading） |
+| macOS + Python 3.11+ | Runtime | The install script handles Python for you |
+| OpenD | Quotes + order gateway | Download, install, and log in from [openapi.moomoo.com](https://openapi.moomoo.com) |
+| Broker app | Open an account + set a trade password | Get the official broker app from [openapi.moomoo.com](https://openapi.moomoo.com) (review takes 1–3 business days; enable Paper Trading) |
 
-**外部 API（都有免费层）：**
+**External APIs (all have a free tier):**
 
-| 服务 | 用途 | 注册 | 免费额度 |
+| Service | Purpose | Sign up | Free tier |
 |------|------|------|---------|
-| 券商 OpenAPI | 行情 + 交易 | [openapi.moomoo.com](https://openapi.moomoo.com) | 免费 |
-| DeepSeek | AI 复核 / 优化器 | [platform.deepseek.com](https://platform.deepseek.com) | 按量付费（极低） |
-| Tavily | 新闻搜索（喂给 AI） | [app.tavily.com](https://app.tavily.com) | 1000 req/月 |
-| Telegram Bot | 通知 + 审批 | [@BotFather](https://t.me/BotFather) | 免费 |
+| Broker OpenAPI | Quotes + trading | [openapi.moomoo.com](https://openapi.moomoo.com) | Free |
+| DeepSeek | AI review / optimizer | [platform.deepseek.com](https://platform.deepseek.com) | Pay-as-you-go (very cheap) |
+| Tavily | News search (fed to the AI) | [app.tavily.com](https://app.tavily.com) | 1000 req/mo |
+| Telegram bot | Notify + approve | [@BotFather](https://t.me/BotFather) | Free |
 
-### 1️⃣ 克隆 + 一键安装
+### 1️⃣ Clone + one-command install
 
 ```bash
-git clone <your-repo-url> moo-trader
+git clone https://github.com/ethan6945/moomoo-trader.git moo-trader
 cd moo-trader
 ./setup-macmini.command
 ```
 
-脚本自动完成：安装 [uv](https://astral.sh/uv) → 用 Python 3.11 重建 `.venv` 并装依赖 → 按当前路径安装 crontab 优化任务 → 自检 OpenD 与 `.env`。重复运行安全（幂等）。
+The script does it all: install [uv](https://astral.sh/uv) → rebuild `.venv` on Python 3.11 and install dependencies → install the crontab optimizer jobs for the current path → self-check OpenD and `.env`. Safe to re-run (idempotent).
 
 <details>
-<summary>不用脚本，手动安装</summary>
+<summary>Manual install, without the script</summary>
 
 ```bash
 python3 -m venv .venv
@@ -243,321 +248,321 @@ pip install -r requirements.txt
 
 </details>
 
-### 2️⃣ 配置 `.env`
+### 2️⃣ Configure `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-至少填这几项（模板里每项都有详细注释）：
+At minimum fill these (every key is documented in the template):
 
-| 键 | 说明 |
+| Key | Notes |
 |----|------|
-| `MOO_TRADE_PWD` | 6 位**交易密码**（和登录密码分开，App → 设置 → 交易密码） |
-| `DEEPSEEK_API_KEY` | 可逗号分隔多个，自动轮换 |
-| `TAVILY_API_KEY` | 新闻搜索 |
-| `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | @BotFather 创建 |
-| `ACCOUNT_USD` | 你分配的预算上限——程序**绝不**投入超过这个数 |
+| `MOO_TRADE_PWD` | 6-digit **trade password** (separate from your login password; App → Settings → Trade password) |
+| `DEEPSEEK_API_KEY` | Comma-separate several for auto-rotation |
+| `TAVILY_API_KEY` | News search |
+| `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | Create with @BotFather |
+| `ACCOUNT_USD` | Your budget cap — the program will **never** deploy more than this |
 
-### 3️⃣ 启动
+### 3️⃣ Launch
 
 ```bash
 ./start-web.command
 ```
 
-它会自动：拉起 OpenD（若未运行）→ 启动 Web 仪表盘 → 打开浏览器 `http://127.0.0.1:8770`。
+It automatically: brings up OpenD (if not running) → starts the web dashboard → opens `http://127.0.0.1:8770` in your browser.
 
-想要原生 macOS 应用体验（窗口 + 菜单栏状态图标 + 审批系统通知），构建一次 Swift 壳：
+For the native macOS experience (window + menu-bar status icon + approval notifications), build the Swift shell once:
 
 ```bash
-macos/build.sh          # 只需 Command Line Tools，无需 Xcode
+macos/build.sh          # only Command Line Tools, no Xcode
 open macos/dist/MooTrader.app
 ```
 
-MooTrader.app 会自动拉起（或接管已在运行的）Web 服务器；关掉它交易照常继续。
+MooTrader.app launches (or attaches to an already-running) web server; closing it keeps trading going.
 
-然后在面板上点 **▶ Start** 启动交易调度器（独立进程，关掉浏览器照样交易）。
+Then click **▶ Start** in the panel to start the trading scheduler (a separate process — close the browser and it keeps trading).
 
 ```bash
-# 等价 CLI 方式
-python -m src.main run    # 直接跑调度器
-python -m src.main scan   # 单次扫描调试（不进循环）
+# equivalent CLI
+python -m src.main run    # run the scheduler directly
+python -m src.main scan   # single scan for debugging (no loop)
 ```
 
-启动后调度器会：补跑关机期间错过的定时任务 → 美股开盘后每 30 分钟扫一次 → Telegram 推送下单/止损/状态。
+Once started, the scheduler will: back-fill cron jobs missed while the machine was off → scan every 30 minutes after the US open → push orders/stops/status to Telegram.
 
 ---
 
-## 🔬 交易流水线
+## 🔬 Trading pipeline
 
 ```mermaid
 flowchart LR
-    A["⏱ 每 30 分钟<br/>扫描动态股票池"] --> B["🎯 4 策略打分<br/>0–100"]
-    B -->|"综合分 ≥ 70"| C["🧱 11 道过滤闸<br/>时段 · regime · 黑名单<br/>财报 · 跳空 · AI …"]
-    C --> D["⚖ 仓位计算<br/>按风险定股数<br/>× 多层系数"]
-    D --> E["📝 限价下单"]
-    E --> F["🔁 持仓管理<br/>止损 · 止盈 · 保本<br/>哨兵 · 最长持仓"]
-    F --> G["📊 平仓复盘"]
-    G -.->|"自适应仓位 · 黑名单 · 优化器"| B
+    A["⏱ every 30 min<br/>scan dynamic universe"] --> B["🎯 4-strategy score<br/>0–100"]
+    B -->|"composite ≥ 70"| C["🧱 11 gates<br/>session · regime · blacklist<br/>earnings · gap · AI …"]
+    C --> D["⚖ size the position<br/>shares by risk<br/>× layered multipliers"]
+    D --> E["📝 limit order"]
+    E --> F["🔁 manage position<br/>stop · target · breakeven<br/>sentinel · max hold"]
+    F --> G["📊 close & review"]
+    G -.->|"adaptive sizing · blacklist · optimizer"| B
 ```
 
-### 第 1 步：策略打分
+### Step 1: Strategy scoring
 
-对 watchlist 每只股票，4 套独立策略各打 0–100 分，取最高分代表该股票。4 套共用同一个 `Signal` 接口，下游漏斗不关心信号来自哪套（只记 `strategy` 标签）。
+For each name on the watchlist, 4 independent strategies each score 0–100; the highest score represents that name. All 4 share one `Signal` interface, so the downstream funnel doesn't care which strategy produced a signal (it only records a `strategy` tag).
 
-> **当前实盘只跑前两套（趋势 + 动量突破）；均值回归、形态识别默认关**——原因见[配置速览](#-配置速览)。入场门槛：综合分 ≥ `ENTRY_SCORE_THRESHOLD`（**70**，Optuna 调出，硬门槛无边缘带）。
+> **Live currently runs only the first two (trend + momentum-breakout); mean-reversion and pattern-recognition are off by default** — see [Config at a glance](#-config-at-a-glance) for why. Entry bar: composite score ≥ `ENTRY_SCORE_THRESHOLD` (**70**, tuned by Optuna, a hard threshold with no edge band).
 
-| 策略 | 模块 | 风格 | 状态 |
+| Strategy | Module | Style | Status |
 |------|------|------|:----:|
-| ① 趋势 | `indicators.py` | EMA/MACD/量能/ADX/VWAP 六因子共振 | ✅ |
-| ② 动量突破 | `strategy_momentum.py` | 专抓放量突破 20 根新高（出手少、单笔大） | ✅ |
-| ③ 均值回归 | `strategy_mr.py` | 震荡市超卖反弹 | ❌ 默认关 |
-| ④ 形态识别 | `strategy_pattern.py` | 双底/三角/头肩底/牛旗等几何形态 | ❌ 默认关 |
+| ① Trend | `indicators.py` | EMA/MACD/volume/ADX/VWAP six-factor confluence | ✅ |
+| ② Momentum breakout | `strategy_momentum.py` | Hunts volume breakouts of 20-bar highs (few trades, big each) | ✅ |
+| ③ Mean reversion | `strategy_mr.py` | Oversold bounce in ranges | ❌ off by default |
+| ④ Pattern recognition | `strategy_pattern.py` | Double bottom / triangle / H&S / bull flag geometry | ❌ off by default |
 
 <details>
-<summary><b>📐 展开：各策略因子与权重明细</b></summary>
+<summary><b>📐 Expand: per-strategy factors and weights</b></summary>
 
-> 每套策略权重总和 = 90（历史上 AI 复核占最后 10 分，现已改为独立的建议层，不并入分数）。
+> Each strategy's weights sum to 90 (AI review historically held the last 10 points; it's now an independent advisory layer, not folded into the score).
 >
-> **名词速记**：**EMA** 指数移动均线（近期价权重更高）｜**MACD** 快慢均线差，判动量转向｜**RSI** 相对强弱 0–100，>70 超买 <30 超卖｜**Stochastic** 收盘价在近期高低区间的位置｜**ADX** 趋势强度（非方向）｜**VWAP** 成交量加权均价（机构成本线）｜**BB** 布林带，均线 ±2σ 通道｜**ATR** 真实波幅均值，用来定止损/止盈距离。
+> **Glossary**: **EMA** exponential moving average (recent prices weighted higher) | **MACD** fast-minus-slow MA, for momentum turns | **RSI** relative strength 0–100, >70 overbought <30 oversold | **Stochastic** where the close sits in the recent high-low range | **ADX** trend strength (not direction) | **VWAP** volume-weighted average price (institutional cost line) | **BB** Bollinger Bands, MA ±2σ channel | **ATR** average true range, used to size stops/targets.
 
-**策略 ① 趋势**（实盘 HOUR_1 权重）：
+**Strategy ① Trend** (live HOUR_1 weights):
 
-| 因子 | 含义 | 满分条件 | 权重 |
+| Factor | Meaning | Full-score condition | Weight |
 |------|------|---------|:--:|
-| trend 趋势 | EMA9 > EMA21 且斜率向上 | 金叉+向上 100 / 走平 60 / 死叉 0 | **18** |
-| momentum 动量 | MACD 金叉 + RSI 40–70 + Stochastic 20–80 | 三者齐全 100 / 部分 70/40 | **18** |
-| volume 量能 | 当根量 ÷ 20 根均量 | ≥1.5× → 100 / ≥1.0× → 50 | **14** |
-| pattern 形态 | 突破 20 根新高 / 布林下轨反弹 | 突破 100 / 下轨反弹 90 / 收红 40 | **14** |
-| adx 趋势强度 | ADX 值 | ≥25 → 100 / ≥20 → 70 / ≥15 → 30 | **13** |
-| vwap | 收盘价 vs 20 周期滚动 VWAP | 高于 +0.5% → 100 / 持平 60 | **13** |
+| trend | EMA9 > EMA21 with upward slope | cross+up 100 / flat 60 / death cross 0 | **18** |
+| momentum | MACD cross + RSI 40–70 + Stochastic 20–80 | all three 100 / partial 70/40 | **18** |
+| volume | current bar vol ÷ 20-bar avg | ≥1.5× → 100 / ≥1.0× → 50 | **14** |
+| pattern | break of 20-bar high / BB lower-band bounce | breakout 100 / lower-band bounce 90 / green close 40 | **14** |
+| adx | ADX value | ≥25 → 100 / ≥20 → 70 / ≥15 → 30 | **13** |
+| vwap | close vs 20-period rolling VWAP | above +0.5% → 100 / flat 60 | **13** |
 
-**策略 ② 动量突破**（更挑，专抓爆发性突破）：
+**Strategy ② Momentum breakout** (pickier, for explosive breakouts):
 
-| 因子 | 满分条件 | 权重 |
+| Factor | Full-score condition | Weight |
 |------|---------|:--:|
-| breakout 突破 | 收盘超 20 根高点 ≥ 0.3×ATR | **30** |
-| volume 量能 | ≥ 2× 均量 | **25** |
-| adx_trend | ADX ≥ 30（真趋势非震荡） | **20** |
-| structure 结构 | EMA9 > EMA21 > EMA50 完全多头排列 | **15** |
+| breakout | close clears the 20-bar high by ≥ 0.3×ATR | **30** |
+| volume | ≥ 2× average | **25** |
+| adx_trend | ADX ≥ 30 (real trend, not chop) | **20** |
+| structure | EMA9 > EMA21 > EMA50 fully bullish stack | **15** |
 
-**策略 ③ 均值回归**（默认关）：oversold 超卖（RSI<25 + 跌破布林下轨）25 / reversal 反转（锤子线、收复下轨）25 / volume 20 / non_trend（ADX<25 才有效）20。
+**Strategy ③ Mean reversion** (off by default): oversold (RSI<25 + below BB lower band) 25 / reversal (hammer, reclaim lower band) 25 / volume 20 / non_trend (only valid when ADX<25) 20.
 
-**策略 ④ 形态识别**（默认关）：pattern_quality 形态质量 30 / trigger 是否突破关键位 25 / volume 20 / trend_alignment 15。可选 `pattern_vision`（看图确认，需支持视觉的多模态模型；当前纯 DeepSeek 下不生效），也默认关。
+**Strategy ④ Pattern recognition** (off by default): pattern_quality 30 / trigger (broke a key level?) 25 / volume 20 / trend_alignment 15. Optional `pattern_vision` (chart confirmation, needs a vision-capable multimodal model; inert under plain DeepSeek) is also off by default.
 
 </details>
 
-### 第 2 步：候选漏斗
+### Step 2: The candidate funnel
 
-打分 ≥ 70 的信号按分数从高到低，逐一过闸——**任何一道不过就跳过该股票**：
+Signals scoring ≥ 70 go through the gates high-to-low — **fail any gate and the name is skipped**:
 
-| # | 闸 | 规则 | 模块 |
+| # | Gate | Rule | Module |
 |---|----|------|------|
-| 1 | 交易时段 | 09:45–15:30 ET；周五 14:00 后不开新仓（防周末跳空） | `kill_switch` |
-| 2 | 市场环境 | SPY 同时跌破 50 & 200 日均线 = BEAR → 禁开新仓 | `regime` |
-| 3 | 自适应黑名单 | 近期连亏股在观察期内 → 跳过 | `blacklist` |
-| 4 | 熔断 | 日内回撤 / 账户回撤停盘 / 3 连亏 → 禁开 | `kill_switch` |
-| 5 | 多周期确认 | 日线 EMA20 > EMA50（HOUR_1 模式必查） | `indicators` |
-| 6 | 隔夜跳空 | \|跳空\| > 4% → 拒（不追高、不接刀） | `indicators` |
-| 7 | 财报屏蔽 | 距下次财报 ≤ 2 天 → 拒 | `earnings` |
-| 8 | 买卖价差 | bid-ask spread > 0.5% → 拒（流动性差） | `moo_client` |
-| 9 | AI 复核 | DeepSeek + Tavily 查「指标看不到的雷」；**建议模式不拦单**，下单后才问以省延迟 | `ai_validator` |
-| 10 | 风控闸 | 24h 止损冷却 / 持仓数上限 / 现金 / 预算上限 | `risk_manager` |
-| 11 | 每轮新股上限 | 每轮最多 2 只新股，加仓老仓不占额度 | `main` |
+| 1 | Session | 09:45–15:30 ET; no new entries after 14:00 Fri (weekend-gap guard) | `kill_switch` |
+| 2 | Market regime | SPY below both its 50 & 200-day MA = BEAR → no new entries | `regime` |
+| 3 | Adaptive blacklist | Recent repeat-loser in its probation window → skip | `blacklist` |
+| 4 | Circuit breaker | intraday drawdown / account drawdown halt / 3-loss streak → no entries | `kill_switch` |
+| 5 | Multi-timeframe | daily EMA20 > EMA50 (required in HOUR_1 mode) | `indicators` |
+| 6 | Overnight gap | \|gap\| > 4% → reject (don't chase, don't catch knives) | `indicators` |
+| 7 | Earnings screen | ≤ 2 days to next earnings → reject | `earnings` |
+| 8 | Bid-ask spread | spread > 0.5% → reject (poor liquidity) | `moo_client` |
+| 9 | AI review | DeepSeek + Tavily check for "landmines the indicators miss"; **advisory, doesn't block**, and asks after ordering to save latency | `ai_validator` |
+| 10 | Risk gate | 24h stop cooldown / max positions / cash / budget cap | `risk_manager` |
+| 11 | Per-scan new-name cap | at most 2 new names per scan; adding to old positions doesn't count | `main` |
 
-### 第 3 步：仓位计算
+### Step 3: Position sizing
 
-`risk_manager.calc_position_size` — 多层独立相乘的「按风险定股数」：
+`risk_manager.calc_position_size` — a layered "shares by risk," each factor multiplied independently:
 
 ```text
-基础风险金额 = 可用资金 × RISK_PER_TRADE(5%)
-   × 连亏降温     （2 连亏 0.75× / 3 连亏 0.5×）
-   × 账户DD减仓   （账户回撤 ≥ 10% → 0.5×）
-   × 自适应仓位   （近 30 笔 Sortino → 0.5× ~ 1.25×）
-   × conviction   （满分信号 1.0）
-   × 顺势加压     （仅「强牛 + 低 VIX」→ 1.4×）
+base risk $ = available capital × RISK_PER_TRADE(5%)
+   × loss-streak cooldown   (2 losses 0.75× / 3 losses 0.5×)
+   × account-DD de-risk     (account drawdown ≥ 10% → 0.5×)
+   × adaptive sizing        (Sortino of last 30 → 0.5× ~ 1.25×)
+   × conviction             (full-score signal 1.0)
+   × with-trend boost       (only "strong bull + low VIX" → 1.4×)
 
-按风险股数 = 风险金额 ÷ (入场价 − 止损价)
-按上限股数 = 资金 × MAX_POSITION_PCT(40%) ÷ 入场价      ← 单股集中度上限
-最终股数   = min(两者)，再按 VIX 调（>25 减半，>35 砍到 1/4）
+shares by risk  = risk $ ÷ (entry − stop)
+shares by cap   = capital × MAX_POSITION_PCT(40%) ÷ entry   ← single-name concentration cap
+final shares    = min(the two), then adjusted by VIX (>25 halve, >35 quarter)
 ```
 
-- **资金口径**：用你分配的预算 `ACCOUNT_USD`，但绝不超过实时账户净值。预算可在 Web 面板改，下一轮扫描生效。
-- **单股上限 40% 才是防跳空的真护栏**——止损挡不住跳空（价格直接跳过止损位），所以靠「不押太大」而非「盯得更勤」。
+- **Capital basis**: uses your allotted budget `ACCOUNT_USD`, but never exceeds live account equity. Budget is editable in the web panel and takes effect on the next scan.
+- **The 40% single-name cap is the real gap guard** — stops can't stop a gap (price jumps straight past the stop), so you protect yourself by "not betting too big," not by "watching more closely."
 
-### 第 4 步：退出管理
+### Step 4: Exit management
 
-止损/止盈全部按 ATR 缩放（`executor.py` 管理）：
+Stops/targets all scale by ATR (managed in `executor.py`):
 
-| 退出方式 | 触发 | 状态 |
+| Exit | Trigger | Status |
 |---------|------|:--:|
-| 软止损 SL | 价 ≤ 入场 − 3.5×ATR | ✅ 常开 |
-| 止盈 TP | 价 ≥ 入场 + 10×ATR | ✅ 常开 |
-| 保本移动止损 | 浮盈 +1R → 止损上移到入场价（赢单不再变亏单） | ✅ |
-| 快速止损环 | 每 60 秒单查软止损 + 保本（补模拟盘无原生 STOP 单的延迟） | ✅ |
-| 最长持仓 | 满 7 个交易日强平 | ✅ 常开 |
-| 跳空哨兵 | 持仓股财报 ≤1 天 / 盘前 AI 实锤利空 → 开盘清仓 | ✅ |
-| 黑名单 / 超额平仓 | 持仓股进黑名单强平；持仓数超限平掉最差的 | ✅ 常开 |
-| 分批止盈 scale-out | +3R / +6R 各卖 1/3 | ⚠️ 故意空转（回测证明会杀掉肥尾利润） |
-| 智能退出 / 停滞退出 | 盘中 AI 利空锁盈 / 几天不动腾资金 | ❌ 默认关（未过验证闸门） |
+| Soft stop (SL) | price ≤ entry − 3.5×ATR | ✅ always on |
+| Take profit (TP) | price ≥ entry + 10×ATR | ✅ always on |
+| Breakeven trailing stop | at +1R the stop moves to entry (a winner never becomes a loser) | ✅ |
+| Fast-stop loop | every 60s a single check of soft stop + breakeven (covers paper's lack of native STOP orders) | ✅ |
+| Max hold | force-close after 7 trading days | ✅ always on |
+| Gap sentinel | held name with earnings ≤1 day / pre-market AI hard bad news → liquidate at the open | ✅ |
+| Blacklist / over-limit close | force-close a held name that hits the blacklist; trim the worst when over the position limit | ✅ always on |
+| Scale-out | sell 1/3 at +3R and +6R | ⚠️ intentionally idle (backtests show it kills fat-tail profit) |
+| Smart / stall exit | intraday AI locks profit on bad news / free capital after days of no move | ❌ off by default (hasn't cleared the validation gate) |
 
-> **手动仓位接管**：你自己在 券商 App 买的票，对账时会被「收养」并标记 `user_managed`（对所有自动退出免疫）。系统评估后：正常则交给 bot 管止损；高风险则发 Telegram 审批让你决定。
+> **Manual position adoption**: a name you bought yourself in the broker app is "adopted" on reconciliation and tagged `user_managed` (immune to all automatic exits). After the system assesses it: normal → hand stop management to the bot; high-risk → send a Telegram approval to let you decide.
 
 ---
 
-## 🛡️ 风控硬约束
+## 🛡️ Hard risk constraints
 
-AI 和优化器**都不能**绕过这些：
+Neither the AI nor the optimizer **can** bypass these:
 
-| 规则 | 阈值 | 动作 |
+| Rule | Threshold | Action |
 |------|------|------|
-| 单笔风险 | 5% | 按风险定股数 |
-| 单股仓位 | 40% | 股数上限 |
-| 同时持仓数 | 5（随预算缩放） | 拒开新仓 |
-| 日内回撤 | −6% | 当日停盘 |
-| 账户回撤 ≥ 10% | 半仓 | 所有新仓 0.5× |
-| 账户回撤 ≥ 18% | 停盘 | 7 天后自动解除 |
-| 3 连亏 | 连续 3 天净亏 | 暂停开仓 |
-| 止损冷却 | 同一股 24h | 不再买入 |
-| 财报屏蔽 | ≤ 2 天 | 拒开新仓 |
-| Regime BEAR | SPY 破位 | 禁开新仓 |
-| VIX 调仓 | >25 / >35 | 减半 / 砍 1/4 |
+| Per-trade risk | 5% | shares by risk |
+| Single-name position | 40% | shares cap |
+| Concurrent positions | 5 (scales with budget) | reject new entries |
+| Intraday drawdown | −6% | halt for the day |
+| Account drawdown ≥ 10% | half size | all new positions 0.5× |
+| Account drawdown ≥ 18% | halt | auto-lifts after 7 days |
+| 3-loss streak | 3 net-loss days in a row | pause entries |
+| Stop cooldown | same name for 24h | no re-buy |
+| Earnings screen | ≤ 2 days | reject new entries |
+| Regime BEAR | SPY broken down | no new entries |
+| VIX sizing | >25 / >35 | halve / quarter |
 
 ---
 
-## 🤖 AI 自治系统
+## 🤖 AI autonomy
 
-> 目标：95% 自动化，你只看 Telegram。
+> Goal: 95% automation — you just watch Telegram.
 
-1. **自适应仓位**（`adaptive_sizing.py`）— 读近 30 笔已平仓交易，按交易日级 Sortino 调风险倍数：热手 1.25×、常态 1.0×、冷手 0.75×、连败 0.5×。
-2. **自适应黑名单**（`blacklist.py`）— 连亏股进观察期（门槛随整体 Sortino 浮动）；恢复立即移除，持续差则延长复评（最长 90 天）。
-3. **每周动态选股**（`universe.py`）— 从流动性池按 6-1 动量选 top-15 重建 watchlist，走样本外回放避免幸存者偏差，每次变动 Telegram 通知。
-4. **AI 优化器 + Autopilot**（`optimizer_ai.py` / `autopilot.py`）— 每周复盘真实成交 → AI 提小幅参数建议 → 每条都在诚实引擎上双窗口回测（180d + 360d）→ 只有**击败基线且不恶化回撤**才进队列。护栏内自动应用 + 退化自动回滚；越界必须人工批。
-5. **每日增量 sweep + 每周全网格**（`cron/optimize_and_apply.sh`，crontab 驱动）— 每天补昨日数据做邻域校验，每周休市日跑全网格 sweep。
-6. **每月 Optuna 调参**（`optimizer.py`）— TPE 贝叶斯 + 样本外 K 折，只发 Telegram 建议，**从不自动改 `.env`**。
-7. **Sandbox 差分对账**（`sandbox.py` + `scripts/sandbox_vs_backtest.py`）— 独立模拟引擎每周与回测引擎做**交易级**对账，分歧超容差才报警——防止两套引擎悄悄漂移。
-8. **健康哨兵**（`health_check.py` / `autopilot.health_check`）— API 额度、订阅、扫描停摆、对账漂移……只在出问题时通知（边沿触发，不刷屏）。
-9. **错过任务自动补**（`cron_state.py`）— 关机期间错过的定时任务，开机自动补跑，多次错过只补一次。
+1. **Adaptive sizing** (`adaptive_sizing.py`) — reads the last 30 closed trades and scales the risk multiplier by trading-day Sortino: hot hand 1.25×, normal 1.0×, cold 0.75×, losing streak 0.5×.
+2. **Adaptive blacklist** (`blacklist.py`) — repeat-loser names enter a probation window (threshold floats with overall Sortino); removed immediately on recovery, extended (up to 90 days) if they keep underperforming.
+3. **Weekly dynamic universe** (`universe.py`) — picks the top-15 by 6-1 momentum from a liquidity pool to rebuild the watchlist, with out-of-sample replay to avoid survivorship bias, and a Telegram note on every change.
+4. **AI optimizer + Autopilot** (`optimizer_ai.py` / `autopilot.py`) — weekly review of real fills → the AI proposes small parameter tweaks → each is two-window backtested on the honest engine (180d + 360d) → only those that **beat the baseline without worsening drawdown** enter the queue. In-guardrail ones auto-apply + auto-roll-back on regression; out-of-bounds ones need human approval.
+5. **Daily incremental sweep + weekly full grid** (`cron/optimize_and_apply.sh`, crontab-driven) — each day back-fills yesterday's data for a neighborhood check; each week runs a full-grid sweep on the market's day off.
+6. **Monthly Optuna tuning** (`optimizer.py`) — TPE Bayesian + out-of-sample K-fold, Telegram suggestions only, **never edits `.env` automatically**.
+7. **Sandbox differential reconciliation** (`sandbox.py` + `scripts/sandbox_vs_backtest.py`) — an independent simulation engine reconciles against the backtest engine at the **trade level** weekly, alarming only when divergence exceeds tolerance — so the two engines can't silently drift.
+8. **Health sentinel** (`health_check.py` / `autopilot.health_check`) — API quota, subscriptions, scan stalls, reconciliation drift… notifies only on trouble (edge-triggered, no spam).
+9. **Missed-job back-fill** (`cron_state.py`) — cron jobs missed while the machine was off are back-filled on boot; multiple misses back-fill only once.
 
-### 审批闸（变更的唯一入口）
+### The approval gate (the only entry point for changes)
 
-任何**非静默的改动**（参数变更、手动仓位接管、越界的优化器建议）都必须经过审批队列（`approvals.py`）才会执行。审批可在 Web 面板或 Telegram 按钮处理，批准后下一轮扫描生效。
+Any **non-silent change** (parameter change, manual position adoption, an out-of-bounds optimizer suggestion) must pass the approval queue (`approvals.py`) before it takes effect. Approvals are handled in the web panel or via Telegram buttons; once approved they take effect on the next scan.
 
-> 边界清晰：**bot 自己的单子 bot 自己决定**（从不问你）；只有你手动下的单、或越界的参数变更才会触发审批。
+> Clear boundary: **the bot decides on its own orders** (never asks you); only your manual orders, or an out-of-bounds parameter change, trigger an approval.
 
 ---
 
-## 🧪 回测与调参
+## 🧪 Backtesting & tuning
 
 ```bash
-# 诚实账户级回测（时间步进 portfolio simulation，与实盘同一套行为）
+# honest account-level backtest (time-stepped portfolio simulation, same behavior as live)
 python -m src.backtest --days 180
-python -m src.backtest_v3          # v3 引擎（含 scale-out / breakeven / 动态池样本外）
+python -m src.backtest_v3          # v3 engine (with scale-out / breakeven / OOS dynamic universe)
 
-# Optuna 调参（样本外 K 折）
+# Optuna tuning (out-of-sample K-fold)
 python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 ```
 
-输出包含：Win rate / Profit factor / Expectancy、Sharpe / Sortino / Calmar / MAR / Ulcer、Max DD / 水下天数、**Monte Carlo 1000 次 P(profitable)**、月度 PnL。
+Output includes: Win rate / Profit factor / Expectancy, Sharpe / Sortino / Calmar / MAR / Ulcer, Max DD / underwater days, **Monte Carlo ×1000 P(profitable)**, monthly PnL.
 
 > [!NOTE]
-> **诚实预期**：不会月月赚。年化 ~15–25% + 最大回撤 ~10% 是真实区间。回测里的各项 $/day 数字是特定窗口的相对结论，不是承诺；市场结构变化（regime change）会让任何策略亏钱。
+> **Honest expectations**: it won't win every month. ~15–25% annualized with ~10% max drawdown is the realistic range. The $/day figures in the backtest are relative conclusions for a specific window, not a promise; a regime change can make any strategy lose money.
 
 ---
 
-## ⏰ 自动定时任务
+## ⏰ Scheduled jobs
 
 <details>
-<summary><b>展开完整任务表</b></summary>
+<summary><b>Expand the full job table</b></summary>
 
-**调度器内置任务**（APScheduler，关机错过自动补跑）：
+**Scheduler built-ins** (APScheduler, missed-while-off jobs auto-back-fill):
 
-| 时间 | 任务 | 模块 |
+| Time | Job | Module |
 |------|------|------|
-| 每 30 分钟（交易时段） | 扫描信号 + 管仓 + 下单 | `run_loop` |
-| 每 5 分钟（盘中持仓时） | 管仓 tick（止损/止盈/最长持仓） | `_manage_tick` |
-| 每 60 秒（盘中持仓时） | 快速止损环（仅软止损 + 保本） | `_fast_stop_tick` |
-| 工作日 08:30 ET | 盘前 NTP 校时 + 假日检查 | `_preopen_clock_check_job` |
-| 工作日 09:00 ET | 盘前跳空哨兵分析 | `_premarket_gap_sentinel_job` |
-| 工作日 09:31 ET | 开盘清仓被标记的跳空风险股 | `_open_gap_exit_job` |
-| 工作日 16:45 ET | 复利预算结算（启用时） | `_daily_auto_budget_job` |
-| 工作日 17:30 ET | Autopilot 健康守护 | `_watchdog_job` |
-| 工作日 23:00 ET | 黑名单复评 | `_daily_blacklist_review_job` |
-| 周一 20:00 KL | Autopilot 周复盘（建议→回测→护栏内自动应用） | `_weekly_autopilot_job` |
-| 周一 20:05 KL | 动态选股刷新 | `_universe_refresh_job` |
-| 周一 20:10 KL | 90 天回测健康检查 | `_weekly_backtest_validation_job` |
-| 周一 20:15 KL | 真实成交自我复盘 | `_weekly_self_review_job` |
-| 周一 20:25 KL | sandbox ↔ 回测交易级差分 | `_weekly_sandbox_diff_job` |
-| 每月 1 号 03:00 ET | Optuna 调参（仅建议） | `_monthly_optuna_job` |
-| 每月 1 号 03:30 ET | TP/SL 杠杆漂移复查（仅建议） | `_monthly_lever_recheck_job` |
-| 每 5 分钟 | Telegram 审批同步 | `_tg_sync` |
-| 每 30 分钟 + 启动时 | API / 订阅健康检查 | `_api_health_job` |
-| 启动时 | 错过任务自动补跑 | `cron_state` |
+| every 30 min (market hours) | scan signals + manage + order | `run_loop` |
+| every 5 min (intraday, holding) | manage tick (stop/target/max-hold) | `_manage_tick` |
+| every 60s (intraday, holding) | fast-stop loop (soft stop + breakeven only) | `_fast_stop_tick` |
+| weekdays 08:30 ET | pre-open NTP sync + holiday check | `_preopen_clock_check_job` |
+| weekdays 09:00 ET | pre-market gap-sentinel analysis | `_premarket_gap_sentinel_job` |
+| weekdays 09:31 ET | liquidate flagged gap-risk names at the open | `_open_gap_exit_job` |
+| weekdays 16:45 ET | compounding budget settlement (when enabled) | `_daily_auto_budget_job` |
+| weekdays 17:30 ET | Autopilot health watchdog | `_watchdog_job` |
+| weekdays 23:00 ET | blacklist review | `_daily_blacklist_review_job` |
+| Mon 20:00 KL | Autopilot weekly review (suggest→backtest→auto-apply in-guardrail) | `_weekly_autopilot_job` |
+| Mon 20:05 KL | dynamic-universe refresh | `_universe_refresh_job` |
+| Mon 20:10 KL | 90-day backtest health check | `_weekly_backtest_validation_job` |
+| Mon 20:15 KL | real-fill self-review | `_weekly_self_review_job` |
+| Mon 20:25 KL | sandbox ↔ backtest trade-level diff | `_weekly_sandbox_diff_job` |
+| 1st of month 03:00 ET | Optuna tuning (suggestions only) | `_monthly_optuna_job` |
+| 1st of month 03:30 ET | TP/SL leverage-drift recheck (suggestions only) | `_monthly_lever_recheck_job` |
+| every 5 min | Telegram approval sync | `_tg_sync` |
+| every 30 min + on start | API / subscription health check | `_api_health_job` |
+| on start | missed-job back-fill | `cron_state` |
 
-**系统 crontab**（由 `setup-macmini.command` 安装，独立于调度器）：
+**System crontab** (installed by `setup-macmini.command`, independent of the scheduler):
 
-| 时间（MYT） | 任务 |
+| Time (MYT) | Job |
 |------------|------|
-| 周一 07:00（美股休市时段） | 每周全网格 quick sweep 优化 |
-| 周二至周六 09:00 | 每日增量优化（补昨日数据 + 邻域校验） |
+| Mon 07:00 (US market closed) | weekly full-grid quick-sweep optimization |
+| Tue–Sat 09:00 | daily incremental optimization (back-fill yesterday + neighborhood check) |
 
-> 周一批任务固定 Asia/Kuala_Lumpur 时区（无夏令时），美国 DST 切换不会挪动墙钟时间。
+> The Monday batch is pinned to Asia/Kuala_Lumpur (no DST), so US DST changes don't shift the wall-clock time.
 
 </details>
 
 ---
 
-## 🔧 配置速览
+## 🔧 Config at a glance
 
-全部配置在 `.env`（模板 [`.env.example`](.env.example) 每项含注释），常用项可在 Web 面板热更新。
+All config lives in `.env` (the template [`.env.example`](.env.example) documents every key); common ones are hot-editable in the web panel.
 
 <details>
-<summary><b>默认开启的关键功能</b></summary>
+<summary><b>Key features on by default</b></summary>
 
-| 配置 | 值 | 说明 |
+| Setting | Value | Notes |
 |------|----|------|
-| `MOO_TRADE_ENV` | `SIMULATE` | 模拟盘。切 REAL 须在 Web 设置里做（2 次确认 + 交易密码 + 空仓才允许） |
-| `GAP_SENTINEL_ENABLED` | `true` | 跳空哨兵：财报临近或实锤利空 → 开盘清仓 |
-| `USE_BREAKEVEN_STOP` | `true` | +1R 保本移动止损 |
-| `REAL_USE_SOFT_EXITS` | `true` | REAL 也用软退出，和回测口径一致 |
-| `DYNAMIC_UNIVERSE_ENABLED` | `true` | 每周按 6-1 动量重建 watchlist |
-| `UNIVERSE_TOP_N` | `15` | 选 15 只（10/15/20 平台验证：15 最优） |
-| `AUTO_APPLY_PARAMS` | `true` | 过双窗口回测且在护栏内的建议自动应用 + 退化自动回滚 |
-| `REGIME_BULL_MULT` | `1.4` | 顺势加压（仅强牛 + 低 VIX） |
-| `HEALTH_CHECK_ENABLED` | `true` | 每 30min 探测 API/订阅，掉了边沿触发 Telegram |
-| `FAST_STOP_SECONDS` | `60` | 快速止损环间隔 |
+| `MOO_TRADE_ENV` | `SIMULATE` | Paper. Switching to REAL must be done in the web Settings (double confirm + trade password + flat positions only) |
+| `GAP_SENTINEL_ENABLED` | `true` | Gap sentinel: earnings near or hard bad news → liquidate at the open |
+| `USE_BREAKEVEN_STOP` | `true` | +1R breakeven trailing stop |
+| `REAL_USE_SOFT_EXITS` | `true` | REAL also uses soft exits, matching backtest parity |
+| `DYNAMIC_UNIVERSE_ENABLED` | `true` | Rebuild the watchlist weekly by 6-1 momentum |
+| `UNIVERSE_TOP_N` | `15` | Pick 15 (10/15/20 plateau tested: 15 is best) |
+| `AUTO_APPLY_PARAMS` | `true` | Suggestions that pass the two-window backtest and are in-guardrail auto-apply + auto-roll-back on regression |
+| `REGIME_BULL_MULT` | `1.4` | With-trend boost (only strong bull + low VIX) |
+| `HEALTH_CHECK_ENABLED` | `true` | Probe API/subscription every 30 min, edge-triggered Telegram if it drops |
+| `FAST_STOP_SECONDS` | `60` | Fast-stop loop interval |
 
 </details>
 
 <details>
-<summary><b>默认关闭的功能（以及为什么关）</b></summary>
+<summary><b>Features off by default (and why)</b></summary>
 
-| 配置 | 关闭原因 |
+| Setting | Why it's off |
 |------|---------|
-| `AI_VETO_BLOCKING` | **不是怕 AI，是 parity**：诚实回测没有 AI 否决层，若实盘让 AI 拦单，成交就和回测不是同一批了。AI 照跑、照记录、显示在买入卡，但不拦单 |
-| `MR_ENABLED` | 均值回归在当前偏多头股池里净亏（combo sweep 约 −$4/天）。留着等转震荡市 |
-| `PATTERN_ENABLED` | 形态策略回测不提升收益且 maxDD 翻倍，过不了「不恶化回撤」闸门。无 edge 不上 |
-| `PATTERN_VISION_ENABLED` | 依赖形态策略；且 HOUR_1 历史数据凑不出第二个独立回测窗口 |
-| `SMART_EXIT_ENABLED` | 盘中 AI/技术智能退出，未验证；隔夜风险已由哨兵覆盖 |
-| `SENTIMENT_SCORING_ENABLED` | 券商 App 式看好/看空打分，纯建议不改下单，默认关省 API 调用 |
-| `OPTIONS_FLOW_ENABLED` | 期权异动只被 smart_exit / sentiment 消费（都关着），单独开无意义 |
-| `STALL_OUT_ENABLED` | 停滞退出。验证引擎没有它，且 max-hold 桶净赚；实盘仅有的停滞退出全亏 |
-| `SMART_REGIME_ENABLED` | 滞回平滑的 regime 标签（500 天回测：翻转 −89%）。默认关保持与回测逐字节一致 |
-| `AUTO_BUDGET_ENABLED` | 复利预算：已实现盈利自动滚入预算（护栏：seed×0.5–5、净值封顶、滞回步长） |
-| `CASH_YIELD_*` | 熊市闲钱买国债 ETF（SGOV）生息，转牛自动卖回现金 |
-| `INVERSE_SLEEVE_ENABLED` | 反向 ETF 对冲（现金账户不能做空）。**唯一会以新方式亏钱的功能**，必须先跑专属回测过双窗闸门 |
-| `USE_SCALE_OUT` | 分批止盈**故意空转**：回测证明压低梯子让它真触发反而降 $/天（过早落袋杀肥尾） |
+| `AI_VETO_BLOCKING` | **Not fear of the AI — it's parity**: the honest backtest has no AI-veto layer, so if live let the AI block orders, fills wouldn't be the same set as the backtest. The AI still runs, records, and shows on the buy card, but doesn't block |
+| `MR_ENABLED` | Mean reversion nets a loss in the current bull-leaning universe (combo sweep ≈ −$4/day). Kept for when the market turns choppy |
+| `PATTERN_ENABLED` | The pattern strategy doesn't raise returns in backtests and doubles max DD — fails the "don't worsen drawdown" gate. No edge, no ship |
+| `PATTERN_VISION_ENABLED` | Depends on the pattern strategy; and HOUR_1 history can't produce a second independent backtest window |
+| `SMART_EXIT_ENABLED` | Intraday AI/technical smart exit, unvalidated; overnight risk is already covered by the sentinel |
+| `SENTIMENT_SCORING_ENABLED` | Broker-app-style bull/bear scoring, purely advisory and doesn't change orders; off by default to save API calls |
+| `OPTIONS_FLOW_ENABLED` | Options flow is only consumed by smart_exit / sentiment (both off), so enabling it alone is pointless |
+| `STALL_OUT_ENABLED` | Stall exit. The validation engine doesn't have it, and the max-hold bucket nets a profit; the only stall exits in live all lost |
+| `SMART_REGIME_ENABLED` | Hysteresis-smoothed regime label (500-day backtest: flips −89%). Off to stay byte-for-byte identical to the backtest |
+| `AUTO_BUDGET_ENABLED` | Compounding budget: realized profit auto-rolls into the budget (guardrails: seed×0.5–5, equity cap, hysteresis step) |
+| `CASH_YIELD_*` | Park bear-market idle cash in a T-bill ETF (SGOV) for yield, sold back to cash when the market turns bullish |
+| `INVERSE_SLEEVE_ENABLED` | Inverse-ETF hedge (a cash account can't short). **The only feature that can lose money in a new way** — must clear its own two-window backtest gate first |
+| `USE_SCALE_OUT` | Scale-out is **intentionally idle**: backtests show a lower ladder that actually triggers reduces $/day (banking too early kills fat tails) |
 
-**已删除**（不再是开关）：ML/XGBoost 子系统（AUC≈0.5 证明无效）；DAILY 交易周期（HOUR_1 回测完胜，DAILY 数据仍用于多周期确认/regime）。
+**Removed** (no longer switches): the ML/XGBoost subsystem (AUC≈0.5 proved it useless); the DAILY trading timeframe (HOUR_1 backtests won decisively; DAILY data is still used for multi-timeframe confirmation / regime).
 
-> **AI 引擎**：全系统统一用 **DeepSeek**（`DEEPSEEK_API_KEY`），入场复核走单引擎。Gemini 已从可选引擎中移除；看图形态确认（需视觉模型）随之停用。
+> **AI engine**: the whole system uses **DeepSeek** (`DEEPSEEK_API_KEY`); entry review runs through a single engine. Gemini was removed from the optional engines; chart-pattern confirmation (which needs a vision model) was retired with it.
 
 </details>
 
 <details>
-<summary><b>关键数值（Optuna / 回测调出）</b></summary>
+<summary><b>Key numbers (Optuna / backtest-tuned)</b></summary>
 
-| 参数 | 值 | 参数 | 值 |
+| Param | Value | Param | Value |
 |------|----|------|----|
 | `ENTRY_SCORE_THRESHOLD` | 70 | `TP_ATR_MULT` | 10.0 |
 | `SCAN_INTERVAL_MIN` | 30 | `SL_ATR_MULT` | 3.5 |
@@ -570,186 +575,186 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 
 ---
 
-## 📁 项目结构
+## 📁 Project structure
 
 <details>
-<summary><b>展开目录树</b></summary>
+<summary><b>Expand the directory tree</b></summary>
 
 ```text
 moo-trader/
-├── src/                              # 交易核心
-│   ├── main.py                       # 入口：扫描 + 调度 + 错过任务补跑
-│   ├── config.py                     # .env → settings（功能开关 + 默认值）
-│   ├── moo_client.py              # OpenD 封装（行情 / 下单 / 快照）
+├── src/                              # trading core
+│   ├── main.py                       # entry: scan + schedule + missed-job back-fill
+│   ├── config.py                     # .env → settings (feature flags + defaults)
+│   ├── moo_client.py                 # OpenD wrapper (quotes / orders / snapshots)
 │   │
-│   ├── indicators.py                 # 策略① 趋势（6 因子）+ MTF/gap 辅助
-│   ├── strategy_momentum.py          # 策略② 动量突破
-│   ├── strategy_mr.py                # 策略③ 均值回归（默认关）
-│   ├── strategy_pattern.py           # 策略④ 形态识别（默认关）
-│   ├── pattern_detect.py             # 纯 numpy 几何/K 线形态检测
+│   ├── indicators.py                 # strategy ① trend (6 factors) + MTF/gap helpers
+│   ├── strategy_momentum.py          # strategy ② momentum breakout
+│   ├── strategy_mr.py                # strategy ③ mean reversion (off by default)
+│   ├── strategy_pattern.py           # strategy ④ pattern recognition (off by default)
+│   ├── pattern_detect.py             # pure-numpy geometry / candlestick detection
 │   │
-│   ├── ai_validator.py               # DeepSeek+Tavily：买入复核 / 跳空 / 情绪
-│   ├── regime.py                     # SPY 50/200MA 市场环境（VIX 感知）
-│   ├── earnings.py / gap_sentinel.py # 财报屏蔽 / 跳空哨兵
+│   ├── ai_validator.py               # DeepSeek+Tavily: buy review / gap / sentiment
+│   ├── regime.py                     # SPY 50/200MA market regime (VIX-aware)
+│   ├── earnings.py / gap_sentinel.py # earnings screen / gap sentinel
 │   │
-│   ├── risk_manager.py               # 仓位计算 + 硬风控 + DD 断路器
-│   ├── adaptive_sizing.py            # 自适应风险倍数
-│   ├── blacklist.py / kill_switch.py # 黑名单 / 统一熔断
-│   ├── executor.py                   # 下单 + 软退出 + 保本 + 最长持仓
-│   ├── reconcile.py                  # 券商 vs 本地对账（孤儿仓收养）
+│   ├── risk_manager.py               # sizing + hard risk control + DD breaker
+│   ├── adaptive_sizing.py            # adaptive risk multiplier
+│   ├── blacklist.py / kill_switch.py # blacklist / unified circuit breaker
+│   ├── executor.py                   # order + soft exits + breakeven + max hold
+│   ├── reconcile.py                  # broker vs local reconciliation (orphan adoption)
 │   │
-│   ├── universe.py                   # 每周动态选股
-│   ├── backtest.py / backtest_v3.py  # 诚实账户级回测引擎
-│   ├── sandbox.py                    # 独立模拟引擎（差分基准）
-│   ├── optimizer.py / optimizer_ai.py# Optuna / AI 优化器
-│   ├── autopilot.py / self_review.py # 周复盘 + 健康守护
-│   ├── auto_budget.py                # 复利预算（可选）
-│   ├── cash_yield.py                 # 熊市现金生息（可选）
-│   ├── inverse_sleeve.py             # 反向 ETF 对冲（可选，未验证默认关）
+│   ├── universe.py                   # weekly dynamic universe
+│   ├── backtest.py / backtest_v3.py  # honest account-level backtest engines
+│   ├── sandbox.py                    # independent simulation engine (diff baseline)
+│   ├── optimizer.py / optimizer_ai.py# Optuna / AI optimizer
+│   ├── autopilot.py / self_review.py # weekly review + health watchdog
+│   ├── auto_budget.py                # compounding budget (optional)
+│   ├── cash_yield.py                 # bear-market cash yield (optional)
+│   ├── inverse_sleeve.py             # inverse-ETF hedge (optional, unvalidated, off)
 │   │
-│   ├── approvals.py / tg_approvals.py# 审批队列 + Telegram 同步
-│   ├── notifier.py / audit.py        # 推送 / 决策审计
-│   ├── db.py / runtime_config.py     # SQLite / 热参数覆盖
-│   ├── cron_state.py / clock.py      # 错过任务补跑 / NY 时间 + NYSE 日历
+│   ├── approvals.py / tg_approvals.py# approval queue + Telegram sync
+│   ├── notifier.py / audit.py        # push / decision audit
+│   ├── db.py / runtime_config.py     # SQLite / hot-param overrides
+│   ├── cron_state.py / clock.py      # missed-job back-fill / NY time + NYSE calendar
 │   └── ...
 │
 ├── web/
-│   ├── server.py                     # Flask 后端（监控 / 配置 / 审批 / 启停调度器）
-│   └── static/index.html             # 单页前端（中英双语）
+│   ├── server.py                     # Flask backend (monitor / config / approve / start-stop scheduler)
+│   └── static/index.html             # single-page front end (bilingual)
 ├── config/
-│   ├── watchlist.json                # 自动生成的交易池（勿手改）
-│   └── universe_pool.json            # 流动性候选池（选股输入）
-├── cron/optimize_and_apply.sh        # 每日增量 / 每周全网格优化（crontab）
-├── scripts/                          # 回测 / 校准 / 验证脚本
-├── macos/                            # 原生 SwiftUI 壳（窗口 + 菜单栏，build.sh 构建）
-├── data/                             # 运行时状态（gitignored）
-├── logs/                             # 日志（gitignored）
+│   ├── watchlist.json                # auto-generated trading pool (don't hand-edit)
+│   └── universe_pool.json            # liquidity candidate pool (universe input)
+├── cron/optimize_and_apply.sh        # daily incremental / weekly full-grid optimization (crontab)
+├── scripts/                          # backtest / calibration / validation tools
+├── macos/                            # native SwiftUI shell (window + menu bar, build.sh)
+├── data/                             # runtime state (gitignored)
+├── logs/                             # logs (gitignored)
 │
-├── setup-macmini.command             # 🖱 一键安装（uv + venv + 依赖 + crontab）
-├── start-web.command                 # 🖱 一键启动（OpenD + Web 面板）
-└── .env.example                      # 配置模板（每项含注释）
+├── setup-macmini.command             # 🖱 one-command install (uv + venv + deps + crontab)
+├── start-web.command                 # 🖱 one-command launch (OpenD + web panel)
+└── .env.example                      # config template (every key documented)
 ```
 
 </details>
 
 ---
 
-## ✅ 上线 Checklist
+## ✅ Go-live checklist
 
-> 不要跳步骤。每一项都是为了保护你的钱。
+> Don't skip steps. Every one is there to protect your money.
 
-- [ ] OpenD 在 Paper Trading 账户跑通（Web 状态栏全绿）
-- [ ] `python -m src.main scan` 看到信号被评分
-- [ ] Telegram 收到测试推送
-- [ ] `python -m src.backtest --days 180`：Sortino > 2 且 P(profitable) > 90%
-- [ ] **Paper trade 至少 4 周**，记录每笔
-- [ ] 实盘前：模拟盘 Sortino > 1.5 且胜率 > 55%
-- [ ] Web 设置里切 REAL（2 次确认 + 交易密码 + 空仓才允许）
-- [ ] 首周只投 **USD $500** 验证下单链路
-- [ ] 稳定两周后逐步加到目标资金
-- [ ] 每月过一遍 Optuna / 优化器建议
-
----
-
-## ❓ 常见问题
-
-<details>
-<summary><b>OpenD 启动后要求「解锁交易」？</b></summary>
-
-GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解锁交易」。之后 bot 用 MD5 哈希后的 `MOO_TRADE_PWD` 自动登录。
-
-</details>
-
-<details>
-<summary><b>Paper Trading 不支持 STOP 单怎么办？</b></summary>
-
-模拟盘没有原生 STOP 单，bot 用「主循环检测价 ≤ 止损 → 市价软平」，并有 60 秒快速止损环把延迟压到秒级。REAL 默认也用同一套软退出以对齐回测（`REAL_USE_SOFT_EXITS=true`）；关掉则改用券商 OCO bracket（进程死了也有券商兜底，但和回测口径有差）。
-
-</details>
-
-<details>
-<summary><b>调度器和 Web 是同一个进程吗？</b></summary>
-
-不是，**两个独立进程**。调度器（`src.main run`）负责交易；Web（`web/server.py`）只监控/控制，从面板 ▶ Start / ■ Stop 启停调度器。改后端代码要分别重启对应进程；Web 停了不影响交易。
-
-</details>
-
-<details>
-<summary><b>AI 会很花钱吗？</b></summary>
-
-用 DeepSeek，纯文本按量计费、单价极低。买入 AI 复核每轮最多 10 次，交易时段约 12 轮/天，一天下来花费可忽略。AI 是 FAIL-SAFE 设计：调用失败降级为中性「pass」，绝不因 AI 不可用而乱卖。
-
-</details>
-
-<details>
-<summary><b>DD 断路器和 3 连亏熔断有什么区别？</b></summary>
-
-3 连亏：连续 3 天净亏 → 暂停（按天计）。DD 断路器：账户总回撤 ≥10% 半仓、≥18% 停盘（按账户级 peak，7 天后自动解除）。两者独立叠加。
-
-</details>
-
-<details>
-<summary><b>watchlist 能手改吗？</b></summary>
-
-不能直接改 `config/watchlist.json`（每周自动覆盖）。要调就改流动性池 `config/universe_pool.json` 或 `UNIVERSE_TOP_N`。
-
-</details>
-
-<details>
-<summary><b>Mac 睡眠会断交易吗？</b></summary>
-
-会，所以系统内置 keep-awake（`src/keepawake.py`，Web 面板/菜单栏可开关）：`caffeinate` 阻止系统闲置睡眠（屏幕可睡），可选再阻止合盖睡眠。建议接电源、专机常驻。
-
-</details>
-
-<details>
-<summary><b>手机上能看吗？</b></summary>
-
-能。在 Web 设置里设 `WEB_PASSWORD` 后，把 `WEB_HOST` 改为局域网地址即可在手机浏览器访问（无密码时面板拒绝暴露到网络）。Telegram 推送则天然全平台。
-
-</details>
-
-<details>
-<summary><b>为什么这么多功能默认关？</b></summary>
-
-两条铁律：① 实盘必须和回测口径一致；② 没通过双窗口回测（提升收益且不恶化回撤）的功能不上线。关着的代码都留着，等数据够了再验证开启。
-
-</details>
+- [ ] OpenD working on a Paper Trading account (web status bar all green)
+- [ ] `python -m src.main scan` shows signals being scored
+- [ ] Telegram receives a test push
+- [ ] `python -m src.backtest --days 180`: Sortino > 2 and P(profitable) > 90%
+- [ ] **Paper trade for at least 4 weeks**, logging every trade
+- [ ] Before real money: paper Sortino > 1.5 and win rate > 55%
+- [ ] Switch to REAL in web Settings (double confirm + trade password + flat positions only)
+- [ ] First week deploy only **USD $500** to validate the order path
+- [ ] After two stable weeks, ramp up to your target capital
+- [ ] Review the Optuna / optimizer suggestions monthly
 
 ---
 
-## 🧰 技术栈
+## ❓ FAQ
 
-| 层 | 技术 |
+<details>
+<summary><b>OpenD asks to "unlock trading" after launch?</b></summary>
+
+The GUI OpenD can't unlock trading via API — click "unlock trading" once in the OpenD window manually. After that the bot logs in automatically using the MD5-hashed `MOO_TRADE_PWD`.
+
+</details>
+
+<details>
+<summary><b>Paper Trading doesn't support STOP orders — now what?</b></summary>
+
+Paper has no native STOP order, so the bot uses "main loop detects price ≤ stop → market soft-close," with a 60-second fast-stop loop to cut latency to seconds. REAL also uses the same soft exits by default to align with the backtest (`REAL_USE_SOFT_EXITS=true`); turn it off to use the broker's OCO bracket instead (a broker-side backstop even if the process dies, but it diverges from backtest parity).
+
+</details>
+
+<details>
+<summary><b>Are the scheduler and the web the same process?</b></summary>
+
+No — **two independent processes**. The scheduler (`src.main run`) trades; the web (`web/server.py`) only monitors/controls, starting/stopping the scheduler with ▶ Start / ■ Stop. Editing backend code means restarting the relevant process; stopping the web doesn't affect trading.
+
+</details>
+
+<details>
+<summary><b>Is the AI expensive?</b></summary>
+
+It uses DeepSeek — plain text, pay-as-you-go, extremely cheap. Buy-review AI runs at most 10 times per scan, ~12 scans/day in market hours, so daily cost is negligible. The AI is FAIL-SAFE by design: a failed call degrades to a neutral "pass," so it never dumps positions just because the AI is unavailable.
+
+</details>
+
+<details>
+<summary><b>What's the difference between the DD breaker and the 3-loss-streak breaker?</b></summary>
+
+3-loss streak: 3 net-loss days in a row → pause (counted by day). DD breaker: total account drawdown ≥10% half-size, ≥18% halt (by account-level peak, auto-lifts after 7 days). The two stack independently.
+
+</details>
+
+<details>
+<summary><b>Can I hand-edit the watchlist?</b></summary>
+
+Not `config/watchlist.json` directly (it's overwritten weekly). To adjust, edit the liquidity pool `config/universe_pool.json` or `UNIVERSE_TOP_N`.
+
+</details>
+
+<details>
+<summary><b>Does Mac sleep interrupt trading?</b></summary>
+
+Yes, so keep-awake is built in (`src/keepawake.py`, toggleable from the web panel/menu bar): `caffeinate` blocks system idle sleep (the screen may sleep), optionally also blocking lid-close sleep. A wall-powered dedicated machine is recommended.
+
+</details>
+
+<details>
+<summary><b>Can I view it on my phone?</b></summary>
+
+Yes. Set `WEB_PASSWORD` in web Settings, then change `WEB_HOST` to your LAN address to reach it from a phone browser (with no password the panel refuses to expose itself to the network). Telegram pushes are cross-platform by nature.
+
+</details>
+
+<details>
+<summary><b>Why are so many features off by default?</b></summary>
+
+The two rules: ① live must match backtest parity; ② a feature that hasn't cleared a two-window backtest (raise returns and not worsen drawdown) doesn't ship. The off code stays, waiting to be validated and enabled once there's enough data.
+
+</details>
+
+---
+
+## 🧰 Tech stack
+
+| Layer | Tech |
 |----|------|
-| 语言 / 运行时 | Python 3.11 · APScheduler |
-| 券商接口 | moomoo-api SDK（行情 + 交易） |
-| AI | DeepSeek（复核 / 优化器 / 情绪）· Tavily（新闻） |
-| 量化 | pandas + pandas-ta-classic · Optuna · yfinance |
-| 存储 | SQLite + JSON 快照 |
-| 界面 | 原生 SwiftUI 应用（`macos/`：总览/审批/信号/历史/设置 + 菜单栏）· Flask 单页仪表盘 · python-telegram-bot |
+| Language / runtime | Python 3.11 · APScheduler |
+| Broker interface | moomoo-api SDK (quotes + trading) |
+| AI | DeepSeek (review / optimizer / sentiment) · Tavily (news) |
+| Quant | pandas + pandas-ta-classic · Optuna · yfinance |
+| Storage | SQLite + JSON snapshots |
+| UI | Native SwiftUI app (`macos/`: Overview/Approvals/Signals/History/Settings + menu bar) · Flask single-page dashboard · python-telegram-bot |
 
 ---
 
-## 免责声明
+## Disclaimer
 
-本项目为**个人研究项目**，不构成任何投资建议（Not financial advice）。
+This is a **personal research project** and is **not financial advice**.
 
-- 交易股票存在亏损本金的实质风险；历史回测不代表未来表现。
-- 盈利预期假设市场延续过去回测窗口的特征；regime change 可能让任何策略亏钱。
-- 务必 paper trade ≥ 4 周再用真钱；真钱第一次只投你能完全亏掉的金额。
+- Trading stocks carries a real risk of losing capital; historical backtests don't represent future performance.
+- Profit expectations assume the market continues the characteristics of past backtest windows; a regime change can make any strategy lose money.
+- Always paper-trade ≥ 4 weeks before using real money; for your first real-money run, deploy only an amount you can fully afford to lose.
 
-**作者不对任何使用本程序产生的金钱亏损负责。**
+**The author is not liable for any financial loss arising from use of this program.**
 
 ---
 
-## ☕ 支持项目
+## ☕ Support
 
-本项目**完全免费开源**（MIT License），没有任何付费墙或授权码。
+This project is **completely free and open source** (MIT License) — no paywall, no license keys.
 
-如果它帮到了你，欢迎用以下方式支持后续开发：
+If it helps you, here are ways to support continued development:
 
-- ⭐ 给仓库点一个 Star
+- ⭐ Star the repo
 - ☕ [Buy Me a Coffee](https://buymeacoffee.com/ethan6945)
 - 💖 [GitHub Sponsors](https://github.com/sponsors/ethan6945)
 
@@ -760,6 +765,6 @@ GUI 版 OpenD 不能通过 API 解锁，需手动点一次 OpenD 窗口的「解
 <div align="center">
 <br/>
 
-如果这个项目对你有启发，欢迎点一个 ⭐
+If this project inspired you, a ⭐ is always welcome.
 
 </div>
