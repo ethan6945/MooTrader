@@ -1,0 +1,122 @@
+# requirements.lock — EXACT versions, for reproducible installs and packaging.
+#
+# WHY THIS FILE EXISTS (2026-07-28)
+# requirements.txt is intentionally loose (`>=`) for day-to-day development.
+# That is fine for one machine and dangerous for a distributed build: on
+# 2026-07-28 the declared floor and the actually-installed version had drifted
+# a full major release apart on three packages that decide what this bot does —
+#
+#     declared            installed
+#     pandas>=2.2.0   ->  3.0.3        copy-on-write + rolling/resample changes
+#     numpy>=1.26.0   ->  2.4.6        casting-rule changes
+#     moomoo-api>=9.3 ->  10.8.6808    the BROKER SDK — order placement itself
+#
+# This project's whole validation story is live<->backtest numerical parity
+# (see backtest_v3 / ENTRY_CHASE_TOL / the sandbox diff). With unbounded `>=`,
+# two users installing months apart run numerically different strategies, and
+# only one of those stacks was ever backtested. Packaged builds and anyone
+# reproducing a result MUST install from this file.
+#
+# USAGE
+#   development (loose, follows upstream):   pip install -r requirements.txt
+#   packaging / reproducing a result:        pip install -r requirements.lock
+#
+# REGENERATE after a deliberate, tested upgrade:
+#   .venv/bin/python3 -m pip freeze \
+#     | grep -viE '^(pyinstaller|altgraph|macholib|pyinstaller-hooks-contrib)==' \
+#     > /tmp/body && cat <this header> /tmp/body > requirements.lock
+#
+# Build-only tools (pyinstaller, altgraph, macholib, pyinstaller-hooks-contrib)
+# are deliberately EXCLUDED — they are needed to produce the .app, never to run
+# it, and pinning them here would drag them into the bundle.
+#
+# Captured from the working venv on 2026-07-28, Python 3.11.15, macOS arm64.
+# NOTE: these are the versions the bot is currently trading on, not a
+# hand-audited set. Pinning freezes the drift in place; it does not undo it.
+# If you ever want to move back to the versions the older backtests ran on,
+# that is a separate, deliberate downgrade.
+
+alembic==1.18.5
+annotated-types==0.7.0
+anyio==4.14.1
+APScheduler==3.11.3
+beautifulsoup4==4.15.0
+blinker==1.9.0
+bottle==0.13.4
+certifi==2026.6.17
+cffi==2.1.0
+charset-normalizer==3.4.9
+click==8.4.2
+colorlog==6.10.1
+contourpy==1.3.3
+cryptography==49.0.0
+curl_cffi==0.15.0
+cycler==0.12.1
+distro==1.9.0
+Flask==3.1.3
+fonttools==4.63.0
+google-auth==2.55.2
+google-genai==2.10.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+itsdangerous==2.2.0
+Jinja2==3.1.6
+kiwisolver==1.5.0
+lxml==6.1.1
+Mako==1.3.12
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+matplotlib==3.11.0
+mdurl==0.1.2
+moomoo_api==10.8.6808
+multitasking==0.0.13
+numpy==2.4.6
+optuna==4.9.0
+packaging==26.2
+pandas==3.0.3
+pandas-ta-classic==0.6.52
+peewee==4.1.1
+pillow==12.3.0
+platformdirs==4.10.0
+protobuf==7.35.1
+proxy_tools==0.1.0
+pyarrow==25.0.0
+pyasn1==0.6.3
+pyasn1_modules==0.4.2
+pycparser==3.0
+pycryptodome==3.23.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+pyobjc-core==12.2.1
+pyobjc-framework-Cocoa==12.2.1
+pyobjc-framework-Quartz==12.2.1
+pyobjc-framework-Security==12.2.1
+pyobjc-framework-UniformTypeIdentifiers==12.2.1
+pyobjc-framework-WebKit==12.2.1
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-telegram-bot==22.8
+pytz==2026.2
+pywebview==6.2.1
+PyYAML==6.0.3
+requests==2.34.2
+rich==15.0.0
+rumps==0.4.0
+simplejson==4.1.1
+six==1.17.0
+sniffio==1.3.1
+soupsieve==2.8.4
+SQLAlchemy==2.0.51
+tenacity==9.1.4
+tqdm==4.68.4
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+tzlocal==5.4.4
+urllib3==2.7.0
+websockets==16.0
+Werkzeug==3.1.8
+yfinance==1.5.1
