@@ -32,14 +32,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+# 2026-07-28: moved from scripts/ into src/ so the grid sweep ships inside the
+# packaged .app. scripts/ is NOT bundled (see _weekly_sandbox_diff_job's
+# IS_FROZEN guard), so while this lived there the whole optimization pipeline
+# existed only on a machine with the repo checked out AND a working crontab —
+# i.e. never for anyone who installs the app. It is now an ordinary module that
+# src/main.py schedules directly.
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))   # keeps `python -m src.optimize_system` working
 ET = ZoneInfo("America/New_York")
 
-from src import runtime_config
-from src import db as _db
-from src.sandbox import run_sandbox, SandboxConfig
-from src.config import settings
+from . import runtime_config
+from . import db as _db
+from .sandbox import run_sandbox, SandboxConfig
+from .config import settings
 
 # ── Search grid ──────────────────────────────────────────
 GRID_QUICK = {
@@ -247,7 +254,7 @@ def optimize(quick: bool = False, quiet: bool = False,
     end_date = now.replace(hour=16, minute=0, second=0, microsecond=0)
 
     try:
-        from src.universe import load_pool
+        from .universe import load_pool
         pool = load_pool()
     except Exception:
         pool = ["AAPL", "MSFT", "NVDA", "AMD", "GOOGL"]

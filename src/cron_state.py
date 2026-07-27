@@ -47,6 +47,12 @@ KNOWN_JOBS: tuple[str, ...] = (
     "premarket_gap_sentinel",  # pre-open overnight gap check
     "open_gap_exit",           # at-open gap-risk execution
     "preopen_clock_check",     # daily 08:30 ET time sync + session confirmation
+    "sandbox_diff",            # weekly sandbox↔backtest diff — was in main.py's
+                               # catchup plan but never listed here, so on an
+                               # install with no record it could not catch up
+                               # (needs_catchup returns False for unknown names)
+    "grid_sweep_weekly",       # parameter grid, ex-crontab (2026-07-28)
+    "grid_sweep_daily",        # daily neighborhood walk, ex-crontab
 )
 
 
@@ -171,7 +177,31 @@ WEEKLY_SCHEDULE: dict[str, tuple[int, int, int]] = {
     "weekly_backtest":  (0, 20, 10),   # Mon 20:10 KL
     "self_review":      (0, 20, 15),   # Mon 20:15 KL
     "sandbox_diff":     (0, 20, 25),   # Mon 20:25 KL
+    # 2026-07-28: the grid sweep, moved off the user's crontab and into the
+    # scheduler (see main._grid_sweep_job). Mon 07:00 KL == 19:00 ET Sunday —
+    # market closed, which the sweep REQUIRES because it injects grid params
+    # into live db-state while it runs. Same slot the crontab used.
+    "grid_sweep_weekly": (0, 7, 0),    # Mon 07:00 KL
 }
+
+# Daily jobs that follow the same "one definition" rule. (weekday range is
+# expressed the APScheduler way; expected_last_fire_daily handles weekdays_only.)
+# grid_sweep_daily ran Tue-Sat 09:00 KL under cron == 21:00 ET Mon-Fri, again
+# market-closed. Kept daily-weekday here; the ±1 day vs Tue-Sat is immaterial
+# because the sweep no-ops when the market is open and records its own run.
+DAILY_KL_SCHEDULE: dict[str, tuple[int, int]] = {
+    "grid_sweep_daily": (9, 0),        # 09:00 KL, weekdays
+}
+
+
+def expected_last_fire_daily_kl(job: str) -> datetime:
+    """Most recent past fire for a known daily KL job."""
+    hour, minute = DAILY_KL_SCHEDULE[job]
+    now = clock.ny_now().astimezone(KL)
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate > now:
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 def expected_last_fire(job: str) -> datetime:

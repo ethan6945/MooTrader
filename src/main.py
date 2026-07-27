@@ -1240,6 +1240,72 @@ def _weekly_self_review_job() -> None:
         log.warning("self-review bookkeeping failed: %s", e)
 
 
+def _grid_sweep_job(daily: bool) -> None:
+    """Parameter grid sweep — Mon 07:00 KL (quick, 27 combos) / weekdays 09:00 KL
+    (daily neighborhood walk). Both slots are 19:00-21:00 ET, market CLOSED.
+
+    2026-07-28: this used to live in the user's crontab calling
+    cron/optimize_and_apply.sh. Two problems with that: the crontab entry had an
+    unquoted path with a space, so it had never run once since 2026-07-07; and
+    more fundamentally a crontab is per-machine, so anyone installing the
+    packaged .app got no optimization pipeline at all. Scheduling it here means
+    it ships with the app and inherits the app's own file-access permissions
+    instead of needing /usr/sbin/cron to be separately granted.
+
+    Runs IN-PROCESS rather than as a subprocess, deliberately: the frozen build
+    has no .venv to re-exec (web.server._worker_cmd points at ROOT/.venv, which
+    doesn't exist under ~/Library/Application Support), so a subprocess would
+    work in dev and silently fail in the packaged app — the exact class of bug
+    this change exists to remove. In-process is safe here because the sweep
+    injects grid params into live db-state and therefore only ever runs with the
+    market closed, when scan_once / the manage tick / the fast-stop tick all
+    no-op on their own in_market_hours() checks. optimize() additionally refuses
+    outright if the session is open, so a DST shift or a manual trigger can't
+    catch us mid-session.
+    """
+    key = "grid_sweep_daily" if daily else "grid_sweep_weekly"
+    label = "daily neighborhood walk" if daily else "weekly quick grid"
+    log.info("grid sweep (%s): starting", label)
+    try:
+        from .optimize_system import optimize
+        result = optimize(quick=not daily, daily=daily, quiet=True)
+    except Exception as e:
+        log.exception("grid sweep (%s) failed: %s", label, e)
+        try:
+            notifier.send(f"⚠ 参数网格搜索({label})失败: {e}")
+        except Exception:
+            pass
+        return
+
+    if result.get("refused"):
+        # Market open (DST shift, or a manual run) — not an error, just skipped.
+        log.warning("grid sweep (%s) refused: %s", label, result.get("note", ""))
+        return
+
+    applied, best = result.get("applied"), result.get("best") or {}
+    if applied:
+        notifier.send(
+            f"🔧 *参数网格搜索已应用* ({label})\n"
+            f"  THR={best.get('th', '—')} TP={best.get('tp', '—')} "
+            f"SL={best.get('sl', '—')} agg={best.get('agg_score', '—')}\n"
+            f"  combos={result.get('combos_tested', '?')} "
+            f"windows={len(result.get('windows', []))} "
+            f"{result.get('elapsed_sec', '?')}s")
+        log.info("grid sweep (%s): APPLIED %s", label, best)
+    else:
+        # Weekly reports even on no-change (matches the old script's behaviour);
+        # daily stays quiet so there's no every-morning "nothing happened" ping.
+        log.info("grid sweep (%s): no change (baseline holds)", label)
+        if not daily:
+            notifier.send(
+                f"🔧 参数网格搜索({label}): 无变更，当前参数仍最优 "
+                f"(combos={result.get('combos_tested', '?')})")
+    try:
+        cron_state.record_run(key)
+    except Exception as e:
+        log.warning("grid sweep bookkeeping failed: %s", e)
+
+
 def _weekly_sandbox_diff_job() -> None:
     """Monday 20:25 KL — trade-level differential between the sandbox replay and
     the backtest_v3 live-fidelity engine (scripts/sandbox_vs_backtest.py).
@@ -1346,6 +1412,15 @@ def _run_catchup_on_startup() -> None:
         ("sandbox_diff",
          cron_state.expected_last_fire("sandbox_diff"),
          _weekly_sandbox_diff_job, "Weekly sandbox↔backtest diff"),
+        # Grid sweep (2026-07-28, ex-crontab). Both entries are safe to catch up
+        # because optimize() refuses outright while the market is open, so a
+        # restart during RTH re-schedules rather than sweeping mid-session.
+        ("grid_sweep_weekly",
+         cron_state.expected_last_fire("grid_sweep_weekly"),
+         lambda: _grid_sweep_job(daily=False), "Weekly parameter grid sweep"),
+        ("grid_sweep_daily",
+         cron_state.expected_last_fire_daily_kl("grid_sweep_daily"),
+         lambda: _grid_sweep_job(daily=True), "Daily parameter re-validation"),
         ("monthly_optuna",
          cron_state.expected_last_fire_monthly(1, 3, 0),
          _monthly_optuna_job, "Monthly Optuna optimization"),
@@ -1664,6 +1739,9 @@ def run_loop() -> None:
         ("sandbox_diff", _weekly_sandbox_diff_job, 1800,
          "trade-level sandbox↔backtest differential. LAST in the Monday chain. "
          "Subprocess-isolated; Telegram only on breach."),
+        ("grid_sweep_weekly", lambda: _grid_sweep_job(daily=False), 3600,
+         "27-combo parameter grid at Mon 07:00 KL (19:00 ET Sun, market shut). "
+         "Moved off the crontab 2026-07-28 so it ships with the app."),
     ]
     for _key, _fn, _grace, _why in _WEEKLY_JOBS:
         _wd, _h, _m = cron_state.WEEKLY_SCHEDULE[_key]
@@ -1700,6 +1778,15 @@ def run_loop() -> None:
             log.debug("tg approval sync failed: %s", e)
     sched.add_job(_tg_sync, "interval", minutes=5,
                   coalesce=True, misfire_grace_time=120, max_instances=1)
+
+    # Daily grid sweep — 09:00 KL weekdays (21:00 ET, market shut). Neighborhood
+    # walk around the CURRENT params, so every trading day opens on values
+    # re-validated against data through the previous close. Replaces the
+    # `0 9 * * 2-6` crontab entry (2026-07-28).
+    _gs_h, _gs_m = cron_state.DAILY_KL_SCHEDULE["grid_sweep_daily"]
+    sched.add_job(lambda: _grid_sweep_job(daily=True), "cron",
+                  day_of_week="mon-fri", hour=_gs_h, minute=_gs_m, timezone=KL,
+                  coalesce=True, misfire_grace_time=3600, max_instances=1)
 
     # Autopilot health watchdog: 17:30 ET weekdays (after the close) — detects
     # silent scan stalls, garbage backtest results, overdue jobs, reconcile

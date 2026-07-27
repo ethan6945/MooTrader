@@ -2,6 +2,20 @@
 #
 # optimize_and_apply.sh — param optimization pipeline (v2, auto-apply)
 #
+# ⚠ SUPERSEDED 2026-07-28 — the scheduler now runs this itself.
+#
+# src/main.py schedules _grid_sweep_job at the same two slots (Mon 07:00 KL
+# quick grid, weekdays 09:00 KL neighborhood walk) with cron_state catchup, and
+# the sweep moved to src/optimize_system.py so it ships inside the packaged
+# .app. Reasons this stopped being a crontab job:
+#   • the crontab line had an unquoted path with a space, so under /bin/sh the
+#     `cd` failed and the `&&` chain never ran — it had not executed once since
+#     2026-07-07 (no logs/cron_optimize.log, no data/params_before_opt.json);
+#   • a crontab is per-machine, so nobody installing the .app ever got the
+#     optimization pipeline at all.
+# REMOVE the two moomoo-trader lines from your crontab (`crontab -e`) or the
+# sweep will run twice. This script is kept only for a manual one-off run.
+#
 # Usage: optimize_and_apply.sh [daily|weekly]
 #   weekly (default) — Mon 07:00 MYT: full quick grid (27 combos, 2 windows)
 #   daily            — Tue-Sat 09:00 MYT: incremental cache top-up (only the
@@ -49,7 +63,7 @@ print('Saved:', saved)
 
 # ── 1. Optimization ──
 log "Step 1: Running optimizer v2 ($OPT_FLAG)"
-$VENV "$ROOT/scripts/optimize_system.py" "$OPT_FLAG" 2>&1 | tee "$LOG_DIR/optimize_$(date +%Y%m%d_%H%M).log"
+(cd "$ROOT" && $VENV -m src.optimize_system "$OPT_FLAG") 2>&1 | tee "$LOG_DIR/optimize_$(date +%Y%m%d_%H%M).log"
 
 # ── 2. Verify: live params must equal EITHER the pre-sweep snapshot (no
 #      winner) or the applied best combo — anything else means the restore
