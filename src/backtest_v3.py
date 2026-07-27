@@ -301,13 +301,18 @@ def simulate_v3(
     # the decision the live Sunday refresh would have shipped into that week.
     active_by_week: dict[tuple, set] = {}
     if _dyn_universe:
-        from .universe import select_universe
+        from .universe import Affordability, select_universe
         _daily_by_sym = {s: b.get("daily") for s, b in per_ticker.items()}
+        # Same affordability rule the live Sunday refresh applies (2026-07-27) —
+        # if the replay kept ranking names the live account can't size, every
+        # validated $/day would come partly from trades live could never take.
+        _afford = Affordability.from_cfg(cfg)
         for ts0, _, _ in events:
             wk0 = ts0.date().isocalendar()[:2]
             if wk0 not in active_by_week:
                 active_by_week[wk0] = set(select_universe(
-                    _daily_by_sym, asof=ts0.date(), top_n=cfg.universe_top_n))
+                    _daily_by_sym, asof=ts0.date(), top_n=cfg.universe_top_n,
+                    afford=_afford))
         log.info("[v3] dynamic universe: %d weekly top-%d sets from a %d-name pool",
                  len(active_by_week), cfg.universe_top_n, len(per_ticker))
 

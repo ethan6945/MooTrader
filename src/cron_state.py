@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pytz
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -144,6 +145,41 @@ def expected_last_fire_weekly(weekday: int, hour: int, minute: int,
     if days_back == 0 and candidate > now:
         days_back = 7
     return candidate - timedelta(days=days_back)
+
+
+KL = pytz.timezone("Asia/Kuala_Lumpur")
+
+# ── The ONE definition of when each weekly job is due ────────────────────────
+# (weekday, hour, minute) in KL — timezone-pinned so US DST never shifts the
+# wall-clock time. Every caller that asks "was this job missed?" MUST derive
+# from here via expected_last_fire().
+#
+# 2026-07-27: added because two callers disagreed about `self_review`.
+# main.py's catchup used Mon 20:15 KL while web/server.py's boot catchup used
+# Sun 23:00 ET (~9h apart, different key for the same job), so a restart could
+# satisfy one and not the other: on 2026-07-27 the web boot fired the review at
+# 22:30 and main.py's catchup fired it AGAIN at 22:37. Both paths run
+# optimizer_ai.propose_from_review, which auto-applies params — exactly the
+# "double autopilot param applies" hazard _run_catchup_on_startup warns about,
+# but across processes where no in-process guard can see it.
+#
+# ⚠ These MUST stay in sync with the run_loop cron schedule in main.py. If a
+# job's cron time changes, change it HERE.
+WEEKLY_SCHEDULE: dict[str, tuple[int, int, int]] = {
+    "weekly_autopilot": (0, 20, 0),    # Mon 20:00 KL
+    "universe_refresh": (0, 20, 5),    # Mon 20:05 KL
+    "weekly_backtest":  (0, 20, 10),   # Mon 20:10 KL
+    "self_review":      (0, 20, 15),   # Mon 20:15 KL
+    "sandbox_diff":     (0, 20, 25),   # Mon 20:25 KL
+}
+
+
+def expected_last_fire(job: str) -> datetime:
+    """Most recent past fire for a known weekly job — the single source of
+    truth shared by every catchup caller. Raises KeyError on an unknown job
+    (better than silently inventing a schedule the real cron doesn't use)."""
+    weekday, hour, minute = WEEKLY_SCHEDULE[job]
+    return expected_last_fire_weekly(weekday, hour, minute, tz=KL)
 
 
 def expected_last_fire_monthly(day: int, hour: int, minute: int) -> datetime:

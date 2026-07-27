@@ -517,7 +517,23 @@ def scan_once() -> None:
         # oscillate on a single SPY close grazing the 200-MA.
         base_thr = entry_thr
         if effective_label == "BULL":
-            base_thr = max(55, entry_thr - 5)
+            # 2026-07-27: the BULL discount now requires HEALTHY breadth.
+            # effective_label is the HYSTERESIS label (regime.confirmed), which
+            # is what keeps the threshold from oscillating — but it also means
+            # the discount survives well into a deteriorating tape. Live case
+            # 2026-07-27: raw regime NEUTRAL (SPY below its 50-MA) and breadth
+            # UNHEALTHY (A/D 0.40, 42% >50MA), yet confirmed=BULL pulled the bar
+            # from 75 down to 65 and let a 65.2 candidate into the funnel — with
+            # a 17.9% live win rate and a 12% account drawdown. Loosening and
+            # deteriorating must not happen at the same time. Breadth stays
+            # ADVISORY for blocking (BREADTH_BLOCKING=false, deliberate — see
+            # .env); this only withholds a discount, it never blocks a trade,
+            # so it cannot repeat the 2026-07-03 over-blocking regression.
+            if breadth_ok:
+                base_thr = max(55, entry_thr - 5)
+            else:
+                log.info("BULL threshold discount withheld — breadth unhealthy "
+                         "(%s); holding the bar at %.0f", breadth_note, entry_thr)
         elif effective_label == "NEUTRAL":
             base_thr = min(85, entry_thr + 5)
         # BEAR: regime kill_switch already blocks — threshold is moot
@@ -767,6 +783,19 @@ def scan_once() -> None:
             # score into conviction (sizing only). FAIL-SAFE → neutral 50.
             sent_verdict = sent_reason = None
             sent_score = None
+            # 2026-07-27: don't pay for sentiment on a name that cannot be sized
+            # no matter what the score comes back as. SENTIMENT_SIZING can only
+            # scale conviction by up to 1.25 (see below), so if qty is already 0
+            # at that BEST case, no verdict can rescue the entry — skip before
+            # spending the call. Purely a cost saving: any name that could pass
+            # still reaches the real gate below with its true conviction.
+            _best_conv = conviction * (1.25 if settings.sentiment_sizing else 1.0)
+            if risk_manager.calc_position_size(
+                    sig, vix=vix, conviction=_best_conv,
+                    regime_mult=max(1.0, settings.regime_bull_mult)) <= 0:
+                _skip("risk", "qty=0 even at best-case conviction — "
+                              "skipped before sentiment spend")
+                continue
             if (settings.sentiment_scoring_enabled and not is_stack_candidate
                     and sentiment_budget > 0):
                 # P0-5 (2026-06-26): options_flow removed — noise > signal at $5K
@@ -1295,25 +1324,27 @@ def _run_catchup_on_startup() -> None:
         # both were silent-execution violations; now manual GUI actions only.
         # universe_refresh (Phase 1) is different: it's a RULE the owner enabled
         # explicitly via DYNAMIC_UNIVERSE_ENABLED, and every change telegrams.
-        # ⚠ These expected-fire times MUST match the run_loop cron schedule
-        # below (Mon 20:00-20:25 KL, timezone-pinned). If they drift apart,
-        # every restart after the real run sees last_run < expected and
-        # re-fires the whole Monday chain — double autopilot param applies,
-        # duplicate Telegram storms. (P1 fix 2026-07-07.)
+        # ⚠ The weekly expected-fire times live in cron_state.WEEKLY_SCHEDULE —
+        # the single source of truth shared with web/server.py's boot catchup
+        # (2026-07-27). They MUST match the run_loop cron schedule below (Mon
+        # 20:00-20:25 KL, timezone-pinned). If they drift apart, every restart
+        # after the real run sees last_run < expected and re-fires the whole
+        # Monday chain — double autopilot param applies, duplicate Telegram
+        # storms. (P1 fix 2026-07-07; de-duplicated across processes 2026-07-27.)
         ("universe_refresh",
-         cron_state.expected_last_fire_weekly(0, 20, 5, tz=KL),    # Mon 20:05 KL
+         cron_state.expected_last_fire("universe_refresh"),
          _universe_refresh_job, "Weekly universe refresh"),
         ("weekly_backtest",
-         cron_state.expected_last_fire_weekly(0, 20, 10, tz=KL),   # Mon 20:10 KL
+         cron_state.expected_last_fire("weekly_backtest"),
          _weekly_backtest_validation_job, "Weekly backtest"),
         ("weekly_autopilot",
-         cron_state.expected_last_fire_weekly(0, 20, 0, tz=KL),    # Mon 20:00 KL
+         cron_state.expected_last_fire("weekly_autopilot"),
          _weekly_autopilot_job, "Weekly autopilot (DeepSeek)"),
         ("self_review",
-         cron_state.expected_last_fire_weekly(0, 20, 15, tz=KL),   # Mon 20:15 KL
+         cron_state.expected_last_fire("self_review"),
          _weekly_self_review_job, "Weekly self-review"),
         ("sandbox_diff",
-         cron_state.expected_last_fire_weekly(0, 20, 25, tz=KL),   # Mon 20:25 KL
+         cron_state.expected_last_fire("sandbox_diff"),
          _weekly_sandbox_diff_job, "Weekly sandbox↔backtest diff"),
         ("monthly_optuna",
          cron_state.expected_last_fire_monthly(1, 3, 0),
@@ -1435,11 +1466,53 @@ def _open_gap_exit_job() -> None:
         log.exception("open gap-exit job failed: %s", e)
 
 
+def _startup_protect_stops() -> None:
+    """Run ONE protective-exit pass before startup catchup (see run_loop).
+
+    No-op when flat or outside regular hours — that's the common restart case
+    and it must stay free. Never raises: the scheduler has to arm regardless."""
+    try:
+        if not executor.has_open_trades():
+            return
+        if not in_market_hours():
+            log.info("startup: holding but market closed — stop check deferred "
+                     "to the open")
+            return
+        log.info("startup: open positions during market hours — running a "
+                 "protective stop pass BEFORE catchup")
+        with client() as c:
+            actions = executor.manage_stops_only(c)
+            for a in actions:
+                notifier.send(notifier.trade_action_msg(a))
+            if actions:
+                _refresh_account_snapshot(c, full=False)
+        log.info("startup: protective pass done — %d action(s)", len(actions))
+    except Exception as e:
+        log.exception("startup protective stop pass failed (%s) — continuing to "
+                      "catchup/scheduler; the fast-stop loop will retry", e)
+
+
 def run_loop() -> None:
+    # Protective exits come FIRST — before catchup, before the scheduler.
+    #
+    # 2026-07-27 incident: the process started at 10:30 ET holding DELL + CAT,
+    # both already through their stops after the weekend. _run_catchup_on_startup
+    # then spent 12m09s on five missed weekly jobs (universe refresh, backtest,
+    # DeepSeek autopilot, self-review, sandbox diff, plus three full v3 backtests
+    # inside the optimizer) and the first stop check didn't happen until 10:42.
+    # CAT exited at −2.09R and DELL at −1.13R; ~$43 of that was the delay, not
+    # the gap. SIMULATE has no broker-side stop, so a soft stop is only as good
+    # as the next poll — there must never be an unpolled minute while holding.
+    #
+    # This is deliberately the cheapest possible pass: manage_stops_only (soft
+    # stops + breakeven + bracket fill-check), no scoring, no AI, no entries.
+    # Wrapped so a broker hiccup here can never stop the scheduler from arming.
+    _startup_protect_stops()
+
     # Detect missed scheduled jobs and run them once before the normal loop
-    # takes over. Synchronous on purpose — a quick Telegram lets the user
-    # know what's happening; long jobs (Optuna ~10 min) just delay the first
-    # market scan, which is fine.
+    # takes over. Synchronous on purpose — a quick Telegram lets the user know
+    # what's happening. Long jobs (Optuna ~10 min) delay the first ENTRY scan,
+    # which is fine; they no longer delay protective exits (see above).
     _run_catchup_on_startup()
 
     sched = BlockingScheduler(timezone=NY)
@@ -1565,40 +1638,40 @@ def run_loop() -> None:
     # Staggered by 5 min so each finishes before the next starts.
     # Order: autopilot (no deps) → universe → backtest (needs universe) → self-review
 
-    # P2-1: Weekly autopilot — Monday 20:00 KL. DeepSeek reviews the week,
-    # proposes parameter changes, backtest-validates each, auto-applies within
-    # guardrails. Runs FIRST so any auto-applied changes feed into the
-    # universe/backtest/self-review that follow.
-    sched.add_job(_weekly_autopilot_job, "cron",
-                  day_of_week="mon", hour=20, minute=0, timezone=KL,
-                  coalesce=True, misfire_grace_time=3600, max_instances=1)
-
-    # Weekly universe refresh: Monday 20:05 KL — rule-based watchlist rebuild,
-    # BEFORE the 20:10 backtest so the health check scores next week's actual
-    # list. No-op unless DYNAMIC_UNIVERSE_ENABLED.
-    sched.add_job(_universe_refresh_job, "cron",
-                  day_of_week="mon", hour=20, minute=5, timezone=KL,
-                  coalesce=True, misfire_grace_time=1800, max_instances=1)
-
-    # Weekly backtest validation: Monday 20:10 KL — health-check the strategy
-    # on a rolling 90-day window, now on the fresh ticker set.
-    sched.add_job(_weekly_backtest_validation_job, "cron",
-                  day_of_week="mon", hour=20, minute=10, timezone=KL,
-                  coalesce=True, misfire_grace_time=1800, max_instances=1)
-
-    # Weekly SELF-REVIEW of REAL fills: Monday 20:15 KL. Reviews what the bot
-    # actually did (not a backtest), emits suggestions for owner approval.
-    sched.add_job(_weekly_self_review_job, "cron",
-                  day_of_week="mon", hour=20, minute=15, timezone=KL,
-                  coalesce=True, misfire_grace_time=1800, max_instances=1)
-
-    # Weekly sandbox↔backtest trade-level diff: Monday 20:25 KL, LAST in the
-    # Monday chain (after autopilot/universe/backtest/self-review so it measures
-    # the config the week will actually run). Subprocess-isolated; Telegram only
-    # on breach.
-    sched.add_job(_weekly_sandbox_diff_job, "cron",
-                  day_of_week="mon", hour=20, minute=25, timezone=KL,
-                  coalesce=True, misfire_grace_time=1800, max_instances=1)
+    # 2026-07-27: the (weekday, HH:MM) for each of these lives ONLY in
+    # cron_state.WEEKLY_SCHEDULE, which the catchup planners also read — so a
+    # schedule change can no longer land in one place and not the other. The
+    # per-job comments below describe WHY each slot is where it is; the times
+    # themselves come from the table.
+    #
+    # Order (and the 5-minute stagger) is load-bearing:
+    #   autopilot (no deps) → universe → backtest (needs universe) → self-review
+    #   → sandbox diff (measures the config the week will actually run)
+    _WEEKLY_JOBS = [
+        # (job key, runner, misfire_grace_time, why this slot)
+        ("weekly_autopilot", _weekly_autopilot_job, 3600,
+         "DeepSeek reviews the week, proposes + backtest-validates params, "
+         "auto-applies within guardrails. FIRST so applied changes feed the rest."),
+        ("universe_refresh", _universe_refresh_job, 1800,
+         "rule-based watchlist rebuild, BEFORE the backtest so the health check "
+         "scores next week's actual list. No-op unless DYNAMIC_UNIVERSE_ENABLED."),
+        ("weekly_backtest", _weekly_backtest_validation_job, 1800,
+         "health-check the strategy on a rolling 90-day window, on the fresh "
+         "ticker set."),
+        ("self_review", _weekly_self_review_job, 1800,
+         "reviews what the bot ACTUALLY did (real fills, not a backtest) and "
+         "emits suggestions for owner approval."),
+        ("sandbox_diff", _weekly_sandbox_diff_job, 1800,
+         "trade-level sandbox↔backtest differential. LAST in the Monday chain. "
+         "Subprocess-isolated; Telegram only on breach."),
+    ]
+    for _key, _fn, _grace, _why in _WEEKLY_JOBS:
+        _wd, _h, _m = cron_state.WEEKLY_SCHEDULE[_key]
+        sched.add_job(_fn, "cron", day_of_week=_wd, hour=_h, minute=_m,
+                      timezone=KL, coalesce=True, misfire_grace_time=_grace,
+                      max_instances=1)
+        log.debug("weekly job %s armed for %d %02d:%02d KL — %s",
+                  _key, _wd, _h, _m, _why)
 
     # Monthly Optuna re-optimization: 1st of each month at 03:00 ET.
     # Telegrams suggested params; user reviews before editing .env.

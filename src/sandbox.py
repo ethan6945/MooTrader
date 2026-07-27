@@ -459,13 +459,14 @@ class SimBroker:
 def _load_universe(config: SandboxConfig, feed: SimFeed | None = None) -> list[str]:
     if config.universe_mode == "dynamic":
         try:
-            from src.universe import load_pool, select_universe
+            from src.universe import Affordability, load_pool, select_universe
             pool = load_pool()
             if feed is not None:
                 daily = feed.daily_dict()
                 asof = config.start.date()  # point-in-time for historical replay
                 tickers = select_universe(daily, asof=asof,
-                                          top_n=runtime_config.universe_top_n())
+                                          top_n=runtime_config.universe_top_n(),
+                                          afford=Affordability.live())
                 print(f"  Universe (dynamic): {len(tickers)} tickers from pool of {len(pool)}")
                 return tickers
         except Exception as e:
@@ -478,14 +479,15 @@ def _load_universe(config: SandboxConfig, feed: SimFeed | None = None) -> list[s
 
 def _refresh_universe(config: SandboxConfig, feed: SimFeed) -> list[str]:
     """Point-in-time dynamic universe selection."""
-    from src.universe import load_pool, select_universe
+    from src.universe import Affordability, load_pool, select_universe
     pool = load_pool()
     today_ts = feed.clock.ny_now()
     today_date = today_ts.date()
     daily = feed.daily_dict()
     daily_by_sym = {sym: feed._daily.get(sym) for sym in pool}
     return select_universe(daily_by_sym, asof=today_date,
-                           top_n=runtime_config.universe_top_n())
+                           top_n=runtime_config.universe_top_n(),
+                           afford=Affordability.live())
 
 
 # ── Regime ─────────────────────────────────────────────────

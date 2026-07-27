@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets as _secrets
 import shlex
@@ -1259,7 +1260,13 @@ def _self_review_catchup_on_boot() -> None:
     runs, last_run is fresh and a quick restart won't re-fire it."""
     try:
         from src import cron_state
-        expected = cron_state.expected_last_fire_weekly(6, 23, 0)  # Sun 23:00 ET
+        # 2026-07-27: was expected_last_fire_weekly(6, 23, 0) — Sun 23:00 ET —
+        # while main.py's catchup used Mon 20:15 KL for this same job key. The
+        # two disagreed by ~9h, so a restart in between satisfied one caller and
+        # not the other and the review ran TWICE (22:30 here, 22:37 from the
+        # scheduler), each running optimizer_ai's auto-apply. Both now read the
+        # one schedule in cron_state.WEEKLY_SCHEDULE.
+        expected = cron_state.expected_last_fire("self_review")
         if not cron_state.needs_catchup("self_review", expected):
             return
         last = cron_state.last_run("self_review")
@@ -1290,7 +1297,26 @@ def api_exit():
     return jsonify({"ok": True, "note": "Shutting down — OpenD, scheduler, and web UI are all stopping now."})
 
 
+def _quiet_access_log() -> None:
+    """Drop Werkzeug's per-request access log; keep warnings and errors.
+
+    2026-07-27: logs/web.log had reached 47 MB and was ~100% access lines. The
+    dashboard polls six endpoints (/api/status, /api/log, /api/sectors,
+    /api/closed, /api/caffeinate, /api/approvals) on a loop, and nothing ever
+    rotated this file — the launcher and the Swift shell both append to it
+    (`>>`), so it survives every restart. src/main.py rotates trader.log via
+    RotatingFileHandler(10 MB); this stream had no equivalent.
+
+    Suppressing at WARNING keeps real problems (tracebacks, bind failures, the
+    startup banner — those go through print/stderr) while dropping the 200-OK
+    noise. Set WEB_ACCESS_LOG=1 to get it back for debugging."""
+    if os.getenv("WEB_ACCESS_LOG", "").strip() in ("1", "true", "yes"):
+        return
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+
 def main():
+    _quiet_access_log()
     _self_review_catchup_on_boot()
     port = int(os.getenv("WEB_PORT", "8770"))
     # Env override wins; otherwise the in-app toggle (persisted to .env) decides;

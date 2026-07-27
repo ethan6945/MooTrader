@@ -117,13 +117,29 @@ def get_earnings_history(symbol: str, limit: int = 24,
             pass
 
     dates: list[str] = []
+    fetch_ok = False
     try:
         import yfinance as yf
         df = yf.Ticker(symbol).get_earnings_dates(limit=limit)
         if df is not None and len(df):
             dates = sorted({d.date().isoformat() for d in df.index})
+        fetch_ok = True
     except Exception as e:
         log.warning("earnings history fetch failed for %s: %s", symbol, e)
+
+    if not fetch_ok:
+        # 2026-07-27: NEVER cache a failure as an authoritative empty result.
+        # The old code wrote {"dates": [], "fetched_at": today} on any exception,
+        # so one transient Yahoo hiccup pinned "this name has no earnings dates"
+        # for the full HIST_CACHE_TTL_DAYS=7 — and this feeds the earnings gap
+        # gate, i.e. a scrape blip silently disabled gap protection for a week.
+        # Found via AMAT/MS failing at 22:32 on 2026-07-27 with a yfinance-
+        # internal KeyError('Earnings Date'); both fetch fine on retry.
+        # Keep whatever we had and leave fetched_at alone so the next call retries.
+        stale = entry.get("dates", [])
+        log.info("earnings history for %s not refreshed (fetch failed) — keeping "
+                 "%d cached date(s), will retry next call", symbol, len(stale))
+        return stale
 
     cache[key] = {"dates": dates, "fetched_at": date.today().isoformat()}
     HIST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)

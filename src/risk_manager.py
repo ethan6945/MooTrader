@@ -301,13 +301,38 @@ def calc_position_size(signal: Signal, vix: float = 15.0,
     qty_by_cap = int(cap * runtime_config.max_position_pct() / signal.price)
     base = max(0, min(qty_by_risk, qty_by_cap))
     if base <= 0:
+        # Un-sizeable on this account: either one share already breaches the
+        # per-name notional cap, or one share's stop distance exceeds the whole
+        # risk budget. Declining is correct — but say so, because it used to be
+        # silent and the weekly universe refresh kept re-selecting such names
+        # (2026-07-27: 5 of 15 watchlist tickers were permanently unbuyable,
+        # still consuming a kline fetch + AI budget on every scan).
+        log.info("%s: not sizeable — qty_by_risk=%d (risk $%.0f / stop $%.2f), "
+                 "qty_by_cap=%d (cap $%.0f / price $%.2f) — entry declined",
+                 signal.symbol, qty_by_risk, risk_dollars, stop_distance,
+                 qty_by_cap, cap * runtime_config.max_position_pct(), signal.price)
         return 0
 
-    if vix > 35:
-        return max(1, base // 4)
-    if vix > 25:
-        return max(1, base // 2)
-    return base
+    # VIX de-risking. 2026-07-27: this used to be max(1, base // 4) — the floor
+    # of 1 meant a name whose base size was already 1-2 shares got its FULL
+    # (or 2-4x its intended) size in exactly the tape the cut exists for. At
+    # VIX>35 with base=1 the intended size is 0.25 shares and the old code
+    # delivered 1 — 4x the intended risk. Integer share sizes can't express
+    # a partial de-risk, so the honest answer is to skip the name rather than
+    # take a position 4x larger than the vol regime allows. This is the only
+    # place the composed multipliers could be silently overridden upward; the
+    # DD/adaptive/conviction layers all scale risk_dollars, which rounds down
+    # cleanly through qty_by_risk.
+    divisor = 4 if vix > 35 else (2 if vix > 25 else 1)
+    if divisor == 1:
+        return base
+    scaled = base // divisor
+    if scaled <= 0:
+        log.info("%s: VIX %.1f wants 1/%d size but base is only %d share(s) — "
+                 "skipping rather than taking %dx the intended risk",
+                 signal.symbol, vix, divisor, base, divisor)
+        return 0
+    return scaled
 
 
 def _can_stack_onto(signal: Signal, held: pd.DataFrame) -> tuple[bool, str]:

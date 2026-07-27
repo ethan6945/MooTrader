@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 
-from . import approvals, runtime_config
+from . import approvals, clock, runtime_config
 from .config import settings
 from . import ai
 
@@ -142,15 +142,26 @@ def _base_cfg(days: int):
 # on either window — stops the $/day gate from rubber-stamping reckless sizing.
 DD_TOLERANCE_PP = 3.0
 
+# Minimum backtested trades before a Δ$/day is treated as signal rather than
+# noise (2026-07-27). _VALIDATE_WINDOWS is a single recent 60d window, which
+# yields ~36 trades — at that n the run-to-run spread swamps the parameter
+# effect. Live evidence: the 2026-07-27 sl_atr_mult sweep produced final
+# equities of $5141 / $5780 / $4862 across three variants of the SAME config
+# family, and the "+$10.6/day" winner (4.5) turned out to widen 1R by 50% on 6
+# of the 10 sizeable watchlist names because qty is integer-truncated. Below
+# this count a proposal may still QUEUE for approval, but never auto-applies.
+MIN_TRADES_FOR_AUTO_APPLY = 80
 
-def _metrics(cfg, cache, days: int) -> tuple[float, float]:
-    """(net $/day, max MTM drawdown %) on the honest engine. rich_metrics=False:
-    both fields live on the lean return path (backtest_v3.py net_pnl_usd +
-    max_dd_mtm_pct), so we skip the per-proposal Sharpe/Sortino/MonteCarlo compute
-    that nothing here consumes."""
+
+def _metrics(cfg, cache, days: int) -> tuple[float, float, int]:
+    """(net $/day, max MTM drawdown %, trade count) on the honest engine.
+    rich_metrics=False: all three fields live on the lean return path
+    (backtest_v3.py net_pnl_usd + max_dd_mtm_pct + total_trades), so we skip the
+    per-proposal Sharpe/Sortino/MonteCarlo compute that nothing here consumes."""
     from src.backtest import _run_live_engine
     m = _run_live_engine(cfg, cache, rich_metrics=False)["metrics"]
-    return m.get("net_pnl_usd", 0.0) / days, m.get("max_dd_mtm_pct", 0.0)
+    return (m.get("net_pnl_usd", 0.0) / days, m.get("max_dd_mtm_pct", 0.0),
+            int(m.get("total_trades", 0)))
 
 
 def _prep_cache():
@@ -181,7 +192,7 @@ def _prep_base():
     base, cache = pc
     base_pd, base_dd = {}, {}
     for d in _VALIDATE_WINDOWS:
-        base_pd[d], base_dd[d] = _metrics(base[d], cache[d], d)
+        base_pd[d], base_dd[d], _ = _metrics(base[d], cache[d], d)
     return base, cache, base_pd, base_dd
 
 
@@ -214,22 +225,29 @@ def validate_proposals(proposals: list[dict]) -> list[dict]:
             continue
         cast = int if key in _INT_PARAMS else float
         try:
-            pd_d, dd_d = {}, {}
+            pd_d, dd_d, n_d = {}, {}, {}
             for d in _VALIDATE_WINDOWS:
                 cfg = replace(base[d], **{field: cast(float(value))})
-                pd_d[d], dd_d[d] = _metrics(cfg, cache[d], d)
+                pd_d[d], dd_d[d], n_d[d] = _metrics(cfg, cache[d], d)
         except Exception as e:
             log.warning("optimizer: backtest of %s=%s failed: %s", key, value, e)
             continue
         deltas = {d: pd_d[d] - base_pd[d] for d in _VALIDATE_WINDOWS}
         dd_ok = all(dd_d[d] <= base_dd[d] + DD_TOLERANCE_PP for d in _VALIDATE_WINDOWS)
         beats = all(deltas[d] > 0 for d in _VALIDATE_WINDOWS) and dd_ok
-        log.info("optimizer: %s=%s → %s → %s", key, value,
+        # Thin-sample flag (2026-07-27): a PASS on ~36 trades is noise, not edge.
+        # It still queues for approval — the owner can look at the rationale — but
+        # propose_from_review refuses to auto-apply it. See MIN_TRADES_FOR_AUTO_APPLY.
+        n_min = min(n_d.values()) if n_d else 0
+        thin = n_min < MIN_TRADES_FOR_AUTO_APPLY
+        log.info("optimizer: %s=%s → %s (n=%d%s) → %s", key, value,
                  " ".join(f"Δ{d}d {deltas[d]:+.2f}(DD{dd_d[d] - base_dd[d]:+.1f})"
                           for d in _VALIDATE_WINDOWS),
+                 n_min, ", THIN" if thin else "",
                  "PASS" if beats else "drop")
         if beats:
-            validated.append(dict(p, _deltas=deltas, _dd=dict(dd_d)))
+            validated.append(dict(p, _deltas=deltas, _dd=dict(dd_d),
+                                  _n_trades=n_min, _thin=thin))
     return validated
 
 
@@ -256,8 +274,8 @@ def backtest_risk_change(value: float) -> dict | None:
     pd_b, dd_b, pd_p, dd_p = {}, {}, {}, {}
     try:
         for d in _VALIDATE_WINDOWS:
-            pd_b[d], dd_b[d] = _metrics(replace(base[d], risk_per_trade=cur), cache[d], d)
-            pd_p[d], dd_p[d] = _metrics(replace(base[d], risk_per_trade=float(value)), cache[d], d)
+            pd_b[d], dd_b[d], _ = _metrics(replace(base[d], risk_per_trade=cur), cache[d], d)
+            pd_p[d], dd_p[d], _ = _metrics(replace(base[d], risk_per_trade=float(value)), cache[d], d)
     except Exception as e:
         log.warning("optimizer: risk backtest of %s failed: %s", value, e)
         return None
@@ -301,7 +319,32 @@ def propose_from_review(review: dict) -> int:
         # Telegram notification (铁律: never silent) and an auto-rollback
         # watcher (autopilot.check_and_rollback reverts it if live results
         # degrade). Anything outside bounds still queues for approval.
-        if settings.auto_apply_params:
+        #
+        # TWO auto-apply refusals added 2026-07-27, both from the same incident
+        # (the weekly catchup fired at 10:41 ET, mid-session, and auto-applied
+        # sl_atr_mult=4.5 off a single 36-trade window):
+        #   • mid-session — NOT because it moves an existing stop: sl_atr_mult is
+        #     read only at entry (executor.py stop_px) and each trade's stop_loss
+        #     is frozen in its record, so open positions are unaffected. The
+        #     reason is attribution + reviewability: applying mid-session splits
+        #     one session's entries across two parameter regimes, so neither the
+        #     live results nor the auto-rollback watcher can cleanly attribute
+        #     what the change did. cron/optimize_and_apply.sh always ran with the
+        #     market closed and documented that assumption; the in-process weekly
+        #     path never enforced it. Deferring to the queue costs one session.
+        #   • thin sample — see MIN_TRADES_FOR_AUTO_APPLY.
+        # Both DEMOTE to the approval queue rather than dropping the proposal:
+        # the analysis still reaches the owner, it just stops being autonomous.
+        blocked = None
+        if clock.market_open(clock.ny_now()):
+            blocked = "盘中不自动应用（同一交易日内不混用两套参数，留到收盘后人工确认）"
+        elif p.get("_thin"):
+            blocked = (f"回测样本太少 n={p.get('_n_trades')} "
+                       f"< {MIN_TRADES_FOR_AUTO_APPLY}")
+        if blocked:
+            log.info("optimizer: auto-apply withheld for %s=%s (%s) — queuing",
+                     key, value, blocked)
+        if settings.auto_apply_params and not blocked:
             try:
                 runtime_config.set_param(key, float(value), source="auto-optimizer")
                 from . import notifier
@@ -316,7 +359,9 @@ def propose_from_review(review: dict) -> int:
                 log.warning("optimizer: auto-apply rejected (%s) — queuing for approval", e)
         approvals.enqueue(
             kind="param_change",
-            detail=f"AI (验证过): {key} {cur} → {value} — {gain}. {p.get('rationale', '')}",
+            detail=(f"AI (验证过): {key} {cur} → {value} — {gain}. "
+                    + (f"[需人工确认: {blocked}] " if blocked else "")
+                    + p.get("rationale", "")),
             action=f"Set {key} = {value} (live, no restart)",
             payload={"key": key, "value": float(value)},
         )

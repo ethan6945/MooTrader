@@ -425,10 +425,16 @@ def check_and_rollback() -> list[str]:
         cutoff = now - timedelta(days=7)
         MIN_TRADES_SINCE = 5   # need a real post-change sample, not loss noise
 
+        # 2026-07-27: this used to match only source.startswith("autopilot_"),
+        # but optimizer_ai writes source="auto-optimizer" — so NO optimizer
+        # auto-apply was ever watched, even though its own Telegram promises
+        # "若后续实盘表现恶化将自动回滚并通知". Both autonomous sources are now
+        # covered; owner-approved and manual changes stay untouched on purpose.
         for h in reversed(hist):
             if not h.get("active"):
                 continue
-            if not str(h.get("source", "")).startswith("autopilot_"):
+            src = str(h.get("source", ""))
+            if not (src.startswith("autopilot_") or src == "auto-optimizer"):
                 continue
             try:
                 at = datetime.fromisoformat(h.get("applied_at", ""))

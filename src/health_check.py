@@ -119,21 +119,32 @@ def run(client=None) -> None:
         return
 
     # --- options data ---
-    try:
-        if client is not None:
-            opt_status, opt_detail = check_options(client)
-        else:
-            from .moo_client import client as _client
-            with _client() as c:
-                opt_status, opt_detail = check_options(c)
-    except Exception as e:
-        opt_status, opt_detail = "skip", f"client error ({e})"
-    log.info("health: options=%s (%s)", opt_status, opt_detail)
-    _edge(_K_OPT, opt_status,
-          fail_msg=("⚠️ *期权数据抓取失败*\n" + opt_detail +
-                    "\n可能原因：券商美股期权/正股行情订阅已过期，或 OpenD 未刷新权限"
-                    "（新订阅常需退出 OpenD 重新登录）。请检查/续订后重启 OpenD。"),
-          recover_msg="✅ 期权数据已恢复，可正常抓取（volume + 未平仓量可用）。")
+    # 2026-07-27: don't probe (or report bad) while the consumer is switched off.
+    # OPTIONS_FLOW_ENABLED defaults false and options_flow has exactly one gated
+    # call site (smart_exit), so with the flag off a lapsed/absent options
+    # entitlement degrades nothing — yet every health run logged
+    # "options=bad (No permission to get quotes for US.AAPL)" and burned an API
+    # call doing it. A permanent red that cannot be acted on trains you to ignore
+    # the health line, which is the opposite of what this watchdog is for. Turn
+    # OPTIONS_FLOW_ENABLED on (after subscribing) and the probe comes back.
+    if not settings.options_flow_enabled:
+        log.debug("health: options probe skipped — OPTIONS_FLOW_ENABLED is off")
+    else:
+        try:
+            if client is not None:
+                opt_status, opt_detail = check_options(client)
+            else:
+                from .moo_client import client as _client
+                with _client() as c:
+                    opt_status, opt_detail = check_options(c)
+        except Exception as e:
+            opt_status, opt_detail = "skip", f"client error ({e})"
+        log.info("health: options=%s (%s)", opt_status, opt_detail)
+        _edge(_K_OPT, opt_status,
+              fail_msg=("⚠️ *期权数据抓取失败*\n" + opt_detail +
+                        "\n可能原因：券商美股期权/正股行情订阅已过期，或 OpenD 未刷新权限"
+                        "（新订阅常需退出 OpenD 重新登录）。请检查/续订后重启 OpenD。"),
+              recover_msg="✅ 期权数据已恢复，可正常抓取（volume + 未平仓量可用）。")
 
     # --- AI provider (Gemini / DeepSeek) ---
     try:

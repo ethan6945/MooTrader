@@ -324,6 +324,35 @@ class MooClient:
             return st in ("FILLED_ALL", "FILLED_PART")
         return st == "FILLED_ALL"
 
+    def get_order_fill(self, order_id: str) -> dict | None:
+        """ACTUAL execution of `order_id` → {price, qty, status}, or None if it
+        can't be read / nothing filled yet.
+
+        `price` is the broker's dealt_avg_price — the real volume-weighted fill,
+        not the limit we asked for. Added 2026-07-27: protective exits book P&L
+        at the pre-order quote (`last`) while placing a marketable limit 3% below
+        it, so trades.jsonl recorded an exit price the broker never gave us. That
+        file feeds half-Kelly, the optimizer, the blacklist and adaptive sizing,
+        so the whole self-improvement loop was reading slippage-free numbers.
+        Partial fills return the partial qty — the caller decides what to do."""
+        try:
+            ret, data = self.trade.order_list_query(trd_env=_env_enum())
+            if ret != RET_OK or data is None or data.empty:
+                return None
+            row = data[data["order_id"].astype(str) == str(order_id)]
+            if row.empty:
+                return None
+            r = row.iloc[0]
+            price = float(r.get("dealt_avg_price") or 0)
+            qty = int(float(r.get("dealt_qty") or 0))
+            if price <= 0 or qty <= 0:
+                return None
+            return {"price": price, "qty": qty,
+                    "status": str(r.get("order_status", ""))}
+        except Exception as e:
+            log.warning("get_order_fill(%s) failed: %s", order_id, e)
+            return None
+
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a pending order. Returns True on success."""
         try:
