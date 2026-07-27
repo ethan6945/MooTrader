@@ -481,7 +481,19 @@ def _trade_summary() -> dict:
 
 @app.route("/")
 def index():
+    # First-run gate (2026-07-28): a freshly installed .app has no broker
+    # gateway, no API key and no .env, and the dashboard is meaningless (and
+    # alarming — empty positions, failing health) until those exist. Send the
+    # user to the wizard instead. setup_state() is a cheap file read + one
+    # 0.4s TCP probe, and once complete this is a dict lookup.
+    if not setup_state()["complete"]:
+        return redirect("/setup")
     return send_from_directory(STATIC, "index.html")
+
+
+@app.route("/setup")
+def setup_page():
+    return send_from_directory(STATIC, "setup.html")
 
 
 @app.route("/static/<path:fn>")
@@ -727,6 +739,78 @@ def _write_env_key(key: str, value: str) -> None:
     else:
         lines.append(f"{key}={value}")
     ENV_FILE.write_text("\n".join(lines) + "\n")
+
+
+# ── first-run setup ──────────────────────────────────────────────────────────
+# A packaged install starts with nothing: no .env, no OpenD, no AI key. Rather
+# than drop the user on a dashboard full of red, / redirects to /setup until
+# every REQUIRED step passes. Steps are checked live (not a "done" flag), so a
+# later breakage — OpenD quit, key revoked — surfaces the wizard again instead
+# of failing silently mid-session.
+
+def _opend_reachable(host: str, port: int, timeout: float = 0.4) -> bool:
+    """TCP connect probe. Deliberately not a moomoo API call: we only need to
+    know the gateway is listening, and a full SDK handshake here would add
+    seconds to every page load."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def setup_state() -> dict:
+    """Per-step readiness. `complete` is True only when every required step is."""
+    env = _read_env()
+
+    def val(k: str, default: str = "") -> str:
+        # .env wins; fall back to the process env so an externally-configured
+        # deployment (docker/launchd with real env vars) isn't forced through
+        # the wizard just because it keeps no .env file.
+        return (env.get(k) or os.getenv(k, "") or default).strip()
+
+    host = val("MOO_HOST", "127.0.0.1")
+    try:
+        port = int(val("MOO_PORT", "11111") or 11111)
+    except ValueError:
+        port = 11111
+
+    provider = (val("AI_PROVIDER", "deepseek") or "deepseek").lower()
+    ai_key = val("DEEPSEEK_API_KEYS") or val("DEEPSEEK_API_KEY")
+    if provider == "gemini":
+        ai_key = val("GEMINI_API_KEYS") or val("GEMINI_API_KEY")
+
+    opend_ok = _opend_reachable(host, port)
+    steps = [
+        {"id": "opend", "required": True, "ok": opend_ok,
+         "title": "安装并登录 OpenD", "title_en": "Install and sign in to OpenD",
+         "detail": f"{host}:{port} " + ("已连接" if opend_ok else "未监听"),
+         "detail_en": f"{host}:{port} " + ("reachable" if opend_ok else "not listening")},
+        {"id": "ai", "required": True, "ok": bool(ai_key),
+         "title": f"填写 {provider.upper()} API Key",
+         "title_en": f"Add your {provider.upper()} API key",
+         "detail": "AI 负责信号验证/情绪/智能退出" if not ai_key else "已设置",
+         "detail_en": "Powers signal validation, sentiment and smart exits"
+                      if not ai_key else "set"},
+        # Optional steps still appear in the wizard (so the user can do them
+        # now rather than discover them later) but never block entry.
+        {"id": "telegram", "required": False,
+         "ok": bool(val("TELEGRAM_TOKEN") and val("TELEGRAM_CHAT_ID")),
+         "title": "Telegram 通知（可选）", "title_en": "Telegram alerts (optional)",
+         "detail": "交易通知 + 审批卡片", "detail_en": "Trade alerts + approval cards"},
+        {"id": "tavily", "required": False, "ok": bool(val("TAVILY_API_KEY")),
+         "title": "Tavily 新闻搜索（可选）", "title_en": "Tavily news search (optional)",
+         "detail": "给 AI 提供实时新闻上下文",
+         "detail_en": "Gives the AI live news context"},
+    ]
+    return {"complete": all(s["ok"] for s in steps if s["required"]),
+            "steps": steps,
+            "trade_env": val("MOO_TRADE_ENV", "SIMULATE").upper()}
+
+
+@app.route("/api/setup/status")
+def api_setup_status():
+    return jsonify(setup_state())
 
 
 @app.route("/api/settings")

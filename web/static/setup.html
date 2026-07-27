@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#070a12">
+<meta name="color-scheme" content="dark">
+<title>初次设置 · MooTrader</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<style>
+  :root{--bg:#070a12;--card:rgba(17,23,38,.82);--primary:#58a6ff;--txt:#e6edf3;
+        --muted:#8b96a8;--border:#232c40;--ok:#3fb950;--warn:#d29922;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%}
+  body{background:
+         radial-gradient(900px 480px at 50% -12%, rgba(31,111,235,.22), transparent 62%),
+         radial-gradient(700px 420px at 90% 110%, rgba(163,113,247,.14), transparent 60%),
+         var(--bg);
+       font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+       color:var(--txt);padding:32px 18px 64px}
+  .wrap{max-width:640px;margin:0 auto}
+  .logo{font-weight:800;font-size:24px;letter-spacing:.2px}
+  .logo b{background:linear-gradient(120deg,#58a6ff,#a371f7);-webkit-background-clip:text;
+          background-clip:text;color:transparent}
+  .sub{color:var(--muted);font-size:13.5px;margin:6px 0 22px;line-height:1.6}
+  .card{background:linear-gradient(180deg,rgba(255,255,255,.03),transparent 45%),var(--card);
+        border:1px solid var(--border);border-radius:16px;padding:18px 20px;margin-bottom:14px;
+        box-shadow:0 18px 50px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.05)}
+  .row{display:flex;align-items:flex-start;gap:12px}
+  .dot{width:22px;height:22px;border-radius:50%;flex:0 0 22px;margin-top:1px;display:grid;
+       place-items:center;font-size:13px;font-weight:700}
+  .dot.ok{background:rgba(63,185,80,.16);color:var(--ok);border:1px solid rgba(63,185,80,.4)}
+  .dot.no{background:rgba(210,153,34,.14);color:var(--warn);border:1px solid rgba(210,153,34,.4)}
+  .dot.opt{background:rgba(139,150,168,.12);color:var(--muted);border:1px solid var(--border)}
+  .t{font-weight:650;font-size:15px}
+  .d{color:var(--muted);font-size:12.5px;margin-top:3px;line-height:1.55}
+  .tag{font-size:11px;padding:2px 7px;border-radius:20px;border:1px solid var(--border);
+       color:var(--muted);margin-left:8px;vertical-align:2px}
+  .body{margin-top:13px;padding-top:13px;border-top:1px solid var(--border)}
+  ol{margin:0;padding-left:19px;color:var(--muted);font-size:12.5px;line-height:1.85}
+  a{color:var(--primary);text-decoration:none} a:hover{text-decoration:underline}
+  code{background:rgba(7,11,20,.75);border:1px solid var(--border);border-radius:5px;
+       padding:1px 6px;font-size:11.5px;color:#c9d5e4}
+  input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);
+        background:rgba(7,11,20,.7);color:var(--txt);font-size:14px;outline:none;margin-top:9px}
+  input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(88,166,255,.16)}
+  .btn{padding:9px 16px;border:1px solid rgba(88,166,255,.5);border-radius:10px;
+       background:linear-gradient(180deg,#2f81f7,#1f6feb);color:#fff;font-size:13.5px;
+       font-weight:600;cursor:pointer;margin-top:10px}
+  .btn.ghost{background:transparent;border-color:var(--border);color:var(--muted)}
+  .btn:active{opacity:.85}
+  .btn:disabled{opacity:.5;cursor:default}
+  .go{width:100%;margin-top:8px;padding:13px;font-size:15px}
+  .note{font-size:12px;margin-top:8px;min-height:16px}
+  .note.ok{color:var(--ok)} .note.err{color:var(--err)}
+  .foot{color:var(--muted);font-size:11.5px;text-align:center;margin-top:18px;line-height:1.7}
+  .env{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;
+       border:1px solid rgba(210,153,34,.4);background:rgba(210,153,34,.12);color:var(--warn)}
+  .env.sim{border-color:rgba(63,185,80,.4);background:rgba(63,185,80,.12);color:var(--ok)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">Moo<b>Trader</b> · 初次设置</div>
+  <div class="sub">
+    完成下面的必需项后才能进入主界面。<span id="envTag"></span>
+  </div>
+  <div id="steps"></div>
+  <button class="btn go" id="goBtn" disabled onclick="location.href='/'">进入主界面</button>
+  <div class="foot">
+    这些设置写入 <code>.env</code>，保存在你自己的电脑上，不会上传。<br>
+    随时可以在主界面的「设置 ⚙」里修改。
+  </div>
+</div>
+
+<script>
+// Each required step renders its own how-to. Keys reuse /api/settings/key,
+// which validates against SETTING_KEYS server-side.
+const HOWTO = {
+  opend: () => `
+    <ol>
+      <li>下载富途 <b>OpenD</b> 网关：
+        <a href="https://www.futunn.com/download/OpenAPI" target="_blank" rel="noreferrer">futunn.com/download/OpenAPI</a>
+      </li>
+      <li>用你的富途/moomoo 账号登录 OpenD，并保持它在后台运行。</li>
+      <li>确认它监听在 <code>127.0.0.1:11111</code>（OpenD 默认端口）。</li>
+      <li>装好并登录后，点下面的「重新检测」。</li>
+    </ol>
+    <button class="btn ghost" onclick="refresh(true)">重新检测</button>`,
+  ai: () => `
+    <ol>
+      <li>去 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com/api_keys</a> 创建一个 API Key。</li>
+      <li>粘贴到下面（多个 Key 用逗号分隔可轮换）。</li>
+    </ol>
+    ${keyInput('DEEPSEEK_API_KEY', 'sk-...')}`,
+  telegram: () => `
+    <ol>
+      <li>在 Telegram 里找 <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a> 发送 <code>/newbot</code>，拿到 Token。</li>
+      <li>给你的新 bot 发一条消息，然后找 <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer">@userinfobot</a> 拿 Chat ID。</li>
+    </ol>
+    ${keyInput('TELEGRAM_TOKEN', '123456:ABC-DEF...')}
+    ${keyInput('TELEGRAM_CHAT_ID', '例如 123456789')}`,
+  tavily: () => `
+    <ol>
+      <li>去 <a href="https://app.tavily.com" target="_blank" rel="noreferrer">app.tavily.com</a> 注册并复制 API Key（有免费额度）。</li>
+    </ol>
+    ${keyInput('TAVILY_API_KEY', 'tvly-...')}`,
+};
+
+function keyInput(key, ph){
+  return `<input id="in_${key}" type="password" placeholder="${ph}" autocomplete="off">
+          <button class="btn" onclick="saveKey('${key}')">保存</button>
+          <div class="note" id="note_${key}"></div>`;
+}
+
+async function saveKey(key){
+  const el = document.getElementById('in_' + key);
+  const note = document.getElementById('note_' + key);
+  const v = (el.value || '').trim();
+  if(!v){ note.className='note err'; note.textContent='不能为空'; return; }
+  note.className='note'; note.textContent='保存中…';
+  try{
+    const r = await fetch('/api/settings/key', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key, value:v})});
+    const j = await r.json();
+    if(j.ok){ note.className='note ok'; note.textContent='已保存 ✓'; el.value='';
+              el.blur(); setTimeout(()=>refresh(true), 400); }
+    else { note.className='note err'; note.textContent = j.error || '保存失败'; }
+  }catch(e){ note.className='note err'; note.textContent='连接失败'; }
+}
+
+let openIds = new Set();
+
+function render(state){
+  const tag = document.getElementById('envTag');
+  const sim = state.trade_env === 'SIMULATE';
+  tag.innerHTML = `<span class="env ${sim?'sim':''}">${sim?'模拟盘 SIMULATE':'实盘 '+state.trade_env}</span>`;
+
+  document.getElementById('steps').innerHTML = state.steps.map(s => {
+    const cls = s.ok ? 'ok' : (s.required ? 'no' : 'opt');
+    const mark = s.ok ? '✓' : (s.required ? '!' : '·');
+    // Auto-expand the first unfinished required step; keep user-opened ones open.
+    const open = openIds.has(s.id) || (!s.ok && s.required && !state.steps.some(
+      x => x.required && !x.ok && state.steps.indexOf(x) < state.steps.indexOf(s)));
+    return `<div class="card">
+      <div class="row" style="cursor:pointer" onclick="toggle('${s.id}')">
+        <div class="dot ${cls}">${mark}</div>
+        <div style="flex:1">
+          <div class="t">${s.title}${s.required?'':'<span class="tag">可选</span>'}</div>
+          <div class="d">${s.detail}</div>
+        </div>
+      </div>
+      ${open ? `<div class="body">${(HOWTO[s.id]||(()=>''))()}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  const btn = document.getElementById('goBtn');
+  btn.disabled = !state.complete;
+  btn.textContent = state.complete ? '进入主界面 →' : '完成上面的必需项后即可进入';
+}
+
+function toggle(id){ openIds.has(id) ? openIds.delete(id) : openIds.add(id); refresh(true); }
+
+let lastJson = null;
+
+async function refresh(force){
+  // NEVER re-render while the user is in a field — render() replaces the whole
+  // subtree, which would wipe a half-pasted API key mid-entry. Caught by
+  // actually typing into it during the 4s poll.
+  const inField = document.activeElement &&
+                  document.activeElement.tagName === 'INPUT';
+  if(inField && !force) return;
+  try{
+    const r = await fetch('/api/setup/status');
+    if(r.status === 401){ location.href='/login'; return; }
+    const j = await r.json();
+    // Only touch the DOM when something actually changed, so the poll is
+    // invisible (no flicker, no lost scroll position).
+    const sig = JSON.stringify(j) + [...openIds].sort().join(',');
+    if(sig === lastJson && !force) return;
+    lastJson = sig;
+    render(j);
+  }catch(e){ /* server restarting — the next poll retries */ }
+}
+
+refresh(true);
+// OpenD can come up at any moment while the user reads; poll so the tick
+// flips on its own without them hunting for a refresh button.
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>
