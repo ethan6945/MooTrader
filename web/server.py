@@ -44,7 +44,7 @@ from flask import Flask, jsonify, make_response, redirect, request, send_from_di
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import ai, approvals, clock, db, keepawake, risk_manager  # noqa: E402
-from src.config import BUNDLE_DIR, ROOT, settings  # noqa: E402
+from src.config import BUNDLE_DIR, IS_FROZEN, ROOT, settings  # noqa: E402
 
 # In the frozen .app the static assets ship inside the bundle; in dev
 # BUNDLE_DIR == repo root, so this resolves to web/static either way.
@@ -66,7 +66,19 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 
 def _worker_cmd(module: str, *args: str) -> list[str]:
-    """Command that runs `python -m <module> <args…>` in the repo venv."""
+    """Command that runs `<module>.main()` as its own detached process.
+
+    Dev: `.venv/bin/python -m <module> <args…>` — the repo venv sits next to
+    the code.
+
+    Frozen: there IS no venv. ROOT is ~/Library/Application Support/MooMooTrader
+    and the interpreter only exists inside the .app, so the app re-execs its own
+    binary with a `--worker` switch; packaging/entry.py routes that through
+    runpy, giving the module the same argv it would see under `python -m`.
+    sys.executable is the bundled backend binary under PyInstaller.
+    """
+    if IS_FROZEN:
+        return [sys.executable, "--worker", module, *args]
     return [str(VENV_PY), "-m", module, *args]
 
 
@@ -1147,6 +1159,11 @@ def _schedule_web_restart(port: int, host: str) -> None:
     oldpid = os.getpid()
     p = int(port)
     h = shlex.quote(host)
+    # Dev relaunches the server as a script under the venv python. Frozen has
+    # neither — re-exec the bundled binary with no args, which entry.py routes
+    # to server mode.
+    relaunch = (shlex.quote(sys.executable) if IS_FROZEN
+                else f"{shlex.quote(str(VENV_PY))} web/server.py")
     script = (
         f"sleep 1; kill {oldpid} 2>/dev/null; "
         # wait up to 5s for graceful exit, then force-kill
@@ -1155,7 +1172,7 @@ def _schedule_web_restart(port: int, host: str) -> None:
         # wait until the port is actually released (avoids EADDRINUSE on rebind)
         f"for i in $(seq 1 20); do lsof -nP -iTCP:{p} -sTCP:LISTEN >/dev/null 2>&1 || break; sleep 0.5; done; "
         f"cd {shlex.quote(str(ROOT))}; "
-        f"WEB_HOST={h} WEB_PORT={p} nohup {shlex.quote(str(VENV_PY))} web/server.py "
+        f"WEB_HOST={h} WEB_PORT={p} nohup {relaunch} "
         f"> logs/web.log 2>&1 & echo $! > logs/web.pid"
     )
     subprocess.Popen(["/bin/bash", "-lc", script], start_new_session=True,
