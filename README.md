@@ -151,9 +151,11 @@ When bear-market rules stop new entries, park idle cash in a T-bill ETF (SGOV) f
 
 `macos/` is a **native SwiftUI app** (built with SwiftPM — only Command Line Tools needed, no Xcode). Everyday actions are native UI; the full panel (backtests etc.) opens in your default browser in one click. **One-tap EN/中文 switch, light/dark theme (can follow the system), a persistent menu-bar status icon + approval notifications**; the same backend is reachable from your phone (password required).
 
+Prebuilt and signed ad-hoc on the [latest release](https://github.com/ethan6945/moomoo-trader/releases/latest) (Apple Silicon) — that build bundles the Python backend, so it needs no repo and no venv. To build it yourself:
+
 ```bash
-macos/build.sh
-open macos/dist/MooTrader.app     # first launch: right-click → Open
+macos/build.sh                    # freezes the backend, then builds the app
+open macos/dist/MooTrader.app     # first launch: System Settings → Privacy & Security → Open Anyway
 ```
 
 > 📸 In the screenshots below, account balances, P&L, IPs, and API-key suffixes are all masked. The account is a **paper** account.
@@ -210,11 +212,27 @@ flowchart TB
 
 ## 🚀 Quick start
 
+**Two ways in.** *Option A* downloads a ready-to-run app — no clone, no Python, no `pip`. *Option B* installs from source: the reference path, the only one that works on Intel Macs, and what the rest of this README assumes.
+
+Either way you need **OpenD** and the API keys under [Requirements](#requirements) below. OpenD is a separate program from the broker app — you install it and log in yourself, and the bot talks to it on `127.0.0.1:11111`. There is no way around that step.
+
+### 📦 Option A — Download the app
+
+1. Grab **`MooTrader-*-arm64.dmg`** from the [latest release](https://github.com/ethan6945/moomoo-trader/releases/latest)
+2. Open it, drag **MooTrader** into **Applications**
+3. First launch: macOS will say it can't verify the developer. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway**, then confirm
+
+The app walks you through the rest itself — install and sign in to OpenD, add your AI key, optionally Telegram and Tavily. The dashboard stays locked until the required steps pass, so you can't leave it running half-configured.
+
+**macOS 14+ on Apple Silicon only.** The build is ad-hoc signed and not notarized — this project has no paid Apple Developer ID, which is the entire reason for the "Open Anyway" step. If you'd rather not take that on faith, Option B builds the same app from the source in this repo.
+
+Your `.env`, database, trade history and logs live in `~/Library/Application Support/MooMooTrader/`, outside the app bundle — so upgrading by replacing the `.app` never touches them.
+
 ### Requirements
 
 | Dependency | Purpose | Get it |
 |------|------|------|
-| macOS + Python 3.11+ | Runtime | The install script handles Python for you |
+| macOS + Python 3.11+ | Runtime | The install script handles Python for you — **Option A needs neither**, the app bundles its own |
 | OpenD | Quotes + order gateway | Download, install, and log in from [openapi.moomoo.com](https://openapi.moomoo.com) |
 | Broker app | Open an account + set a trade password | Get the official broker app from [openapi.moomoo.com](https://openapi.moomoo.com) (review takes 1–3 business days; enable Paper Trading) |
 
@@ -227,7 +245,9 @@ flowchart TB
 | Tavily | News search (fed to the AI) | [app.tavily.com](https://app.tavily.com) | 1000 req/mo |
 | Telegram bot | Notify + approve | [@BotFather](https://t.me/BotFather) | Free |
 
-### 1️⃣ Clone + one-command install
+### 🛠 Option B — Install from source
+
+#### 1️⃣ Clone + one-command install
 
 ```bash
 git clone https://github.com/ethan6945/moomoo-trader.git moo-trader
@@ -248,7 +268,7 @@ pip install -r requirements.txt
 
 </details>
 
-### 2️⃣ Configure `.env`
+#### 2️⃣ Configure `.env`
 
 ```bash
 cp .env.example .env
@@ -264,7 +284,7 @@ At minimum fill these (every key is documented in the template):
 | `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | Create with @BotFather |
 | `ACCOUNT_USD` | Your budget cap — the program will **never** deploy more than this |
 
-### 3️⃣ Launch
+#### 3️⃣ Launch
 
 ```bash
 ./start-web.command

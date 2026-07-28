@@ -151,9 +151,11 @@ Optuna 贝叶斯调参 + AI 优化器 + 每日增量 sweep。护栏内的建议�
 
 `macos/` 下是一个**原生 SwiftUI 应用**（SwiftPM 构建，只需 Command Line Tools、无需 Xcode）。日常操作都做成了原生界面，回测等完整面板一键在默认浏览器打开。**中英一键切换、深/浅色主题（可跟随系统）、菜单栏常驻状态图标 + 审批系统通知**；同一套后端手机也能访问（需设密码）。
 
+[最新 release](https://github.com/ethan6945/moomoo-trader/releases/latest) 上有构建好、ad-hoc 签名的版本（Apple Silicon）—— 那个版本内含 Python 后端，不需要仓库也不需要 venv。想自己构建：
+
 ```bash
-macos/build.sh
-open macos/dist/MooTrader.app     # 首次右键 → 打开
+macos/build.sh                    # 先冻结后端，再构建 app
+open macos/dist/MooTrader.app     # 首次打开：系统设置 → 隐私与安全性 → 仍要打开
 ```
 
 > 📸 下面截图中账户金额、盈亏、IP、API Key 尾号均已打码。账户为**模拟盘**（paper）。
@@ -210,11 +212,27 @@ flowchart TB
 
 ## 🚀 快速上手
 
+**两种装法。** *方式 A* 直接下载打包好的 app —— 不用克隆仓库、不用装 Python、不用 `pip`。*方式 B* 从源码安装：这是基准路径，也是 Intel Mac 唯一能走的路，本 README 后面的内容都以它为准。
+
+无论哪种，你都需要 **OpenD** 和下面[环境要求](#环境要求)里的 API Key。OpenD 是独立于券商 App 的另一个程序，要你自己安装并登录，bot 通过 `127.0.0.1:11111` 连它 —— 这一步绕不开。
+
+### 📦 方式 A — 下载 app
+
+1. 到 [最新 release](https://github.com/ethan6945/moomoo-trader/releases/latest) 下载 **`MooTrader-*-arm64.dmg`**
+2. 打开，把 **MooTrader** 拖进 **Applications**
+3. 首次打开：macOS 会提示无法验证开发者。打开**系统设置 → 隐私与安全性**，往下滚，点**仍要打开**，再确认一次
+
+剩下的 app 会自己引导你走完 —— 安装并登录 OpenD、填 AI Key，Telegram 和 Tavily 可选。必填项没过之前主面板一直锁着，不会让你在半配置状态下把它跑起来。
+
+**仅支持 macOS 14+ 的 Apple Silicon。** 这个版本是 ad-hoc 签名、未做公证（notarization）—— 本项目没有付费的 Apple Developer ID，「仍要打开」那一步就是因为这个。如果你不想仅凭信任接受，方式 B 能从本仓库源码构建出完全相同的 app。
+
+你的 `.env`、数据库、交易记录和日志都在 `~/Library/Application Support/MooMooTrader/`，在 app 包外面 —— 所以直接替换 `.app` 升级不会动到它们。
+
 ### 环境要求
 
 | 依赖 | 用途 | 获取 |
 |------|------|------|
-| macOS + Python 3.11+ | 运行环境 | 安装脚本会自动处理 Python |
+| macOS + Python 3.11+ | 运行环境 | 安装脚本会自动处理 Python —— **方式 A 两样都不需要**，app 自带 |
 | OpenD | 行情 + 下单网关 | [openapi.moomoo.com](https://openapi.moomoo.com) 下载安装并登录 |
 | 券商 App | 开户 + 设交易密码 | 到 [openapi.moomoo.com](https://openapi.moomoo.com) 所属券商官网 / App Store 下载官方 App（审核 1–3 工作日，开通 Paper Trading） |
 
@@ -227,10 +245,12 @@ flowchart TB
 | Tavily | 新闻搜索（喂给 AI） | [app.tavily.com](https://app.tavily.com) | 1000 req/月 |
 | Telegram Bot | 通知 + 审批 | [@BotFather](https://t.me/BotFather) | 免费 |
 
-### 1️⃣ 克隆 + 一键安装
+### 🛠 方式 B — 从源码安装
+
+#### 1️⃣ 克隆 + 一键安装
 
 ```bash
-git clone <your-repo-url> moo-trader
+git clone https://github.com/ethan6945/moomoo-trader.git moo-trader
 cd moo-trader
 ./setup-macmini.command
 ```
@@ -248,7 +268,7 @@ pip install -r requirements.txt
 
 </details>
 
-### 2️⃣ 配置 `.env`
+#### 2️⃣ 配置 `.env`
 
 ```bash
 cp .env.example .env
@@ -264,7 +284,7 @@ cp .env.example .env
 | `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | @BotFather 创建 |
 | `ACCOUNT_USD` | 你分配的预算上限——程序**绝不**投入超过这个数 |
 
-### 3️⃣ 启动
+#### 3️⃣ 启动
 
 ```bash
 ./start-web.command
