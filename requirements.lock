@@ -31,10 +31,16 @@
 # it, and pinning them here would drag them into the bundle.
 #
 # Captured from the working venv on 2026-07-28, Python 3.11.15, macOS arm64.
-# NOTE: these are the versions the bot is currently trading on, not a
-# hand-audited set. Pinning freezes the drift in place; it does not undo it.
-# If you ever want to move back to the versions the older backtests ran on,
-# that is a separate, deliberate downgrade.
+#
+# DECIDED 2026-07-28 (owner): this stack is what the bot runs on. It has been
+# trading fine, so THESE versions are the reference — no downgrade back to the
+# older pandas 2.x / numpy 1.x / moomoo-api 9.x that early backtests used.
+# Treat any mismatch against this file as a bug to fix, not a version to chase.
+#
+# Consequence worth knowing rather than acting on: $/day figures quoted in
+# older comments and docs were produced on the pre-drift stack. The weekly
+# backtest re-runs on the CURRENT stack, so live and validation converge going
+# forward — only the historical numbers refer to a stack no longer installed.
 
 alembic==1.18.5
 annotated-types==0.7.0
