@@ -397,6 +397,16 @@ class MooClient:
             raise RuntimeError(f"position_list_query failed: {data}")
         return data
 
+    def get_short_symbols(self) -> set[str]:
+        """Symbols the account is NET SHORT. Buying one of these nets against
+        the short instead of opening a long — see reconcile.short_symbols()."""
+        try:
+            from .reconcile import short_symbols     # lazy: avoids import cycle
+            return short_symbols(self.get_positions())
+        except Exception as e:
+            log.warning("get_short_symbols failed: %s", e)
+            return set()
+
     def get_last_sell_fill(self, symbol: str, lookback_days: int = 7) -> dict | None:
         """Most recent SELL execution for `symbol` → {price, qty, time}, or None.
 
@@ -454,6 +464,75 @@ class MooClient:
             log.debug("history_deal_list_query(%s) failed: %s", symbol, e)
 
         return None
+
+    def find_dealt_sell_orders(self, symbol: str, lookback_days: int = 7) -> list[dict]:
+        """SELL orders for `symbol` that actually dealt → [{order_id, price,
+        qty, time, status}], oldest first. Empty list = the broker has no
+        record of anything being sold.
+
+        Deliberately reads the ORDER list rather than the deal list. Paper
+        trading refuses deal queries outright ("Paper trading does not support
+        deal data"), which is why get_last_sell_fill always returned None under
+        SIMULATE and every ghost fell through to an INVENTED manual-sell price
+        (2026-07-28: DDOG booked a $253.46 MANUAL_SELL that never happened).
+        Orders are queryable in both envs, carry the order_id that tells OUR
+        exit from a hand-placed one, and report dealt_avg_price — the real fill.
+        """
+        code = self._format_code(symbol)
+        bare = symbol.split(".")[-1]
+        rows: list[dict] = []
+
+        def _collect(df) -> None:
+            if df is None or getattr(df, "empty", True):
+                return
+            d = df.copy()
+            if "code" in d.columns:
+                d = d[d["code"].astype(str).str.endswith(bare)]
+            if "trd_side" in d.columns:
+                d = d[d["trd_side"].astype(str).str.upper().str.contains("SELL")]
+            for _, r in d.iterrows():
+                try:
+                    qty = int(float(r.get("dealt_qty") or 0))
+                    price = float(r.get("dealt_avg_price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if qty <= 0 or price <= 0:
+                    continue          # cancelled / never filled — not evidence
+                rows.append({
+                    "order_id": str(r.get("order_id", "")),
+                    "price": price,
+                    "qty": qty,
+                    "time": str(r.get("create_time") or ""),
+                    "status": str(r.get("order_status", "")),
+                })
+
+        try:
+            ret, data = self.trade.order_list_query(code=code, trd_env=_env_enum())
+            if ret == RET_OK:
+                _collect(data)
+        except Exception as e:
+            log.debug("order_list_query(%s) failed: %s", symbol, e)
+
+        try:
+            from datetime import date, timedelta
+            ret, data = self.trade.history_order_list_query(
+                code=code,
+                start=(date.today() - timedelta(days=lookback_days)).isoformat(),
+                end=date.today().isoformat(),
+                trd_env=_env_enum())
+            if ret == RET_OK:
+                _collect(data)
+        except Exception as e:
+            log.debug("history_order_list_query(%s) failed: %s", symbol, e)
+
+        seen: set[str] = set()
+        uniq = []
+        for r in sorted(rows, key=lambda x: x["time"]):
+            if r["order_id"] and r["order_id"] in seen:
+                continue
+            seen.add(r["order_id"])
+            uniq.append(r)
+        return uniq
 
     def get_pending_buy_value(self) -> float:
         """Sum of (price × qty) for BUY orders awaiting fill — counted as

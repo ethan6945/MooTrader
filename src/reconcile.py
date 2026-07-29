@@ -1,11 +1,17 @@
 """Audit internal trade state vs broker positions.
 
-Detects three failure modes:
+Detects four failure modes:
   • ORPHAN    — broker has the position, our records don't (manual buy or
                 executor crashed before persisting open_trades.json).
   • GHOST     — our records claim a position the broker doesn't have
-                (closed manually or unrecorded close).
+                (closed somewhere we didn't record — source determined from
+                broker sell orders, never assumed).
   • MISMATCH  — both sides know the symbol but qty differs (partial fill).
+  • SHORT_DRIFT — the broker is NET SHORT a symbol. The bot is long-only, so
+                this is exposure nobody manages, and worse: a buy on that
+                symbol nets against the short instead of opening a long.
+                Reported and blocked, never auto-fixed (unwinding it means
+                placing orders the strategy never asked for).
 
 We log + persist a snapshot to data/reconcile.json so the GUI can surface it.
 Auto-fix is intentionally NOT done — wrong-direction repairs cost real money.
@@ -80,6 +86,92 @@ def _recent_close_age_s(symbol: str) -> float | None:
     return _iso_age_s(ts) if ts else None
 
 
+def _sell_after_entry(sell_time: str, opened_at: str) -> bool:
+    """True if a broker sell at `sell_time` could have closed a position opened
+    at `opened_at`. Sells that predate the entry belong to an earlier round trip
+    and must not be used as evidence for this one.
+
+    Careful with clocks: the SDK reports create_time as naive EASTERN, while
+    open_trades stores opened_at as naive UTC. Comparing them raw would be off
+    by 4-5 hours — enough to accept a stale sell or reject the right one.
+    Unparsable input returns True so a format surprise degrades to the old
+    (permissive) behaviour rather than silently discarding real evidence.
+    """
+    try:
+        sold = datetime.fromisoformat(sell_time.strip().replace("/", "-").split(".")[0])
+        entered_utc = datetime.fromisoformat(str(opened_at).replace("Z", ""))
+    except ValueError:
+        return True
+    if entered_utc.tzinfo is not None:
+        entered_utc = entered_utc.astimezone(pytz.utc).replace(tzinfo=None)
+    entered_et = pytz.utc.localize(entered_utc).astimezone(NY).replace(tzinfo=None)
+    return (sold - entered_et).total_seconds() > -60      # 60s clock-skew grace
+
+
+def _quarantine_unexplained(symbol: str, trade: dict | None, ghost: dict) -> None:
+    """Park an unexplainable close in data/unexplained_closes.jsonl.
+
+    Keeps the event auditable without letting an unverified number into
+    trades.jsonl, where it would feed win rate, half-Kelly sizing, the
+    optimizer and the blacklist. Never raises — quarantine is a courtesy, the
+    drop itself already happened."""
+    try:
+        path = settings.root / "data" / "unexplained_closes.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "ts": datetime.now(NY).isoformat(),
+            "symbol": symbol,
+            "qty": (trade or {}).get("qty") or ghost.get("our_qty"),
+            "entry_price": (trade or {}).get("entry_price") or ghost.get("entry"),
+            "opened_at": (trade or {}).get("opened_at"),
+            "buy_order_id": (trade or {}).get("buy_order_id"),
+            "strategy": (trade or {}).get("strategy"),
+            "note": "broker holds none and reports no dealt SELL order — "
+                    "close source unknown, deliberately excluded from stats",
+        }
+        with path.open("a") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except Exception as e:
+        log.debug("quarantine %s failed: %s", symbol, e)
+
+
+def net_positions(broker_positions: pd.DataFrame) -> dict[str, float]:
+    """symbol → SIGNED net qty from a broker position frame (negative = short).
+
+    The bot is long-only, so every call site used to filter `qty > 0` and drop
+    the rest. That silently erased short rows from the entire system — and a
+    short is NOT the same as flat: a buy nets against it instead of opening a
+    long. See short_symbols() for the damage that caused.
+    """
+    out: dict[str, float] = {}
+    if broker_positions is None or broker_positions.empty:
+        return out
+    for _, row in broker_positions.iterrows():
+        try:
+            qty = float(row["qty"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if qty == 0:
+            continue
+        sym = str(row["code"]).split(".")[-1]
+        out[sym] = out.get(sym, 0.0) + qty
+    return out
+
+
+def short_symbols(broker_positions: pd.DataFrame) -> set[str]:
+    """Symbols the account is NET SHORT.
+
+    Root cause of the 2026-07-28 DDOG incident: the account carried a −3 DDOG
+    short (residue of a 2026-06-03 double-sell). The bot bought 2 shares, the
+    fill netted the short to −1, no long ever existed, and reconcile — which
+    only looked at `qty > 0` — read that as "broker doesn't have it" and booked
+    a fabricated MANUAL_SELL against the owner. Every entry now checks this set
+    first, and reconcile reports these as SHORT_DRIFT instead of pretending
+    they aren't there.
+    """
+    return {s for s, q in net_positions(broker_positions).items() if q < 0}
+
+
 def reconcile(broker_positions: pd.DataFrame, auto_fix: bool = True,
               client=None) -> dict:
     """Thread-safe wrapper — reconcile's load→fix→save on the open-trades
@@ -112,15 +204,23 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
         except json.JSONDecodeError:
             our_trades = {}
 
-    broker_holdings: dict[str, dict] = {}    # symbol → {qty, cost_price}
+    broker_holdings: dict[str, dict] = {}    # symbol → {qty, cost_price} (LONG only)
+    broker_shorts: dict[str, dict] = {}      # symbol → {qty, cost_price} (NET SHORT)
     if not broker_positions.empty:
-        held = broker_positions[broker_positions["qty"].astype(float) > 0]
-        for _, row in held.iterrows():
-            sym = row["code"].split(".")[-1]
-            broker_holdings[sym] = {
-                "qty": int(float(row["qty"])),
-                "cost_price": float(row.get("cost_price") or 0),
-            }
+        for _, row in broker_positions.iterrows():
+            try:
+                qty = float(row["qty"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if qty == 0:
+                continue
+            sym = str(row["code"]).split(".")[-1]
+            rec = {"qty": int(qty), "cost_price": float(row.get("cost_price") or 0)}
+            # A short is tracked separately, never silently dropped: it is not a
+            # position the bot may manage (long-only), but it DOES absorb buys,
+            # so entry must refuse it and ghost handling must not mistake it for
+            # a sale that never happened.
+            (broker_holdings if qty > 0 else broker_shorts)[sym] = rec
 
     our_syms = {s for s, t in our_trades.items() if t.get("qty", 0) > 0}
     broker_syms = set(broker_holdings.keys())
@@ -253,17 +353,46 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
             log.warning("Reconcile auto-fix: adopted orphan %s qty=%d @ $%.2f",
                         sym, o["broker_qty"], cost)
 
-        # FIX GHOST: a tracked position the broker no longer holds = it was closed
-        # ELSEWHERE — you sold it yourself in the broker app (or an unrecorded
-        # close). BOOK the realised P&L at the true fill price so the trade lands
-        # in trades.jsonl / win-rate / equity, THEN drop the record. Falls back to
-        # a fresh last price (flagged approximate) so the trade is still recorded
-        # even when the fill lookup fails. Booked once: next scan it's no longer a
-        # ghost, so there's no double-count.
+        # FIX GHOST: a tracked position the broker no longer holds. It was closed
+        # somewhere we didn't record — but WHO closed it is a question to be
+        # ANSWERED FROM BROKER EVIDENCE, never assumed.
+        #
+        # 2026-07-29 rewrite. This branch used to have exactly one story ("you
+        # sold it in the broker app"), price the exit off a live quote when the
+        # fill lookup failed, book it as MANUAL_SELL, and message the owner
+        # asserting they'd done it. All three steps were wrong at once for DDOG
+        # on 2026-07-28: no sale had happened (the buy netted against a legacy
+        # short), the fill lookup CANNOT succeed under SIMULATE (paper trading
+        # refuses deal queries), and the invented +$2.2 landed in trades.jsonl,
+        # the win rate, half-Kelly sizing and the optimizer. Attribution now runs
+        # in evidence order and books P&L only when a real sell fill backs it.
         from . import executor
         for g in ghosts:
             sym = g["symbol"]
             trade = our_trades.get(sym)
+
+            # (0) NETTED AGAINST A SHORT — not a close at all. Our buy reduced a
+            # pre-existing short instead of opening a long, so the "position we
+            # think we hold" never existed. Drop the record, book nothing, and
+            # shout: the short is a real, unmanaged exposure.
+            if sym in broker_shorts:
+                short_qty = broker_shorts[sym]["qty"]
+                our_trades.pop(sym, None)
+                fixes_applied.append({"type": "GHOST_DROPPED", "symbol": sym,
+                                      "netted_against_short": short_qty})
+                log.error("Reconcile auto-fix: dropped %s — NOT a sale. Broker is "
+                          "NET SHORT %d, so our buy netted against that short and "
+                          "no long was ever opened. No P&L booked.",
+                          sym, short_qty)
+                try:
+                    from . import notifier
+                    notifier.send(
+                        f"⚠️ {sym} 并没有被卖出。账户在该标的上是净空头 "
+                        f"({short_qty} 股)，机器人的买入被用去轧空头，多头仓位从未建立。"
+                        f"已删除错误记录，未记任何盈亏。请先清掉这个空头。")
+                except Exception:
+                    pass
+                continue
 
             # 2026-07-09 phantom guard: a "ghost" whose BUY order never filled
             # is NOT a manual close — the position never existed. (Root cause
@@ -305,49 +434,83 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
                                 sym, buy_oid or "?")
                     continue
 
-            booked = None
-            if trade and client is not None:
-                exit_price = None
-                approx = False
+            # (2) WHO SOLD IT? Look for a SELL order that actually dealt. The
+            # order list answers this in BOTH envs (the deal list is paper-
+            # blocked), and its order_id is what separates our own exit from a
+            # hand-placed one — "not in my records" is not evidence of a manual
+            # sale, it's evidence of nothing.
+            sells: list[dict] = []
+            if trade is not None and client is not None:
                 try:
-                    fill = client.get_last_sell_fill(sym)
+                    sells = client.find_dealt_sell_orders(sym)
                 except Exception as e:
-                    log.warning("ghost %s: fill lookup failed: %s", sym, e)
-                    fill = None
-                if fill and fill.get("price", 0) > 0:
-                    exit_price = float(fill["price"])
-                else:
-                    try:
-                        lp = executor._last_price(client, sym)
-                        if lp:
-                            exit_price, approx = float(lp), True
-                    except Exception:
-                        pass
-                if exit_price:
-                    try:
-                        qty = int(trade.get("qty") or g.get("our_qty") or 0)
-                        pnl = executor._close_and_log(sym, trade, qty, exit_price,
-                                                      "MANUAL_SELL")
-                        booked = {"exit": exit_price, "qty": qty,
-                                  "pnl": round(pnl, 2), "approx": approx}
-                    except Exception as e:
-                        log.warning("ghost %s: booking close failed: %s", sym, e)
+                    log.warning("ghost %s: sell-order lookup failed: %s", sym, e)
+            # Only sells AFTER our entry can explain THIS position.
+            opened_at = str((trade or {}).get("opened_at") or "")
+            our_oids = {str((trade or {}).get(k) or "")
+                        for k in ("stop_order_id", "tp_order_id", "exit_order_id")}
+            our_oids.discard("")
+            sells = [s for s in sells
+                     if not opened_at or not s["time"]
+                     or _sell_after_entry(s["time"], opened_at)]
+
+            if not sells:
+                # NO evidence of any sale. Previously this invented a price off
+                # the live quote and called it MANUAL_SELL. Quarantine instead:
+                # the record is dropped (the broker is authoritative on what we
+                # hold) but nothing enters the performance stats, because a
+                # fabricated trade corrupts win rate, Kelly and the optimizer
+                # far more than a missing one does.
+                our_trades.pop(sym, None)
+                fixes_applied.append({"type": "GHOST_DROPPED", "symbol": sym,
+                                      "unexplained": True})
+                _quarantine_unexplained(sym, trade, g)
+                log.error("Reconcile auto-fix: dropped ghost %s — UNEXPLAINED. "
+                          "Broker holds none, and has NO dealt sell order for it. "
+                          "No P&L booked (quarantined to data/unexplained_closes.jsonl).",
+                          sym)
+                try:
+                    from . import notifier
+                    notifier.send(
+                        f"❓ {sym} 从券商持仓中消失，但券商没有任何该标的的成交卖单。"
+                        f"无法判定平仓来源，已删除本地记录、未记盈亏，明细存入 "
+                        f"unexplained_closes.jsonl 待你核对。")
+                except Exception:
+                    pass
+                continue
+
+            last_sell = sells[-1]
+            by_bot = last_sell["order_id"] in our_oids
+            reason = "BOT_SELL_UNRECORDED" if by_bot else "MANUAL_SELL"
+            booked = None
+            try:
+                qty = int(trade.get("qty") or g.get("our_qty") or 0)
+                pnl = executor._close_and_log(sym, trade, qty,
+                                              last_sell["price"], reason)
+                booked = {"exit": last_sell["price"], "qty": qty,
+                          "pnl": round(pnl, 2), "reason": reason,
+                          "order_id": last_sell["order_id"],
+                          "sold_at": last_sell["time"]}
+            except Exception as e:
+                log.warning("ghost %s: booking close failed: %s", sym, e)
             our_trades.pop(sym, None)
             fix = {"type": "GHOST_DROPPED", "symbol": sym}
             if booked:
                 fix["booked"] = booked
             fixes_applied.append(fix)
             log.warning("Reconcile auto-fix: dropped ghost %s%s", sym,
-                        (f" (booked manual sell @ ${booked['exit']:.2f}, "
-                         f"pnl ${booked['pnl']:+.0f}"
-                         f"{' ~approx' if booked['approx'] else ''})") if booked else "")
+                        (f" (booked {booked['reason']} @ ${booked['exit']:.2f} "
+                         f"from broker order {booked['order_id']}, "
+                         f"pnl ${booked['pnl']:+.0f})") if booked else "")
             if booked:
                 try:
                     from . import notifier
-                    tag = "（现价近似）" if booked["approx"] else ""
-                    notifier.send(f"📝 已记录你手动平仓 {sym} {booked['qty']} 股 @ "
-                                  f"${booked['exit']:.2f}{tag} — 已实现 "
-                                  f"${booked['pnl']:+.0f}，已计入交易统计。")
+                    who = ("机器人自己的卖单（本地未记录）" if by_bot
+                           else "券商端的手动卖单（不是机器人下的）")
+                    notifier.send(f"📝 {sym} {booked['qty']} 股平仓已入账 @ "
+                                  f"${booked['exit']:.2f} — 来源：{who}，"
+                                  f"券商订单号 {booked['order_id']}，"
+                                  f"已实现 ${booked['pnl']:+.0f}。")
                 except Exception:
                     pass
 
@@ -395,6 +558,13 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
     db.update_state({"reconcile_severe_streak": severe_streak})
     halt_now = unfixed_severe and severe_streak >= 2
 
+    # SHORT_DRIFT is reported, never auto-fixed: unwinding a short means placing
+    # a BUY, and reconcile does not get to open orders the strategy never asked
+    # for. It blocks entries (executor) and blocks ghost mis-booking (above);
+    # clearing it is the owner's call.
+    shorts = [{"symbol": s, "broker_qty": v["qty"], "cost_price": v["cost_price"]}
+              for s, v in sorted(broker_shorts.items())]
+
     result = {
         "ts": datetime.now(NY).isoformat(),
         "ok": not (orphans or ghosts or mismatches),
@@ -402,12 +572,14 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
         "orphans": orphans,
         "ghosts": ghosts,
         "mismatches": mismatches,
+        "shorts": shorts,
         "fixes_applied": fixes_applied,
         "summary": (
-            f"OK ({len(broker_syms)} positions)"
-            if not (orphans or ghosts or mismatches)
-            else f"{len(orphans)} orphan, {len(ghosts)} ghost, "
-                 f"{len(mismatches)} mismatch — {len(fixes_applied)} auto-fixed"
+            (f"OK ({len(broker_syms)} positions)"
+             if not (orphans or ghosts or mismatches)
+             else f"{len(orphans)} orphan, {len(ghosts)} ghost, "
+                  f"{len(mismatches)} mismatch — {len(fixes_applied)} auto-fixed")
+            + (f" [+{len(shorts)} SHORT drift]" if shorts else "")
         ),
     }
 
@@ -424,14 +596,41 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
     return result
 
 
+def _shorts_alert_due() -> bool:
+    """True at most once per NY day — short drift is a standing condition, not
+    an event, so it must not re-alert every 15-minute scan."""
+    today = datetime.now(NY).date().isoformat()
+    try:
+        if (db.get_state().get("shorts_alerted_day") or "") == today:
+            return False
+        db.update_state({"shorts_alerted_day": today})
+    except Exception:
+        return False
+    return True
+
+
 def log_reconcile(result: dict) -> str:
     """Pretty-print issues to log. Returns short summary for notifier."""
+    shorts = result.get("shorts") or []
+    short_lines = []
+    for s in shorts:
+        line = (f"SHORT DRIFT: {s['symbol']} qty={s['broker_qty']} at broker "
+                f"(cost ${s['cost_price']:.2f}) — unmanaged short exposure, "
+                f"entries on this symbol are blocked")
+        log.warning("  %s", line)
+        short_lines.append(line)
+
     if result["ok"]:
         log.info("Reconcile OK — %s", result["summary"])
+        if short_lines and _shorts_alert_due():
+            return ("*Reconcile alert*\n" + "\n".join(short_lines)
+                    + "\n（机器人只做多，这些空头不归它管，请手动平掉）")
         return ""
 
     log.warning("⚠ RECONCILE ISSUES — %s", result["summary"])
     msg_lines = ["*Reconcile alert*"]
+    if short_lines and _shorts_alert_due():
+        msg_lines.extend(short_lines)
     for o in result["orphans"]:
         line = f"ORPHAN: {o['symbol']} qty={o['broker_qty']} in broker, not tracked"
         log.warning("  %s", line)

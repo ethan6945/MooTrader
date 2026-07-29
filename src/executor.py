@@ -244,6 +244,25 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
                  "(cooldown until next NY trading day)", signal.symbol, cooldown)
         return None
 
+    # NET-SHORT GUARD (2026-07-29). Buying a symbol the account is short does
+    # not open a long — it covers the short. The position we'd then track would
+    # not exist at the broker, reconcile would read that as a vanished holding,
+    # and the P&L would be booked against a trade that never happened (DDOG,
+    # 2026-07-28). The bot is long-only and does not unwind shorts on its own,
+    # so the only safe move is to leave the symbol alone until the owner clears
+    # it. Fail-open: a broker hiccup must not silently stop all trading.
+    try:
+        if signal.symbol in client.get_short_symbols():
+            _LAST_ENTRY_SKIP = ("net_short",
+                                "account is net SHORT this symbol — a buy would "
+                                "cover the short, not open a long")
+            log.warning("%s: entry blocked — account is NET SHORT this symbol; "
+                        "a buy would net against it instead of opening a long. "
+                        "Clear the short first.", signal.symbol)
+            return None
+    except Exception as e:
+        log.warning("%s: net-short check failed (%s) — proceeding", signal.symbol, e)
+
     trades = _load_open_trades()
     existing = trades.get(signal.symbol)
     is_stack = existing is not None and int(existing.get("qty", 0)) > 0
@@ -418,6 +437,41 @@ _FILL_POLL_ATTEMPTS = 3
 _FILL_POLL_SLEEP_SEC = 0.4
 
 
+def _assert_still_held(client: MooClient, symbol: str, qty: int, reason: str) -> None:
+    """Refuse to place an exit SELL for shares the broker no longer holds.
+
+    THE duplicate-sell guard. Every naked short in the account traces to one
+    exit executing twice: the sell reached the broker, then something after it
+    raised (a place_order response that timed out with the order live, a
+    booking write that failed), the caller's `except` left the trade record in
+    place, and the next cycle sold the same shares again — into a short.
+    Fingerprint: paired fills one scan interval apart (XLF, MSFT, SWKS, INTC,
+    MCHP, HPQ, DDOG, GOOGL — 8 for 8, May-June 2026), which is why the account
+    still carries them.
+
+    Every retry-after-partial-failure path is protected by asking the ONE
+    authority on what we hold. Fails OPEN when the broker can't be reached: a
+    protective exit must not be blocked by a flaky query, and absence of an
+    answer is not evidence that we're flat. It fails CLOSED only on a positive
+    answer of "you don't hold that" — which is exactly the duplicate case.
+    """
+    try:
+        positions = client.get_positions()
+    except Exception as e:
+        log.warning("%s %s: holdings check failed (%s) — placing the exit anyway",
+                    symbol, reason, e)
+        return
+    from .reconcile import net_positions
+    held = net_positions(positions).get(symbol, 0.0)
+    if held >= qty:
+        return
+    raise RuntimeError(
+        f"{symbol}: refusing {reason} sell of {qty} — broker shows {held:+.0f} "
+        f"held. The exit already went through (or the position was closed "
+        f"elsewhere); selling again would open a SHORT. Dropping the stale "
+        f"record is reconcile's job.")
+
+
 def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
                          limit_px: float, quote_px: float, reason: str) -> float:
     """Place an exit SELL and return the price the close should be BOOKED at.
@@ -430,6 +484,7 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
     AI optimizer, the blacklist and adaptive sizing. Raises only if the order
     itself fails to place (callers already handle that).
     """
+    _assert_still_held(client, symbol, qty, reason)
     order_id = client.place_limit_order(symbol, qty, limit_px, TrdSide.SELL)
     try:
         for attempt in range(_FILL_POLL_ATTEMPTS):
