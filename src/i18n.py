@@ -168,6 +168,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "tg_tp_half": ("💰 *TP half* {symbol} qty={qty} @ ${price:.2f} "
                        "PnL ${pnl:+.2f}"),
         "tg_trail": "📈 *Trail stop* {symbol} → ${new_stop:.2f}",
+        "tg_tp_full": ("🎯 *TP FULL* {symbol} qty={qty} @ ${price:.2f} "
+                       "PnL ${pnl:+.2f}"),
+        "tg_scale_out": ("💰 *Scale-out T{tranche}* {symbol} qty={qty} @ ${price:.2f} "
+                         "PnL ${pnl:+.2f}"),
+        "tg_cancel_stale": ("🚫 *Stale order cancelled* {symbol} — unfilled after "
+                            "{age_min} min"),
+        "tg_edit_stop": "✏️ *Stop moved* {symbol} ${old:.2f} → ${new:.2f}",
         "tg_stop_hit": ("🛑 *STOP HIT* {symbol} qty={qty} "
                         "PnL ${pnl:+.2f}\n"
                         "Price ${price:.2f} ≤ Stop ${stop:.2f}"),
@@ -325,6 +332,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "tg_tp_half": ("💰 *止盈半仓* {symbol} 数量={qty} @ ${price:.2f} "
                        "PnL ${pnl:+.2f}"),
         "tg_trail": "📈 *跟踪止损* {symbol} → ${new_stop:.2f}",
+        "tg_tp_full": ("🎯 *全仓止盈* {symbol} 数量={qty} @ ${price:.2f} "
+                       "PnL ${pnl:+.2f}"),
+        "tg_scale_out": ("💰 *分批止盈 第{tranche}档* {symbol} 数量={qty} @ ${price:.2f} "
+                         "PnL ${pnl:+.2f}"),
+        "tg_cancel_stale": "🚫 *撤销挂单* {symbol} — 挂了 {age_min} 分钟未成交",
+        "tg_edit_stop": "✏️ *止损调整* {symbol} ${old:.2f} → ${new:.2f}",
         "tg_stop_hit": ("🛑 *触发止损* {symbol} 数量={qty} "
                         "PnL ${pnl:+.2f}\n"
                         "价格 ${price:.2f} ≤ 止损 ${stop:.2f}"),

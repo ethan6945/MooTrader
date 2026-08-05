@@ -17,6 +17,15 @@ from .i18n import t
 log = logging.getLogger(__name__)
 
 
+def _md_escape(s: str) -> str:
+    """Neutralise Telegram legacy-Markdown control characters in text that came
+    from data rather than from a message template. Templates use *bold* and
+    `code` on purpose and must NOT be run through this."""
+    for ch in ("_", "*", "`", "["):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 def send(text: str) -> None:
     if not settings.telegram_token or not settings.telegram_chat_id:
         log.info("[telegram disabled] %s", text)
@@ -39,7 +48,11 @@ def send(text: str) -> None:
             # Retry IMMEDIATELY instead of `continue` — a continue on the last
             # loop iteration would silently drop the message.
             if r.status_code == 400 and "parse" in r.text.lower() and payload.get("parse_mode"):
-                log.warning("telegram markdown parse error — retrying as plain text")
+                # Log the offending text: without it the warning says something
+                # broke but not what, and the message is gone by the time anyone
+                # looks. (2026-08-05: cost a full forensic pass to identify.)
+                log.warning("telegram markdown parse error — retrying as plain "
+                            "text. offending message: %r", text[:200])
                 payload.pop("parse_mode", None)
                 r = requests.post(url, data=payload, timeout=15)
                 if r.ok:
@@ -92,12 +105,35 @@ def clock_check_msg(st: dict, session: str) -> str:
 
 
 def trade_action_msg(action: dict) -> str:
+    """Render one executor action as a Telegram message.
+
+    EVERY type executor.manage_open_trades can emit must have a branch here.
+    2026-08-05: five of eleven did not (breakeven / scale_out / tp_full /
+    cancel_stale / edit_stop), so they fell through to the old `str(action)`
+    fallback and shipped a raw Python dict. Each of those type names contains a
+    single "_", which Telegram's legacy Markdown reads as an unclosed italic —
+    the API rejected the message with HTTP 400 and notifier.send() had to resend
+    it as plain text. Two of the branches below (tp_half / trail) were also dead:
+    the executor renamed those actions to scale_out / breakeven and the message
+    layer was never updated, so the handlers never matched.
+    """
     kind = action.get("type")
-    if kind == "tp_half":
-        return t("tg_tp_half", symbol=action["symbol"], qty=action["qty"],
+    if kind in ("tp_half", "scale_out"):
+        return t("tg_scale_out" if kind == "scale_out" else "tg_tp_half",
+                 symbol=action["symbol"], qty=action["qty"],
+                 price=action["price"], pnl=action.get("pnl", 0),
+                 tranche=action.get("tranche", 1))
+    if kind == "tp_full":
+        return t("tg_tp_full", symbol=action["symbol"], qty=action["qty"],
                  price=action["price"], pnl=action.get("pnl", 0))
-    if kind == "trail":
+    if kind in ("trail", "breakeven"):
         return t("tg_trail", symbol=action["symbol"], new_stop=action["new_stop"])
+    if kind == "cancel_stale":
+        return t("tg_cancel_stale", symbol=action["symbol"],
+                 age_min=action.get("age_min", 0))
+    if kind == "edit_stop":
+        return t("tg_edit_stop", symbol=action["symbol"],
+                 old=float(action.get("old") or 0), new=float(action.get("new") or 0))
     if kind in ("stop_hit", "stop_hit_bracket"):
         return t("tg_stop_hit", symbol=action["symbol"], qty=action["qty"],
                  pnl=action.get("pnl", 0), price=action["price"],
@@ -113,4 +149,9 @@ def trade_action_msg(action: dict) -> str:
         return t("tg_stop_hit", symbol=action["symbol"], qty=action["qty"],
                  pnl=action.get("pnl", 0), price=action["price"],
                  stop=action["price"])
-    return str(action)
+    # Unknown type — a new action was added upstream without a branch here. Keep
+    # the information, but never emit a raw dict: its repr carries "_" and "*"
+    # that break Markdown, which is how this fallback was discovered at all.
+    # Sorted keys so the same action always renders the same way.
+    kv = " ".join(f"{k}={v}" for k, v in sorted(action.items()) if k != "type")
+    return f"ℹ️ {_md_escape(str(kind))} {_md_escape(kv)}"
