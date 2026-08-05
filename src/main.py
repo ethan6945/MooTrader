@@ -21,7 +21,7 @@ from moomoo import KLType
 from . import (
     adaptive_sizing, ai, ai_validator, approvals, audit, blacklist, breadth,
     clock, cron_state, db, executor, gap_sentinel, history, indicators,
-    kill_switch, notifier, portfolio,
+    kill_switch, notifier, options_stats, portfolio,
     regime as regime_mod, risk_manager, runtime_config, sector, self_improve,
     self_review, strategy_momentum, strategy_mr, strategy_pattern,
     tg_approvals,
@@ -811,6 +811,30 @@ def scan_once() -> None:
                 if settings.sentiment_sizing and sent_score is not None:
                     conviction *= max(0.5, min(1.25, sent_score / 50.0))
 
+            # --- aggregate options flow (2026-08-05; advisory) ---
+            # call volume vs its own 20d mean. Measured monotonic against
+            # forward return over 5,980 name-days; the put/call SKEW was flat,
+            # so only the volume is read here. Earnings days are excluded inside
+            # assess() — they are 39% of the spikes and a different, much fatter
+            # distribution. ADVISORY: recorded and logged, never changes which
+            # trade fires. Only OPTIONS_STATS_SIZING lets it touch conviction,
+            # and then only upward on a spike (see conviction_multiplier).
+            # Placed after the qty>0 pre-check above so a name that cannot be
+            # sized never spends an API call. FAIL-SAFE -> no-opinion.
+            opt_stats = None
+            if settings.options_stats_enabled and not is_stack_candidate:
+                try:
+                    opt_stats = options_stats.assess(sig.symbol, c)
+                except Exception as e:
+                    log.warning("%s options-stats failed: %s", sig.symbol, e)
+                    opt_stats = None
+                if opt_stats is not None and opt_stats.ok:
+                    log.info("%s options: call_rvol=%.2f p/c=%s %s (%s)",
+                             sig.symbol, opt_stats.call_rvol or 0,
+                             opt_stats.put_call_ratio, opt_stats.label,
+                             "advisory" if not settings.options_stats_sizing else "sizing armed")
+                    conviction *= options_stats.conviction_multiplier(opt_stats)
+
             # Regime up-scaling (owner-approved tailwind press) — mirror the honest
             # engine exactly: boost size ONLY in a confirmed strong bull AND calm
             # VIX. settings.regime_bull_mult defaults to 1.0 (inert) until the
@@ -904,6 +928,15 @@ def scan_once() -> None:
                                     # Phase 2B sentiment (advisory; None when off).
                                     "sentiment_verdict": sent_verdict,
                                     "sentiment_score": sent_score,
+                                    # Aggregate options flow (advisory; None when
+                                    # off). Persisted so the factor can be scored
+                                    # against real outcomes later — the 1y study
+                                    # behind it is bull-market-only, so forward
+                                    # samples are the only way it earns trust.
+                                    "call_rvol": (opt_stats.call_rvol
+                                                  if opt_stats and opt_stats.ok else None),
+                                    "options_label": (opt_stats.label
+                                                      if opt_stats and opt_stats.ok else None),
                                     # Pattern strategy: persist what was detected +
                                     # the vision verdict so the dashboard can show
                                     # it and we can calibrate vision-vs-outcome.

@@ -61,6 +61,85 @@ def last_entry_skip() -> tuple[str, str]:
     """(gate, reason) for the most recent open_position() skip (None return)."""
     return _LAST_ENTRY_SKIP
 
+
+def _extension_verdict(signal, last: float) -> tuple[bool, str, str]:
+    """Scale-invariant replacement for the fixed ENTRY_CHASE_TOL gate.
+
+    Returns (allow, gate, reason). See settings.entry_extension_mode for the
+    why: 20 bps means something different on a $50 name than on a $1,400 one,
+    while ATR-relative extension means the same thing on both.
+
+    Two questions, both asked at the LIVE price:
+      1. extension = (last - signal.price) / ATR. Past
+         settings.entry_max_extension_atr the setup that produced the score is
+         no longer the setup standing in front of us.
+      2. reward/risk at the live price, with reward measured to the target the
+         SETUP implied at signal time. That target does not move, so the reward
+         shrinks as price runs — which is exactly the economics of being late.
+         (Measuring to a live-anchored ATR target instead would make R:R the
+         constant tp_mult/sl_mult and this leg could never fire.)
+
+    With today's wide tp_atr_mult the extension leg is the one that usually
+    decides; the R:R leg bites when the target sits close to the live price —
+    a tight tp_atr_mult, or a setup price already near its objective.
+    """
+    # NaN must be caught explicitly: `nan <= 0` is False, so a plain positivity
+    # check lets a NaN ATR through and then every comparison below silently
+    # evaluates False — i.e. the gate would ALLOW on exactly the malformed-kline
+    # input it exists to catch. (math.isfinite covers nan and both infinities.)
+    try:
+        atr = float(getattr(signal, "atr", 0) or 0)
+    except (TypeError, ValueError):
+        atr = 0.0
+    if not math.isfinite(atr) or atr <= 0:
+        return False, "bad_levels", f"ATR unusable ({signal.atr!r}) — cannot judge extension"
+    try:
+        px = float(signal.price)
+    except (TypeError, ValueError):
+        px = float("nan")
+    if not math.isfinite(px) or px <= 0 or not math.isfinite(last):
+        return False, "bad_levels", f"price unusable (signal {signal.price!r}, live {last!r})"
+    extension = (last - px) / atr
+    if extension > settings.entry_max_extension_atr:
+        return False, "extended", (
+            f"live ${last:.2f} is {extension:.2f} ATR past signal ${signal.price:.2f} "
+            f"(max {settings.entry_max_extension_atr:.2f} ATR)")
+
+    # Reward is measured to the target the SETUP implied at signal time, which
+    # does not move, so it shrinks as price runs — that is the whole economics
+    # of being late. Measuring to a live-anchored target instead would make R:R
+    # the constant tp_mult/sl_mult (1.75 today) and this leg could never fire.
+    # Risk uses the same stop rule the entry path applies, so the number here is
+    # the trade's real R.
+    struct = getattr(signal, "structural_stop", None)
+    stop = round(last - runtime_config.sl_atr_mult() * atr, 2)
+    if struct is not None:
+        try:
+            s = float(struct)
+            if math.isfinite(s) and s < last:
+                stop = max(stop, round(s, 2))
+        except (TypeError, ValueError):
+            pass
+    try:
+        target = float(signal.take_profit)
+    except (TypeError, ValueError, AttributeError):
+        target = float("nan")
+    if not math.isfinite(target):
+        target = round(px + runtime_config.tp_atr_mult() * atr, 2)
+    risk = last - stop
+    if risk <= 0:
+        return False, "bad_levels", f"stop ${stop:.2f} not below live ${last:.2f}"
+    if target <= last:
+        return False, "rr", (
+            f"live ${last:.2f} already at/past the setup's target ${target:.2f} — "
+            "no reward left")
+    rr = (target - last) / risk
+    if rr < settings.entry_min_rr:
+        return False, "rr", (
+            f"R:R {rr:.2f} at live ${last:.2f} (stop ${stop:.2f}, setup target "
+            f"${target:.2f}) below min {settings.entry_min_rr:.2f}")
+    return True, "", f"extension {extension:.2f} ATR, R:R {rr:.2f} at ${last:.2f}"
+
 # Serializes every load→mutate→save cycle on the open-trades store. The scan
 # job and the 5-min manage tick run on different scheduler threads; without
 # this, one writer can clobber the other's whole-dict save (a freshly opened
@@ -276,7 +355,25 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
     limit_px = round(float(signal.price), 2)
     last = _last_price(client, signal.symbol)
     if last is not None:
-        if last > signal.price * (1 + ENTRY_CHASE_TOL):
+        # 2026-08-05: the fixed-bps chase gate and its scale-invariant
+        # replacement. Only ONE of them decides; "shadow" (the default) runs the
+        # new one purely to log what it would have done, so it accumulates
+        # evidence without touching behaviour. This gate has no backtest
+        # counterpart — the engine fills at the next bar open and never sees a
+        # live quote — so shadow logging is the only honest way to evaluate it.
+        mode = settings.entry_extension_mode
+        legacy_ran_past = last > signal.price * (1 + ENTRY_CHASE_TOL)
+        if mode in ("shadow", "atr"):
+            allow_new, new_gate, new_reason = _extension_verdict(signal, last)
+            if mode == "shadow" and allow_new != (not legacy_ran_past):
+                log.info("%s: [extension shadow] new gate would %s (%s); legacy %s",
+                         signal.symbol, "ALLOW" if allow_new else f"SKIP[{new_gate}]",
+                         new_reason, "skipped" if legacy_ran_past else "allowed")
+            if mode == "atr" and not allow_new:
+                _LAST_ENTRY_SKIP = (new_gate, new_reason)
+                log.info("%s: entry skipped [%s] — %s", signal.symbol, new_gate, new_reason)
+                return None
+        if mode != "atr" and legacy_ran_past:
             _LAST_ENTRY_SKIP = ("chase",
                                 f"market ran past signal (${last:.2f} > ${signal.price:.2f})")
             log.info("%s: market ran past signal ($%.2f > $%.2f +%.1f bps) — entry skipped",
@@ -294,8 +391,17 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
                         signal.symbol, last, (signal.price - last) / signal.price * 100,
                         signal.price)
             return None
-        limit_px = round(min(last * 1.001,
-                             signal.price * (1 + ENTRY_CHASE_TOL)), 2)
+        # Marketable limit at the live quote. In legacy/shadow mode it is also
+        # capped at signal+tol — safe there, because the gate above already
+        # guaranteed last <= that cap. In "atr" mode the whole point is that we
+        # may be entering ABOVE the stale signal price, so keeping the cap would
+        # post an unfillable limit under the market; the extension gate is what
+        # bounds how far above we are willing to pay.
+        if settings.entry_extension_mode == "atr":
+            limit_px = round(last * 1.001, 2)
+        else:
+            limit_px = round(min(last * 1.001,
+                                 signal.price * (1 + ENTRY_CHASE_TOL)), 2)
     else:
         log.warning("%s: no live quote — signal freshness unverified; proceeding "
                     "at signal price with fill-anchored stops", signal.symbol)

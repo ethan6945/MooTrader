@@ -65,6 +65,21 @@ def _timeframe(default: str = "HOUR_1") -> str:
     return "HOUR_1" if tf == "DAILY" else tf
 
 
+def _extension_mode(default: str = "shadow") -> str:
+    """ENTRY_EXTENSION_MODE guard. A typo here would silently pick a behaviour
+    the owner did not choose, and this gate decides whether entries fire — so an
+    unrecognised value falls back to the safe one (legacy behaviour + shadow
+    logging) and says so loudly."""
+    m = os.getenv("ENTRY_EXTENSION_MODE", default).strip().lower()
+    if m not in ("legacy", "shadow", "atr"):
+        import logging
+        logging.getLogger(__name__).warning(
+            "ENTRY_EXTENSION_MODE=%r is not one of legacy/shadow/atr — "
+            "falling back to 'shadow' (no behaviour change).", m)
+        return "shadow"
+    return m
+
+
 @dataclass(frozen=True)
 class Settings:
     moo_host: str = os.getenv("MOO_HOST", "127.0.0.1")
@@ -156,6 +171,28 @@ class Settings:
     sl_atr_mult: float = _float("SL_ATR_MULT", 2.0)
     max_gap_pct: float = _float("MAX_GAP_PCT", 3.0)   # overnight gap filter
 
+    # ── Entry-extension gate (2026-08-05) — replaces the fixed chase tolerance ──
+    # The legacy gate skips when the live quote sits > ENTRY_CHASE_TOL (20 bps)
+    # above the signal bar close. That threshold is SCALE-DEPENDENT in a way that
+    # has no meaning: 20 bps is $0.10 on a $50 name and $2.80 on a $1,400 name,
+    # while what actually decides whether the setup is intact is the move
+    # measured in the name's OWN volatility. On 2026-08-04 it blocked HPE (80
+    # score) six scans running across a $51.88 → $52.50 range.
+    # The replacement asks two scale-invariant questions instead:
+    #   1. extension = (live - signal) / ATR   — how far past the setup are we?
+    #   2. reward/risk at the LIVE price, using the structural stop when the
+    #      strategy supplied one (the ATR-only stop makes R:R constant, so the
+    #      structural level is the part that actually varies with entry price).
+    # MODE: "legacy" = old gate only. "shadow" = old gate still decides, new gate
+    # logs what it WOULD have done. "atr" = new gate decides.
+    # DEFAULT "shadow" — this gate exists only in the live path (the backtest
+    # fills at the next bar open and has no live-quote concept), so it CANNOT be
+    # validated by a backtest run. Shadow mode is how it earns its evidence:
+    # zero behaviour change, and the log records both verdicts for comparison.
+    entry_extension_mode: str = _extension_mode()
+    entry_max_extension_atr: float = _float("ENTRY_MAX_EXTENSION_ATR", 0.5)
+    entry_min_rr: float = _float("ENTRY_MIN_RR", 1.5)
+
     # Regime up-scaling (2026-06-08): press more size ONLY in a confirmed strong
     # bull (regime.bullish, i.e. SPY > 50MA > 200MA) AND a calm tape (VIX <
     # regime_vix_calm). Mirrors the honest engine's use_regime_scaling so live ↔
@@ -230,6 +267,27 @@ class Settings:
     # only after subscribing, then 2A/2B can consume it. DEFAULT OFF.
     options_flow_enabled: bool = os.getenv("OPTIONS_FLOW_ENABLED", "false").lower() in ("1", "true", "yes")
 
+    # ── Options AGGREGATE stats (2026-08-05, src/options_stats.py) ──
+    # The chain above is blocked, but three underlying-level endpoints answer
+    # without the options quote subscription — including one with 1y of daily
+    # call/put volume. Measured over 5,980 name-days: call volume vs its own 20d
+    # mean is MONOTONIC against forward return (rvol>=3 → 61.6% win / +3.058%
+    # next-3-day vs a 53.8% / +1.240% baseline), while the put/call ratio is
+    # FLAT — the skew carries no direction, only the volume does. Earnings days
+    # must be excluded (39% of spikes sit in one, at 2x the volatility); doing so
+    # IMPROVES the signal to 63.8% win / +2.559% on n=105.
+    # DEFAULT OFF, and ADVISORY even when on: it is logged and shown but never
+    # changes which trade fires, so live↔backtest parity holds. Only
+    # OPTIONS_STATS_SIZING folds it into the conviction → position-size channel,
+    # and even then it can only size UP a spike, never veto a quiet name.
+    # CAVEAT the owner must weigh before arming: the broker caps history at 251
+    # rows, so the whole sample is one bull market. This has never been observed
+    # in a drawdown. See the module docstring for the full numbers and limits.
+    options_stats_enabled: bool = os.getenv("OPTIONS_STATS_ENABLED", "false").lower() in ("1", "true", "yes")
+    options_stats_sizing: bool = os.getenv("OPTIONS_STATS_SIZING", "false").lower() in ("1", "true", "yes")
+    options_stats_min_rvol: float = _float("OPTIONS_STATS_MIN_RVOL", 2.0)
+    options_stats_max_mult: float = _float("OPTIONS_STATS_MAX_MULT", 1.15)
+
     # ── API/subscription health watchdog (2026-06-23) ──
     # Edge-triggered Telegram alerts when a silent dependency lapses: the broker
     # options data subscription (can't fetch chains/snapshots) or the Gemini API
@@ -290,6 +348,16 @@ class Settings:
     # crashed as one trade on 07-15. Diversification rule, not performance
     # curation — the pool stays liquidity-only.
     universe_sector_cap: int = int(os.getenv("UNIVERSE_SECTOR_CAP", "5"))
+    # Reserve this many top-N slots for the pool's ETFs (0 = off, default).
+    # 2026-08-05: momentum ranking is blind to whether the account can size what
+    # it picks. At $10k with a 20% cap, one share of SNDK ($1,434) is 14.3% of
+    # the book and the ATR share count floors to 1 or 0 — position size becomes
+    # all-or-nothing and the risk model stops working. The sector funds carry
+    # the same exposure at a share price the account can actually divide. This
+    # fixes GRANULARITY, not signal: no claim is made that ETFs predict better.
+    # Same replayable-rule status as universe_sector_cap — live and backtest
+    # must pass the same value or they diverge.
+    universe_etf_slots: int = int(os.getenv("UNIVERSE_ETF_SLOTS", "0"))
 
     # Drawdown circuit breaker — discovered from the 142-day backtest where
     # Nov 2025 alone lost -$761 (17% of account) before the strategy recovered.

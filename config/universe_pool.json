@@ -9,6 +9,12 @@
     "HPE", "SMCI", "ANET", "CSCO", "IBM", "JPM", "BAC", "GS",
     "MS", "V", "MA", "AXP", "LLY", "UNH", "JNJ", "ABBV",
     "MRK", "PFE", "DXCM", "ISRG", "WMT", "COST", "HD", "NKE",
-    "MCD", "DIS", "XOM", "CVX", "CAT", "BA", "GE", "HON"
+    "MCD", "DIS", "XOM", "CVX", "CAT", "BA", "GE", "HON",
+
+    "SMH", "SOXX", "XLK", "IGV", "XLF", "XLV", "XLY", "XLP", "XLE", "XLI"
+  ],
+  "_etfs_comment": "Sector ETFs added 2026-08-05 on the SAME liquidity-only criterion as everything else above (all clear MIN_DOLLAR_VOL by orders of magnitude). They are here to fix POSITION GRANULARITY, not to chase performance: on a $10k account with a 20% per-name cap, one share of a $1,400 pool member is 14% of the book and the ATR-derived share count floors to 1 or 0, so the risk model stops working. One ETF per sector already represented in the pool, unleveraged only — 2x/3x funds are deliberately excluded (daily rebalancing decays them over the 10-day max hold, and their momentum would dominate the ranking for the wrong reason). Listing a ticker below marks it as an ETF for universe.py's reserved-slot sleeve (UNIVERSE_ETF_SLOTS, default 0 = inert).",
+  "etfs": [
+    "SMH", "SOXX", "XLK", "IGV", "XLF", "XLV", "XLY", "XLP", "XLE", "XLI"
   ]
 }

@@ -137,6 +137,19 @@ def load_pool() -> list[str]:
     return json.loads(POOL_FILE.read_text())["tickers"]
 
 
+def load_etfs() -> set[str]:
+    """The pool members that are ETFs, from the pool file's own "etfs" key.
+
+    Kept as data next to the tickers rather than a constant in code, so adding a
+    fund to the pool and marking it as one is a single edit. Missing key -> empty
+    set, which makes the ETF sleeve inert rather than wrong.
+    """
+    try:
+        return {s.upper() for s in json.loads(POOL_FILE.read_text()).get("etfs", [])}
+    except (json.JSONDecodeError, OSError, AttributeError, TypeError):
+        return set()
+
+
 def momentum_6_1(closes: pd.Series) -> float | None:
     """6-1 momentum: return over [t-147, t-21]. None = not computable."""
     if len(closes) < MIN_BARS:
@@ -152,7 +165,8 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
                     asof: date,
                     top_n: int,
                     sector_cap: int | None = None,
-                    afford: "Affordability | None" = None) -> list[str]:
+                    afford: "Affordability | None" = None,
+                    etf_slots: int | None = None) -> list[str]:
     """Top-N pool names by 6-1 momentum using ONLY daily bars dated strictly
     before `asof`. Deterministic (momentum desc, then symbol asc for ties) so
     live and backtest reproduce each other exactly.
@@ -167,7 +181,12 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
 
     afford (2026-07-27, None = off): drop names this account cannot size at all
     — see Affordability. Part of the replayable rule like sector_cap, so live
-    and backtest must pass an equivalent object or they diverge."""
+    and backtest must pass an equivalent object or they diverge.
+
+    etf_slots (2026-08-05, default settings.universe_etf_slots, 0 = off):
+    reserve this many of the top_n slots for pool members marked as ETFs in
+    universe_pool.json, filled in the same momentum order. Fixes position
+    GRANULARITY, not signal — see the inline note at the sleeve."""
     cutoff = pd.Timestamp(asof, tz="US/Eastern")
     scores: dict[str, float] = {}
     unaffordable: list[str] = []
@@ -204,16 +223,41 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
                  afford.capital, afford.max_position_pct * 100,
                  afford.risk_per_trade * 100, ", ".join(sorted(unaffordable)))
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    # ETF sleeve (2026-08-05, default 0 = off). Momentum ranking is blind to
+    # whether the account can express what it picks: on $10k with a 20% cap the
+    # top-15 has repeatedly been $500-$1,400 names where one share is 9-14% of
+    # the book and the ATR-derived share count floors to 1 or 0 — the position is
+    # then all-or-nothing and the risk model stops meaning anything. Reserving
+    # slots for the (liquid, low-priced) sector funds keeps the same momentum
+    # exposure in an instrument the account can actually size.
+    # This is a diversification/expressibility RULE like sector_cap — it is part
+    # of the replayable selection and applies identically in live and backtest.
+    # It never performance-edits: which ETF gets a reserved slot is decided by
+    # the same 6-1 momentum ranking as everything else.
+    if etf_slots is None:
+        etf_slots = settings.universe_etf_slots
+    reserved: list[str] = []
+    if etf_slots > 0:
+        etfs = load_etfs()
+        reserved = [s for s, _ in ranked if s in etfs][:min(etf_slots, top_n)]
+
     if sector_cap is None:
         sector_cap = settings.universe_sector_cap
     if sector_cap <= 0:
-        return [sym for sym, _ in ranked[:top_n]]
+        rest = [sym for sym, _ in ranked if sym not in reserved]
+        return (reserved + rest)[:top_n]
     from .sector import get_sector
-    picked: list[str] = []
+    picked: list[str] = list(reserved)
     counts: dict[str, int] = {}
+    for sym in picked:
+        sec = get_sector(sym)
+        counts[sec] = counts.get(sec, 0) + 1
     for sym, _ in ranked:
         if len(picked) >= top_n:
             break
+        if sym in picked:
+            continue
         sec = get_sector(sym)
         # Unknown-sector names bypass the cap (same no-false-negatives policy
         # as check_sector_exposure); the whole pool is mapped today.

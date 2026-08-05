@@ -27,6 +27,7 @@ from . import db, notifier
 log = logging.getLogger(__name__)
 
 _K_OPT = "health_options_ok"
+_K_OPT_STATS = "health_options_stats_ok"
 _K_GEM = "health_gemini_ok"
 
 # Debounce: a transition must be seen on this many CONSECUTIVE checks before we
@@ -145,6 +146,32 @@ def run(client=None) -> None:
                         "\n可能原因：券商美股期权/正股行情订阅已过期，或 OpenD 未刷新权限"
                         "（新订阅常需退出 OpenD 重新登录）。请检查/续订后重启 OpenD。"),
               recover_msg="✅ 期权数据已恢复，可正常抓取（volume + 未平仓量可用）。")
+
+    # --- options AGGREGATE feed (2026-08-05) ---
+    # Separate entitlement from the chain probe above: this one needs no options
+    # quote subscription, so it can be healthy while the chain stays denied. Same
+    # discipline as that probe — only report while the consumer is armed, so an
+    # unread red doesn't train you to ignore the health line.
+    if not settings.options_stats_enabled:
+        log.debug("health: options-stats probe skipped — OPTIONS_STATS_ENABLED is off")
+    else:
+        try:
+            from . import options_stats
+            if client is not None:
+                st_ok, st_detail = options_stats.probe("AAPL", client)
+            else:
+                from .moo_client import client as _client
+                with _client() as c:
+                    st_ok, st_detail = options_stats.probe("AAPL", c)
+            st_status = "ok" if st_ok else "bad"
+        except Exception as e:
+            st_status, st_detail = "skip", f"client error ({e})"
+        log.info("health: options-stats=%s (%s)", st_status, st_detail)
+        _edge(_K_OPT_STATS, st_status,
+              fail_msg=("⚠️ *期权聚合数据抓取失败*\n" + st_detail +
+                        "\nget_option_underlying_his_statistic 无数据 —"
+                        " call_rvol 因子将静默失效（降级为无意见，不会误下单）。"),
+              recover_msg="✅ 期权聚合数据已恢复，call_rvol 因子重新可用。")
 
     # --- AI provider (Gemini / DeepSeek) ---
     try:

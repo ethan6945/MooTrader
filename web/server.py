@@ -681,6 +681,79 @@ def api_sectors():
         return jsonify(data)
 
 
+_options_cache: dict = {"ts": {}, "data": {}}
+_options_lock = threading.Lock()
+_OPTIONS_TTL = 300.0   # the underlying rows move once a day; the unusual feed
+                       # is a 7-day window. 5 min is plenty and keeps this panel
+                       # from competing with the scan loop for OpenD quota.
+
+
+@app.route("/api/options/<symbol>")
+def api_options(symbol):
+    """READ-ONLY aggregate options view for one symbol.
+
+    Three things the account CAN reach without the (absent) US options quote
+    subscription: the daily call/put-volume history that backs the call_rvol
+    factor, the live IV/HV overview, and the 7-day large-trade feed.
+
+    Deliberately not wired to anything that trades. The call_rvol factor is
+    advisory even when armed (see src/options_stats.py), and the unusual-trade
+    feed has NO history behind it — 7 days, no way to backtest — so nothing it
+    reports has been validated. It is here to be looked at, and that is all.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym or not sym.isalnum() or len(sym) > 8:
+        return jsonify({"ok": False, "error": "bad symbol"}), 400
+    now = time.time()
+    with _options_lock:
+        if now - _options_cache["ts"].get(sym, 0.0) < _OPTIONS_TTL:
+            return jsonify(_options_cache["data"][sym])
+    try:
+        from src import options_stats
+        from src.moo_client import client as _mc
+        with _mc() as c:
+            # assess() honours OPTIONS_STATS_ENABLED; this panel should show the
+            # numbers whether or not the factor is armed for trading, so read
+            # the history directly and run the same pure computation on it.
+            hist = options_stats.fetch_history(sym, c)
+            stat = options_stats.compute(hist, sym)
+            near, edate = options_stats._earnings_window(sym)
+            unusual = options_stats.unusual_flow(sym, c)
+            ov = options_stats.overview(sym, c)
+        series = []
+        if hist is not None:
+            tail = hist.tail(60)
+            series = [{"t": str(t)[:10], "call": float(cv), "put": float(pv)}
+                      for t, cv, pv in zip(tail["time"], tail["call_volume"],
+                                           tail["put_volume"])]
+        data = {
+            "ok": bool(stat.get("ok")),
+            "symbol": sym,
+            "detail": stat.get("detail"),
+            "call_rvol": stat.get("call_rvol"),
+            "put_rvol": stat.get("put_rvol"),
+            "put_call_ratio": stat.get("put_call_ratio"),
+            "asof": stat.get("asof"),
+            "near_earnings": near,
+            "earnings_date": edate,
+            "min_rvol": settings.options_stats_min_rvol,
+            "armed": settings.options_stats_enabled,
+            "sizing": settings.options_stats_sizing,
+            "series": series,
+            "unusual": unusual,
+            "overview": ov,
+            # Stated in the payload so a future UI cannot quietly imply
+            # otherwise: this endpoint informs, it never decides.
+            "advisory_only": True,
+        }
+    except Exception as e:
+        return jsonify({"ok": False, "symbol": sym, "error": str(e)}), 502
+    with _options_lock:
+        _options_cache["ts"][sym] = now
+        _options_cache["data"][sym] = data
+    return jsonify(data)
+
+
 # ── action API ───────────────────────────────────────────────────────────────
 
 @app.route("/api/approvals/<item_id>/<action>", methods=["POST"])

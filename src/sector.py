@@ -27,9 +27,11 @@ SECTOR_MAP: dict[str, str] = {
     "SNOW": "tech",                  # Snowflake — cloud data (2026-07-06 audit)
     "ANET": "tech",                  # Arista — networking (2026-07-06 audit)
     "XLK":  "tech",                  # tech sector ETF
+    "IGV":  "tech",                  # iShares expanded-tech software ETF (added 2026-08-05)
 
     # ─── Semiconductors (separate bucket — high intra-sector correlation) ───
     "MU":   "semis", "TSM":  "semis", "ASML": "semis", "SMH": "semis",
+    "SOXX": "semis",                 # iShares semiconductor ETF (added 2026-08-05)
     "INTC": "semis",                 # Intel
     "QCOM": "semis",                 # Qualcomm — wireless chips
     "TXN":  "semis",                 # Texas Instruments
