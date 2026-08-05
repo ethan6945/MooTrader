@@ -45,6 +45,55 @@ if IS_FROZEN:
 load_dotenv(ROOT / ".env")
 
 
+def app_version() -> str:
+    """The build's version string, from the ONE place it is declared —
+    macos/Resources/Info.plist (frozen: the copy at MooTrader.app/Contents).
+
+    Read at runtime rather than duplicated into a Python constant, because two
+    declarations drift and the whole point of showing a version in the UI is to
+    be able to trust it. Unknown -> "dev": a repo checkout with no bundle is a
+    real, normal case, and pretending it has a release number would be worse
+    than admitting it doesn't.
+    """
+    import plistlib
+    candidates = []
+    if IS_FROZEN:
+        # BUNDLE_DIR is .../MooTrader.app/Contents/Resources/backend/_internal
+        # (or similar); walk up to the Contents that owns Info.plist.
+        for parent in BUNDLE_DIR.resolve().parents:
+            if parent.name == "Contents":
+                candidates.append(parent / "Info.plist")
+                break
+    candidates.append(Path(__file__).resolve().parent.parent
+                      / "macos" / "Resources" / "Info.plist")
+    for p in candidates:
+        try:
+            with open(p, "rb") as fh:
+                v = plistlib.load(fh).get("CFBundleShortVersionString")
+            if v:
+                return str(v)
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            continue
+    return "dev"
+
+
+def running_from() -> str:
+    """Which build is actually executing — the .app bundle path when frozen,
+    else the repo checkout.
+
+    Worth surfacing next to the version: on 2026-08-05 a bot was running out of
+    macos/dist (a build-output directory that gets wiped on every rebuild) while
+    everyone assumed it was the copy in /Applications. A version number alone
+    would not have shown that; the path does.
+    """
+    if IS_FROZEN:
+        for parent in BUNDLE_DIR.resolve().parents:
+            if parent.suffix == ".app":
+                return str(parent)
+        return str(BUNDLE_DIR)
+    return str(Path(__file__).resolve().parent.parent)
+
+
 def _float(name: str, default: float) -> float:
     return float(os.getenv(name, default))
 

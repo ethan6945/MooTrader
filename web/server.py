@@ -526,6 +526,17 @@ def api_status():
     sched = _scheduler_running()
     acct["scheduler_running"] = sched
     acct["opend_status"], acct["opend_label"] = _opend_status(acct, sched)
+    # Build identity. `version` is what the settings panels show; `running_from`
+    # and `home` are here because a version alone cannot tell you WHICH copy is
+    # executing — the 2026-08-05 incident was an app running out of a build
+    # directory while everyone read the version and assumed /Applications.
+    try:
+        from src.config import app_version, running_from
+        acct["version"] = app_version()
+        acct["running_from"] = running_from()
+        acct["home"] = str(ROOT)
+    except Exception:
+        pass
     try:
         acct["budget"] = risk_manager.budget_usd()   # live override beats stale snapshot
     except Exception:

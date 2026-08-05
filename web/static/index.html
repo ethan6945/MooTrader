@@ -417,6 +417,7 @@
 
       <div class="set-sec"><h3>运行配置 Run Config <span style="text-transform:none;font-weight:400">（只读）</span></h3>
         <div class="cfgchips" id="runCfg"><span class="mut" style="font-size:12px">—</span></div>
+        <div id="runFrom"></div>
       </div>
 
       <div class="set-sec"><h3>AI 引擎 AI Engine</h3>
@@ -917,10 +918,23 @@ async function loadSettings(){
     $('#setBudget').value=Math.round(a.budget||0);
     // read-only run config — kept here (off the dashboard) so the main view stays clean
     $('#runCfg').innerHTML=[
+      ['版本 Version',a.version],
       ['AI 模型',a.ai_model],
       ['入场阈值',a.entry_threshold],['扫描间隔',(a.scan_interval_min??'—')+' min'],
       ['K线周期',a.timeframe],['最长持仓',(a.max_hold_days??'—')+' 天'],
     ].map(([k,v])=>`<span class="pill">${k}<b>${v??'—'}</b></span>`).join('');
+    // Which build is actually serving this. A version alone can't tell you —
+    // 2026-08-05 had a bot running out of macos/dist (wiped by every rebuild)
+    // while it was assumed to be /Applications. Show the path, and say so when
+    // it's the build directory.
+    const rf=a.running_from||'';
+    $('#runFrom').innerHTML = rf
+      ? `<div class="setdesc" style="margin-top:8px">运行自 Running from: <code>${rf}</code></div>`
+        + (a.home?`<div class="setdesc">数据目录 Data home: <code>${a.home}</code></div>`:'')
+        + (rf.includes('/macos/dist/')
+            ? `<div class="setdesc" style="color:var(--amber,#d29922)">⚠ 正在从构建输出目录运行 —— 下次 <code>build.sh</code> 会删掉它并结束进程。测试请先复制到别处。</div>`
+            : '')
+      : '';
   }catch(e){}
   loadWebAccess();
   loadTradeEnv();
