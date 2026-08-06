@@ -1782,6 +1782,19 @@ def run_loop() -> None:
          "Moved off the crontab 2026-07-28 so it ships with the app."),
     ]
     for _key, _fn, _grace, _why in _WEEKLY_JOBS:
+        # universe_refresh is the one job whose CADENCE is configurable. With
+        # UNIVERSE_REFRESH_FREQ=daily it must actually fire daily — otherwise
+        # the setting is honoured by the backtest replay but not by live, and
+        # the two silently stop being the same strategy, which is precisely the
+        # divergence the hysteresis work was careful to avoid everywhere else.
+        if _key == "universe_refresh" and cron_state.universe_refresh_is_daily():
+            _h, _m = cron_state.DAILY_KL_SCHEDULE["universe_refresh"]
+            sched.add_job(_fn, "cron", day_of_week="mon-fri", hour=_h, minute=_m,
+                          timezone=KL, coalesce=True, misfire_grace_time=_grace,
+                          max_instances=1)
+            log.info("universe refresh armed DAILY for %02d:%02d KL (weekdays) — %s",
+                     _h, _m, _why)
+            continue
         _wd, _h, _m = cron_state.WEEKLY_SCHEDULE[_key]
         sched.add_job(_fn, "cron", day_of_week=_wd, hour=_h, minute=_m,
                       timezone=KL, coalesce=True, misfire_grace_time=_grace,

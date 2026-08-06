@@ -191,6 +191,9 @@ WEEKLY_SCHEDULE: dict[str, tuple[int, int, int]] = {
 # because the sweep no-ops when the market is open and records its own run.
 DAILY_KL_SCHEDULE: dict[str, tuple[int, int]] = {
     "grid_sweep_daily": (9, 0),        # 09:00 KL, weekdays
+    # Only used when UNIVERSE_REFRESH_FREQ=daily; same 20:05 KL slot as the
+    # weekly entry so the ordering with the backtest/self-review chain holds.
+    "universe_refresh": (20, 5),
 }
 
 
@@ -207,9 +210,24 @@ def expected_last_fire_daily_kl(job: str) -> datetime:
 def expected_last_fire(job: str) -> datetime:
     """Most recent past fire for a known weekly job — the single source of
     truth shared by every catchup caller. Raises KeyError on an unknown job
-    (better than silently inventing a schedule the real cron doesn't use)."""
+    (better than silently inventing a schedule the real cron doesn't use).
+
+    universe_refresh is the one job whose CADENCE is configurable
+    (UNIVERSE_REFRESH_FREQ). Catchup has to ask the same question the scheduler
+    asked when it armed the job, or a daily-configured refresh gets measured
+    against a weekly deadline and looks on-time for six days after it stopped
+    running."""
+    if job == "universe_refresh" and universe_refresh_is_daily():
+        return expected_last_fire_daily_kl("universe_refresh")
     weekday, hour, minute = WEEKLY_SCHEDULE[job]
     return expected_last_fire_weekly(weekday, hour, minute, tz=KL)
+
+
+def universe_refresh_is_daily() -> bool:
+    """Read at call time, not import time, so flipping the .env and restarting
+    the scheduler is enough — no code change needed to switch cadence."""
+    from .config import settings
+    return settings.universe_refresh_freq == "daily"
 
 
 def expected_last_fire_monthly(day: int, hour: int, minute: int) -> datetime:
