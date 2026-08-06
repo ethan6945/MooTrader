@@ -90,6 +90,17 @@ class SimClock:
     def is_monday_morning(self) -> bool:
         return self._now.weekday() == 0 and self._now.hour == 9 and self._now.minute == 45
 
+    def is_universe_refresh(self) -> bool:
+        """Fires when the LIVE refresh would fire — weekly on Monday, or every
+        session when UNIVERSE_REFRESH_FREQ=daily. The sandbox exists to catch
+        live/backtest drift, so this must track the live schedule rather than
+        assume one."""
+        from src.config import settings as _s
+        if _s.universe_refresh_freq == "daily":
+            return (self._now.weekday() < 5 and self._now.hour == 9
+                    and self._now.minute == 45)
+        return self.is_monday_morning()
+
 
 # ── SimFeed ────────────────────────────────────────────────
 
@@ -477,8 +488,13 @@ def _load_universe(config: SandboxConfig, feed: SimFeed | None = None) -> list[s
     return ["AAPL", "MSFT", "NVDA", "AMD", "GOOGL"]
 
 
-def _refresh_universe(config: SandboxConfig, feed: SimFeed) -> list[str]:
-    """Point-in-time dynamic universe selection."""
+def _refresh_universe(config: SandboxConfig, feed: SimFeed,
+                      previous: list[str] | None = None) -> list[str]:
+    """Point-in-time dynamic universe selection.
+
+    `previous` is required for parity once hysteresis is on: an incumbent keeps
+    its slot until it falls past exit_rank, so the selection depends on the last
+    result and replaying it as isolated snapshots would diverge from live."""
     from src.universe import Affordability, load_pool, select_universe
     pool = load_pool()
     today_ts = feed.clock.ny_now()
@@ -487,7 +503,8 @@ def _refresh_universe(config: SandboxConfig, feed: SimFeed) -> list[str]:
     daily_by_sym = {sym: feed._daily.get(sym) for sym in pool}
     return select_universe(daily_by_sym, asof=today_date,
                            top_n=runtime_config.universe_top_n(),
-                           afford=Affordability.live())
+                           afford=Affordability.live(),
+                           previous=previous)
 
 
 # ── Regime ─────────────────────────────────────────────────
@@ -675,10 +692,10 @@ def run_sandbox(config: SandboxConfig) -> dict:
         clock.advance(config.scan_interval_min)
         now = clock.ny_now()
 
-        # Dynamic universe refresh every Monday morning
-        if config.universe_mode == "dynamic" and clock.is_monday_morning():
+        # Dynamic universe refresh — on the same schedule live uses.
+        if config.universe_mode == "dynamic" and clock.is_universe_refresh():
             try:
-                new_univ = _refresh_universe(config, feed)
+                new_univ = _refresh_universe(config, feed, previous=tickers)
                 if new_univ:
                     tickers = new_univ
                     week_refreshes += 1

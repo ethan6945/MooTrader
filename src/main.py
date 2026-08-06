@@ -1004,13 +1004,18 @@ def _universe_refresh_job() -> None:
     log.info("universe refresh: starting")
     try:
         from . import universe
+        # The shipped watchlist IS the hysteresis state: an incumbent keeps its
+        # slot until it falls past exit_rank, so the refresh has to know what it
+        # shipped last time. Reading it here (rather than inside universe.py)
+        # keeps the selector a pure function of its arguments, which is what lets
+        # the backtest replay the identical rule.
+        old_list = load_watchlist()
         with client() as c:
-            new_list = universe.compute_live_universe(c)
+            new_list = universe.compute_live_universe(c, previous=old_list)
         if len(new_list) < max(3, settings.universe_top_n // 2):
             raise RuntimeError(
                 f"selection returned only {len(new_list)} names — refusing to "
                 "shrink the watchlist on bad/missing data")
-        old_list = load_watchlist()
         if set(new_list) == set(old_list):
             log.info("universe refresh: unchanged (%d names)", len(new_list))
         else:

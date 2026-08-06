@@ -407,6 +407,19 @@ class Settings:
     # Same replayable-rule status as universe_sector_cap — live and backtest
     # must pass the same value or they diverge.
     universe_etf_slots: int = int(os.getenv("UNIVERSE_ETF_SLOTS", "0"))
+    # Hysteresis band for the universe: enter at rank<=UNIVERSE_TOP_N, leave only
+    # once rank>UNIVERSE_EXIT_RANK. <=top_n disables it (pure top-N, the old
+    # behaviour). 2026-08-06: measured over 40 sessions, refreshing DAILY with no
+    # hysteresis cost 45 name-changes for 8 net rotations — 5.6x churn, with
+    # names ping-ponging on consecutive days (BA/MS, CVX/MS, INTC/WDC) purely
+    # because ranks 15 and 16 swapped on a day's move. Weekly got the same 8
+    # rotations in 16 changes. The band buys daily responsiveness without buying
+    # the boundary noise.
+    # WARNING: non-zero makes selection PATH-DEPENDENT — live and any backtest
+    # must thread the same previous set forward or they silently diverge.
+    universe_exit_rank: int = int(os.getenv("UNIVERSE_EXIT_RANK", "0"))
+    # How often the live watchlist is recomputed: "weekly" (Mon) or "daily".
+    universe_refresh_freq: str = os.getenv("UNIVERSE_REFRESH_FREQ", "weekly").strip().lower()
 
     # Drawdown circuit breaker — discovered from the 142-day backtest where
     # Nov 2025 alone lost -$761 (17% of account) before the strategy recovered.

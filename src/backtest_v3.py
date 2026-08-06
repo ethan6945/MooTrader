@@ -299,7 +299,16 @@ def simulate_v3(
     # Walk-forward universe: one top-N set per ISO week, ranked at that week's
     # FIRST trading day from daily bars STRICTLY before it — replaying exactly
     # the decision the live Sunday refresh would have shipped into that week.
-    active_by_week: dict[tuple, set] = {}
+    active_by_week: dict = {}
+    # ONE definition of the refresh period, used by both the builder and the
+    # membership test below. Two hardcoded copies is how a weekly key ends up
+    # querying a daily map and every entry silently gets gated out.
+    from .config import settings as _cfg_settings
+    _daily_mode = _cfg_settings.universe_refresh_freq == "daily"
+
+    def _univ_key(d):
+        return d if _daily_mode else d.isocalendar()[:2]
+
     if _dyn_universe:
         from .universe import Affordability, select_universe
         _daily_by_sym = {s: b.get("daily") for s, b in per_ticker.items()}
@@ -307,14 +316,27 @@ def simulate_v3(
         # if the replay kept ranking names the live account can't size, every
         # validated $/day would come partly from trades live could never take.
         _afford = Affordability.from_cfg(cfg)
+        # Refresh period must match live exactly: weekly keys on the ISO week,
+        # daily keys on the date. Getting this wrong doesn't error — it quietly
+        # scores a strategy nobody is running.
+        # Hysteresis makes selection PATH-DEPENDENT (an incumbent keeps its slot
+        # until it falls past exit_rank), so the replay has to carry its own
+        # previous set forward in chronological order, exactly as live carries
+        # config/watchlist.json. Events are already chronological; `_prev` is
+        # what makes this a replay of the path rather than of isolated snapshots.
+        _prev: list[str] = []
         for ts0, _, _ in events:
-            wk0 = ts0.date().isocalendar()[:2]
-            if wk0 not in active_by_week:
-                active_by_week[wk0] = set(select_universe(
+            key = _univ_key(ts0.date())
+            if key not in active_by_week:
+                picked = select_universe(
                     _daily_by_sym, asof=ts0.date(), top_n=cfg.universe_top_n,
-                    afford=_afford))
-        log.info("[v3] dynamic universe: %d weekly top-%d sets from a %d-name pool",
-                 len(active_by_week), cfg.universe_top_n, len(per_ticker))
+                    afford=_afford, previous=_prev)
+                active_by_week[key] = set(picked)
+                _prev = picked
+        log.info("[v3] dynamic universe: %d %s top-%d sets from a %d-name pool "
+                 "(exit_rank=%s)", len(active_by_week),
+                 "daily" if _daily_mode else "weekly", cfg.universe_top_n,
+                 len(per_ticker), _cfg_settings.universe_exit_rank or "off")
 
     # ---------- account state ----------
     start_capital = cfg.account_usd
@@ -386,8 +408,7 @@ def simulate_v3(
         # Dynamic-universe gate first (cheapest): only this week's top-N may
         # open NEW positions. Held names that drop out keep being managed by
         # the exit logic — the gate covers entries (and pyramid add-ons) only.
-        if _dyn_universe and sym not in active_by_week.get(
-                ts.date().isocalendar()[:2], ()):
+        if _dyn_universe and sym not in active_by_week.get(_univ_key(ts.date()), ()):
             return None
         window = df.iloc[max(0, i + 1 - lookback): i + 1]
         try:

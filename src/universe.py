@@ -166,7 +166,9 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
                     top_n: int,
                     sector_cap: int | None = None,
                     afford: "Affordability | None" = None,
-                    etf_slots: int | None = None) -> list[str]:
+                    etf_slots: int | None = None,
+                    previous: list[str] | None = None,
+                    exit_rank: int | None = None) -> list[str]:
     """Top-N pool names by 6-1 momentum using ONLY daily bars dated strictly
     before `asof`. Deterministic (momentum desc, then symbol asc for ties) so
     live and backtest reproduce each other exactly.
@@ -186,7 +188,20 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
     etf_slots (2026-08-05, default settings.universe_etf_slots, 0 = off):
     reserve this many of the top_n slots for pool members marked as ETFs in
     universe_pool.json, filled in the same momentum order. Fixes position
-    GRANULARITY, not signal — see the inline note at the sleeve."""
+    GRANULARITY, not signal — see the inline note at the sleeve.
+
+    previous / exit_rank (2026-08-06, hysteresis; exit_rank<=top_n = off):
+    an incumbent keeps its slot until it falls past `exit_rank`, so entry needs
+    rank<=top_n but exit needs rank>exit_rank. Enables DAILY refresh without the
+    boundary churn: measured over 40 sessions, refreshing daily with no
+    hysteresis cost 45 name-changes to achieve 8 net rotations (5.6x churn),
+    with names ping-ponging in and out on consecutive days (BA/MS, CVX/MS,
+    INTC/WDC). Weekly got the same 8 rotations in 16 changes.
+
+    NOTE — this makes selection PATH-DEPENDENT: the result is no longer a pure
+    function of `asof`, it depends on what was held last time. Live persists that
+    in config/watchlist.json; any backtest MUST thread its own previous set
+    forward the same way, or the replay silently stops matching live."""
     cutoff = pd.Timestamp(asof, tz="US/Eastern")
     scores: dict[str, float] = {}
     unaffordable: list[str] = []
@@ -242,17 +257,42 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
         etfs = load_etfs()
         reserved = [s for s, _ in ranked if s in etfs][:min(etf_slots, top_n)]
 
+    # Hysteresis. Incumbents that still rank within exit_rank are carried
+    # forward AHEAD of fresh entrants; only a name that has genuinely fallen out
+    # of the wider band loses its slot. Order within the carried set stays
+    # momentum order, so the result is still deterministic.
+    if exit_rank is None:
+        exit_rank = settings.universe_exit_rank
+    rank_of = {sym: i for i, (sym, _) in enumerate(ranked)}
+    held: list[str] = []
+    if previous and exit_rank > top_n:
+        held = sorted((s for s in previous
+                       if s in rank_of and rank_of[s] < exit_rank and s not in reserved),
+                      key=lambda s: rank_of[s])
+
     if sector_cap is None:
         sector_cap = settings.universe_sector_cap
     if sector_cap <= 0:
-        rest = [sym for sym, _ in ranked if sym not in reserved]
-        return (reserved + rest)[:top_n]
+        keep = reserved + held
+        rest = [sym for sym, _ in ranked if sym not in keep]
+        return (keep + rest)[:top_n]
     from .sector import get_sector
     picked: list[str] = list(reserved)
-    counts: dict[str, int] = {}
+    # Incumbents are placed before new entrants but still obey the sector cap —
+    # hysteresis must not become a back door around the concentration limit that
+    # exists because a 15/15 semis book crashed as one trade on 2026-07-15.
+    _counts_pre: dict[str, int] = {}
     for sym in picked:
+        _counts_pre[get_sector(sym)] = _counts_pre.get(get_sector(sym), 0) + 1
+    for sym in held:
+        if len(picked) >= top_n:
+            break
         sec = get_sector(sym)
-        counts[sec] = counts.get(sec, 0) + 1
+        if sec != "unknown" and _counts_pre.get(sec, 0) >= sector_cap:
+            continue
+        picked.append(sym)
+        _counts_pre[sec] = _counts_pre.get(sec, 0) + 1
+    counts = _counts_pre
     for sym, _ in ranked:
         if len(picked) >= top_n:
             break
@@ -268,10 +308,15 @@ def select_universe(daily_by_sym: dict[str, pd.DataFrame | None],
     return picked
 
 
-def compute_live_universe(client, top_n: int | None = None) -> list[str]:
+def compute_live_universe(client, top_n: int | None = None,
+                          previous: list[str] | None = None) -> list[str]:
     """Live-side selection: fetch dailies for the whole pool via OpenD and rank
     as-of today (bars strictly before today = completed days only — the same
-    information set the backtest uses)."""
+    information set the backtest uses).
+
+    `previous` carries the hysteresis state — the currently shipped watchlist.
+    Omitting it silently disables hysteresis and reverts to pure top-N, which
+    would put live back out of step with a backtest that threads it through."""
     from moomoo import KLType
     from . import runtime_config
     top_n = top_n or runtime_config.universe_top_n()
@@ -285,4 +330,4 @@ def compute_live_universe(client, top_n: int | None = None) -> list[str]:
             log.warning("universe: daily fetch failed for %s: %s — excluded", sym, e)
             daily_by_sym[sym] = None
     return select_universe(daily_by_sym, asof=date.today(), top_n=top_n,
-                           afford=Affordability.live())
+                           afford=Affordability.live(), previous=previous)
