@@ -917,6 +917,39 @@ def api_settings():
     return jsonify({"keys": keys})
 
 
+@app.route("/api/preflight")
+def api_preflight():
+    """Startup readiness — see src/preflight.py for why this is not a gate.
+
+    `can_start` is False only on a real blocker (no broker). Everything else is
+    reported as degraded WITH the behaviour it disables, so a user can decide
+    knowingly instead of discovering four days later in a log file.
+    """
+    from src import preflight
+    fresh = request.args.get("fresh") in ("1", "true", "yes")
+    try:
+        return jsonify(preflight.run_all(use_cache=not fresh))
+    except Exception as e:
+        return jsonify({"can_start": True, "error": str(e), "checks": [],
+                        "summary": f"预检失败（不阻止启动）: {e}",
+                        "summary_en": f"Preflight failed (not blocking): {e}"}), 200
+
+
+@app.route("/api/preflight/<check_id>", methods=["POST"])
+def api_preflight_recheck(check_id):
+    """Re-run ONE check, bypassing the cache — this is the 'I just pasted a new
+    key, try again' path, so it must never serve the stale result it was
+    written to replace."""
+    from src import preflight
+    if check_id not in preflight.ORDER:
+        return jsonify({"ok": False, "error": "unknown check"}), 400
+    try:
+        preflight.invalidate(check_id)
+        return jsonify(preflight.run_one(check_id, use_cache=False).as_dict())
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/settings/key", methods=["POST"])
 def api_set_key():
     body = request.json or {}
@@ -925,6 +958,14 @@ def api_set_key():
         return jsonify({"ok": False, "error": "unknown key"}), 400
     try:
         _write_env_key(k, v.strip())
+        # A saved key makes every cached preflight probe of it stale, and the
+        # very next thing the user does is press retry. Serving the pre-edit
+        # result there would make the fix look like it failed.
+        try:
+            from src import preflight
+            preflight.invalidate()
+        except Exception:
+            pass
         if k == "WEB_PASSWORD":
             note = ("访问密码已更新 — 下次打开面板需要登录(本机也是)。"
                     if v.strip() else "已清除访问密码 — 面板将不再需要登录。")
