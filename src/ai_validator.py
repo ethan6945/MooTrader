@@ -380,7 +380,11 @@ tiebreaker. The bot will hold {symbol} (now ${price}) for ONE session only and
 flatten before the close, so only catalysts that can move the stock TODAY
 count.
 
-Recent news (last 3 days):
+Right now it is {now_et} US/Eastern. Each headline below is prefixed with its
+publication timestamp — use them, they are the difference between a catalyst
+and a recap.
+
+Recent news:
 {ticker_news}
 
 Macro / market context:
@@ -410,8 +414,8 @@ Respond with STRICT JSON, no markdown fence:
   "stale": true | false,
   "reason": "one short sentence"}}
 
-Set stale=true if the catalyst is real but is already several days old and the
-stock has plainly reacted to it.
+Set stale=true if the catalyst is real but its timestamp is old enough that the
+stock has plainly already reacted to it.
 """
 
 
@@ -443,8 +447,13 @@ def assess_news(signal) -> tuple[str, int, bool, str, bool]:
         # one from the ticker alone.
         return "neutral", 50, False, "no ticker news in the last 3 days", False
 
+    try:
+        from . import clock
+        now_et = f"{clock.ny_now():%Y-%m-%d %H:%M}"
+    except Exception:
+        now_et = "(unknown)"
     prompt = NEWS_DRIVEN_PROMPT.format(
-        symbol=signal.symbol, price=signal.price,
+        symbol=signal.symbol, price=signal.price, now_et=now_et,
         ticker_news=ticker_news, macro_news=macro_news,
         reasons="\n".join(f"- {r}" for r in signal.reasons))
 

@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## 2026-08-07 — DeepSeek V4 迁移（`deepseek-chat` 已停止解析）+ 新闻检索质量
+
+**这一条是修故障，不是加功能。** DeepSeek 于 2026-07-24 15:59 UTC 退役了 `deepseek-chat` / `deepseek-reasoner` 两个旧模型名，**没有软重定向** —— 请求直接失败。本仓库 `DEEPSEEK_MODEL` 的默认值正是 `deepseek-chat`，而所有 AI 层都是 fail-safe 的（AI 挂 → 返回中性 → 交易照跑），所以这是一次典型的静默降级：主循环看起来一切正常，AI 复核/情绪/智能退出实际全部空转。这正是 `preflight.py` 开头那段自述要防的事，但当时的预检只验 key、不验模型名，key 有效 → 一路绿灯。
+
+- **调用时自动改名**（`ai.migrate_deepseek_model`）：`deepseek-chat` → `deepseek-v4-flash`（thinking 关）、`deepseek-reasoner` → `deepseek-v4-flash`（thinking 开），并 WARNING 一次。未编辑的 .env 和残留的 db-state 覆盖都能继续跑，不认识的名字原样放行 —— 绝不替用户猜他自己选的模型。
+- **thinking 变成请求参数**：V4 把推理模式从模型名移到 body 的 `thinking`，且 pro 档默认开。`_deepseek()` 现在显式声明模式，不继承会变的默认值 —— 本仓库每个调用点要的都是「限时内吐一段短 JSON」，不是长思考。
+- **预检验模型名**（`check_ai`）：配了退役名字时以 DEGRADED 明说「现在靠自动改名还能跑，但配置本身是坏的」，并指出 flash / pro 的取舍。默认值与 `_FALLBACK_MODELS` 同步更新为 V4。
+- **修 `check_news_driven` 里我自己写的 Gemini 硬编码**：改成问 `ai.active_provider()` 要 key 名。`PROVIDERS` 自 2026-07-22 起就只有 deepseek，硬写 Gemini 会让这个装机去找一个用户早就删掉的 key。
+
+**新闻检索质量**（`src/news_fetcher.py`）：
+
+- **不再丢弃 `published_date`**（以及 Tavily 的 `score`）。此前每个消费方看到的 5 分钟前的头条和 3 天前的头条是同一段纯文本 —— 对新闻主导模式是致命的，它的核心问题就是「这个催化剂是新鲜的还是已经走完了」，光看标题答不了。`format_news` 现在前缀 `[时间戳]`，`NEWS_DRIVEN_PROMPT` 也把当前 ET 时间一起喂进去，那个 `stale` 判断这才真的有依据。
+- **`NEWS_INCLUDE_DOMAINS` 域名白名单**（默认空 = 行为不变）。Tavily 搜的是开放网络，会把「3 只值得关注的 AI 股」这类 SEO 列表、聚合站洗稿、涨跌幅复盘和真报道混在一起返回，而这些在模型眼里都像催化剂。填 `recommended` 即启用主流财经通讯社 + `sec.gov` —— 8-K 本身**就是**重大事件，有时间戳，且早于媒体转述。
+- 新增 `NEWS_SEARCH_DEPTH`、`NEWS_TICKER_DAYS`（默认 3 保持不变；同日内平仓的策略应该调到 1 —— 3 天窗口正是「读到的是旧闻」的直接原因）。
+
 ## 2026-08-07 — 新闻主导模式（`NEWS_DRIVEN_ENABLED`，默认关）
 
 机主要求的一个显式开关：把新闻从「顾问」提升为「主信号」，据此下注，收盘平仓。默认关闭时全链路逐字节不变。

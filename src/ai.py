@@ -42,8 +42,41 @@ PROVIDER_LABELS = {"deepseek": "DeepSeek"}
 # key). Kept tiny and current; the live fetch is the source of truth.
 _FALLBACK_MODELS = {
     "gemini": ["gemini-3.5-flash", "gemini-3.5-pro", "gemini-2.5-flash"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "deepseek": ["deepseek-v4-flash", "deepseek-v4-pro"],
 }
+
+# DeepSeek retired the legacy alias names on 2026-07-24 15:59 UTC. They do NOT
+# soft-redirect — a request naming one fails outright, which for this bot means
+# every AI layer silently degrading to its neutral fallback while the trading
+# loop carries on looking healthy. Exactly the failure mode preflight.py was
+# written for, so we do not rely on the user noticing: the name is rewritten
+# here (with a warning) and preflight.check_ai() reports the stale config.
+#
+# Both aliases pointed at deepseek-v4-flash — deepseek-chat was its
+# non-thinking mode, deepseek-reasoner its thinking mode. Thinking is now a
+# request parameter rather than a model name, so both map to the same model and
+# _deepseek() sets the mode explicitly.
+_RETIRED_DEEPSEEK_MODELS = {
+    "deepseek-chat": ("deepseek-v4-flash", False),
+    "deepseek-reasoner": ("deepseek-v4-flash", True),
+}
+
+
+def migrate_deepseek_model(model: str) -> tuple[str, bool]:
+    """(effective_model, thinking) for a configured DeepSeek model name.
+
+    Unknown/current names pass through untouched with thinking left off — this
+    must never guess at a model the user deliberately chose.
+    """
+    hit = _RETIRED_DEEPSEEK_MODELS.get((model or "").strip())
+    if not hit:
+        return model, False
+    new, thinking = hit
+    log.warning("DEEPSEEK_MODEL=%r was retired on 2026-07-24 and no longer "
+                "resolves — using %r (thinking=%s). Update the setting to "
+                "silence this.", model, new, thinking)
+    return new, thinking
+
 
 _DEEPSEEK_BASE = "https://api.deepseek.com"
 
@@ -334,9 +367,15 @@ def _gemini(prompt, keys, *, temperature, image, search) -> tuple[str, str]:
 
 
 def _deepseek(prompt, keys, *, temperature) -> tuple[str, str]:
-    model = active_model("deepseek")
+    model, thinking = migrate_deepseek_model(active_model("deepseek"))
     body: dict = {"model": model, "messages": [{"role": "user", "content": prompt}],
                   "stream": False}
+    # Thinking moved from the model name to a request parameter in V4, and it
+    # defaults to ON for the pro tier. Every caller in this bot wants a short
+    # JSON verdict on a latency budget (the entry path already measured median
+    # 42s / p90 99s BEFORE reasoning was in the picture), so state the mode
+    # explicitly rather than inheriting a per-model default that can change.
+    body["thinking"] = {"type": "enabled" if thinking else "disabled"}
     if temperature is not None:
         body["temperature"] = temperature
     last_err: Exception | None = None

@@ -175,7 +175,31 @@ def check_ai() -> Check:
                      fix_key=f"{provider.upper()}_API_KEY",
                      fix_hint=f"填入 {label} 的 API Key 后重试。",
                      fix_hint_en=f"Paste your {label} API key and retry.")
+    # A retired model name fails every call while the key itself is perfectly
+    # valid, so a key-only probe reports green on an install that cannot make a
+    # single AI call. DeepSeek retired deepseek-chat / deepseek-reasoner on
+    # 2026-07-24 with no soft-redirect; ai.migrate_deepseek_model() rewrites
+    # them at call time, but silently living on a rewrite is how config rot
+    # sets in — say it out loud.
+    configured = ai.active_model(provider)
     if provider == "deepseek":
+        migrated, _thinking = ai.migrate_deepseek_model(configured)
+        if migrated != configured:
+            return Check(id="ai", ok=False, severity=DEGRADED,
+                         title=f"{label} 模型已退役", title_en=f"{label} model retired",
+                         detail=f"配置的是 {configured}，已于 2026-07-24 停止解析",
+                         detail_en=f"configured {configured}, retired 2026-07-24",
+                         impact=f"调用已自动改用 {migrated}，所以现在还能跑；"
+                                f"但配置本身是坏的，下次改动或换机器就会暴露。"
+                                f"把 DEEPSEEK_MODEL 改成 {migrated} 或 deepseek-v4-pro。",
+                         impact_en=f"Calls are auto-rewritten to {migrated}, so it "
+                                   f"still runs — but the config itself is stale and "
+                                   f"the next edit or fresh install will expose it. "
+                                   f"Set DEEPSEEK_MODEL to {migrated} or deepseek-v4-pro.",
+                         fix_key="DEEPSEEK_MODEL",
+                         fix_hint=f"填 {migrated}（快、便宜）或 deepseek-v4-pro（会推理，慢且贵）。",
+                         fix_hint_en=f"Use {migrated} (fast, cheap) or deepseek-v4-pro "
+                                     "(reasoning, slower and dearer).")
         status, detail = _probe_deepseek(key)
     else:
         from . import health_check
@@ -279,9 +303,15 @@ def check_news_driven() -> Check:
                      detail="关闭 — 新闻仅作顾问，技术面选股",
                      detail_en="off — news is advisory, technicals select")
 
+    # Ask the ACTIVE provider for its key name rather than hardcoding one.
+    # ai.PROVIDERS is ("deepseek",) since 2026-07-22 — naming a Gemini key here
+    # would send this install hunting for a key it deliberately deleted.
+    from . import ai
+    provider = ai.active_provider()
     env = _live_env()
-    missing = [k for k in ("TAVILY_API_KEY",) if not _cred(env, k)]
-    if missing or not _cred(env, "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY"):
+    no_news = not _cred(env, "TAVILY_API_KEY")
+    no_ai = not _cred(env, f"{provider.upper()}_API_KEYS", f"{provider.upper()}_API_KEY")
+    if no_news or no_ai:
         # DEGRADED, not BLOCKER: this module's contract is that only the broker
         # may stop a start, and the failure here is safe (it trades nothing, it
         # doesn't trade wrongly). It just has to be impossible to miss.
@@ -297,9 +327,10 @@ def check_news_driven() -> Check:
                                "will place zero orders. Add the keys, or turn "
                                "NEWS_DRIVEN_ENABLED off to go back to technical "
                                "selection.",
-                     fix_key="TAVILY_API_KEY" if missing else "GEMINI_API_KEY",
-                     fix_hint="补齐 Tavily + Gemini/DeepSeek 密钥后重试。",
-                     fix_hint_en="Add the Tavily + Gemini/DeepSeek keys and retry.")
+                     fix_key="TAVILY_API_KEY" if no_news else f"{provider.upper()}_API_KEY",
+                     fix_hint=f"补齐 Tavily + {ai.PROVIDER_LABELS.get(provider, provider)} 密钥后重试。",
+                     fix_hint_en=f"Add the Tavily + {ai.PROVIDER_LABELS.get(provider, provider)} "
+                                 "keys and retry.")
 
     return Check(id="news_driven", ok=False, severity=DEGRADED,
                  title="新闻主导模式", title_en="News-driven mode",

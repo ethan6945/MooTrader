@@ -158,7 +158,11 @@ class Settings:
         ).split(",")
         if k.strip()
     )
-    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    # 2026-08-07: was "deepseek-chat", which DeepSeek retired on 2026-07-24 —
+    # the name stopped resolving, with no soft-redirect. ai.migrate_deepseek_model()
+    # rewrites the old names at call time so an un-edited .env or a stale
+    # db-state override still works, but the default here is now current.
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
     telegram_token: str = os.getenv("TELEGRAM_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -307,6 +311,23 @@ class Settings:
     sentiment_sizing: bool = os.getenv("SENTIMENT_SIZING", "false").lower() in ("1", "true", "yes")
     sentiment_model: str = os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash")
     sentiment_budget: int = _int("SENTIMENT_BUDGET", 8)
+
+    # ── News search quality (2026-08-07, src/news_fetcher.py) ─────────────
+    # Tavily's news topic searches the open web, which returns SEO listicles,
+    # aggregator rewrites and price-move recaps alongside real reporting — all
+    # of which read as catalysts to a model and are none. The domain whitelist
+    # is the single highest-leverage knob on news quality. Empty (the default,
+    # so existing installs are unchanged) = search the open web. Set it to
+    # `recommended` for news_fetcher.RECOMMENDED_DOMAINS — the major financial
+    # wires plus sec.gov, where an 8-K IS the material event, timestamped,
+    # before the press writes it up — or give your own comma-separated list.
+    news_include_domains: str = os.getenv("NEWS_INCLUDE_DOMAINS", "")
+    # "basic" | "advanced" — advanced costs more Tavily credits per call and
+    # returns better-extracted content. Left at basic (unchanged default).
+    news_search_depth: str = os.getenv("NEWS_SEARCH_DEPTH", "basic").strip().lower()
+    # Per-ticker lookback in days. 3 is the historical default and is why the
+    # input is a narrative rather than an event; 1 suits a same-session bet.
+    news_ticker_days: int = _int("NEWS_TICKER_DAYS", 3)
 
     # ── News-driven mode (2026-08-07): news as the PRIMARY signal ──────────
     # Everything above treats news as advisory: it annotates, it can veto, it
