@@ -22,7 +22,7 @@ _ET = pytz.timezone("America/New_York")
 from moomoo import TrdSide
 
 from .config import settings as _settings  # noqa: F401 (used in caller too)
-from . import db, portfolio, risk_manager, runtime_config
+from . import db, news_driven, portfolio, risk_manager, runtime_config
 
 from .config import settings
 from .indicators import Signal
@@ -872,7 +872,11 @@ def _force_close(client: MooClient, symbol: str, trade: dict,
     pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, reason)
     # An AI/sentinel risk-off close means "don't hold this today" — block the
     # scanner from buying it straight back this session (DELL churn, 2026-07-14).
-    if reason in ("GAP_RISK", "SMART_EXIT"):
+    # EOD_FLAT joins them for a different reason: the flatten runs on the 5-min
+    # manage tick but the scanner keeps scanning until 16:00, so without a
+    # cooldown a name flattened at 15:45 is re-bought at 15:50 and flattened
+    # again at 15:55 — pure churn at the widest spreads of the day.
+    if reason in ("GAP_RISK", "SMART_EXIT", "EOD_FLAT"):
         _set_reentry_cooldown(symbol, reason)
     return pnl, {"type": reason.lower(), "symbol": symbol, "price": exit_px,
                  "qty": trade["qty"], "pnl": pnl}
@@ -1274,6 +1278,41 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                     pass
             except Exception as e:
                 log.warning("smart-exit close %s failed: %s", symbol, e)
+
+    # --- Auto-flush 0.7: news-driven EOD flatten (收盘平仓) ---
+    # In news-driven mode the thesis is one session long, so nothing carries
+    # overnight — at NEWS_DRIVEN_FLATTEN_ET (default 15:45 ET) every bot-managed
+    # position is closed regardless of P&L, TP or stop. This is the second half
+    # of what the switch promises; the first half is the entry gate in main.py.
+    #
+    # Owner-held manual positions are exempt via `_skip`, same as every other
+    # auto-exit. A halted/priceless name is left alone rather than dumped at $0,
+    # which does mean it can survive to the next session — the alternative is
+    # selling into a void, and the protective bracket still covers it.
+    if news_driven.flatten_now():
+        for symbol in list(trades.keys()):
+            if symbol in _skip:
+                continue
+            last = _last_price(client, symbol)
+            if last is None:
+                log.warning("EOD flatten: no price for %s — leaving it "
+                            "(will carry overnight)", symbol)
+                continue
+            try:
+                pnl, action = _force_close(client, symbol, trades[symbol],
+                                           last, "EOD_FLAT")
+                actions.append(action)
+                trades.pop(symbol)
+                log.warning("News-driven EOD flatten: %s @ $%.2f (pnl=%.2f)",
+                            symbol, last, pnl)
+                try:
+                    from . import notifier
+                    notifier.send(f"🔔 收盘平仓: {symbol} @ ${last:.2f} "
+                                  f"(已实现 ${pnl:+.0f}) — 新闻主导模式不留隔夜仓")
+                except Exception:
+                    pass
+            except Exception as e:
+                log.warning("EOD flatten %s failed: %s", symbol, e)
 
     # --- Auto-flush 1: over-capacity flush ---
     # If we hold MORE than MAX_POSITIONS (e.g. user just tightened the cap),

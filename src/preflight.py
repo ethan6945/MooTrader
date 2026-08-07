@@ -263,6 +263,66 @@ def check_news() -> Check:
                  fix_hint_en="Get a free key at tavily.com and retry.")
 
 
+def check_news_driven() -> Check:
+    """The one switch in this bot that invalidates its own backtest.
+
+    Everything else AI-shaped is advisory precisely so the sandbox keeps
+    describing the live system. News-driven mode changes SELECTION, and
+    sandbox.py deliberately skips AI to avoid LLM look-ahead — so with this on,
+    the backtest measures a strategy that is not the one running. That is a
+    legitimate owner choice, but it must never be a silent one.
+    """
+    from . import news_driven
+    if not news_driven.enabled():
+        return Check(id="news_driven", ok=True, severity=OK,
+                     title="新闻主导模式", title_en="News-driven mode",
+                     detail="关闭 — 新闻仅作顾问，技术面选股",
+                     detail_en="off — news is advisory, technicals select")
+
+    env = _live_env()
+    missing = [k for k in ("TAVILY_API_KEY",) if not _cred(env, k)]
+    if missing or not _cred(env, "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY"):
+        # DEGRADED, not BLOCKER: this module's contract is that only the broker
+        # may stop a start, and the failure here is safe (it trades nothing, it
+        # doesn't trade wrongly). It just has to be impossible to miss.
+        return Check(id="news_driven", ok=False, severity=DEGRADED,
+                     title="新闻主导模式", title_en="News-driven mode",
+                     detail="已开启，但新闻/AI 密钥缺失 —— 不会下任何单",
+                     detail_en="on, but the news/AI keys are missing — zero orders",
+                     impact="新闻主导模式下「读不到新闻」= 不开仓（这是刻意的），"
+                            "所以现在这个配置一单都不会下。要么补上密钥，要么关掉 "
+                            "NEWS_DRIVEN_ENABLED 回到技术面选股。",
+                     impact_en="In news-driven mode 'cannot read the news' means "
+                               "'do not trade' by design — so this configuration "
+                               "will place zero orders. Add the keys, or turn "
+                               "NEWS_DRIVEN_ENABLED off to go back to technical "
+                               "selection.",
+                     fix_key="TAVILY_API_KEY" if missing else "GEMINI_API_KEY",
+                     fix_hint="补齐 Tavily + Gemini/DeepSeek 密钥后重试。",
+                     fix_hint_en="Add the Tavily + Gemini/DeepSeek keys and retry.")
+
+    return Check(id="news_driven", ok=False, severity=DEGRADED,
+                 title="新闻主导模式", title_en="News-driven mode",
+                 detail=news_driven.describe(), detail_en=news_driven.describe(),
+                 impact="回测不再描述实盘。新闻决定选股，而回测引擎故意跳过 AI"
+                        "（避免 LLM 后见之明），所以两边跑的是不同的策略 —— "
+                        "此刻的回测数字不能用来判断这个模式的好坏。而且这个模式"
+                        "没有因子研究背书（对比期权放量因子的 5,980 组样本）："
+                        "实盘结果本身就是实验。",
+                 impact_en="The backtest no longer describes live. News now "
+                           "selects trades, and the sandbox deliberately skips "
+                           "AI to avoid LLM look-ahead, so the two run different "
+                           "strategies — current backtest numbers cannot judge "
+                           "this mode. No factor study backs it either (contrast "
+                           "the options-volume factor's 5,980 name-days): live "
+                           "results are the experiment.",
+                 fix_key="NEWS_DRIVEN_ENABLED",
+                 fix_hint="设为 false 即可恢复技术面选股 + 可回测。",
+                 fix_hint_en="Set false to restore technical selection and a "
+                             "meaningful backtest.",
+                 retryable=False)
+
+
 def check_options_feed() -> Check:
     """Only meaningful once the factor is armed — probing an endpoint nothing
     consumes would be a permanent red the user cannot act on."""
@@ -301,6 +361,7 @@ def check_options_feed() -> Check:
 # that answers "what am I actually running?" — the question a fresh install and
 # a hand-typed .env both fail to answer.
 _FEATURES = [
+    ("news_driven_enabled",       "NEWS_DRIVEN_ENABLED",       "新闻主导模式",   "News-driven mode"),
     ("gap_sentinel_enabled",      "GAP_SENTINEL_ENABLED",      "盘前跳空防守",   "Pre-market gap defence"),
     ("smart_exit_enabled",        "SMART_EXIT_ENABLED",        "智能提前退出",   "Smart early exit"),
     ("sentiment_scoring_enabled", "SENTIMENT_SCORING_ENABLED", "情绪打分",       "Sentiment scoring"),
@@ -382,9 +443,13 @@ _CHECKS = {
     "news":      check_news,
     "options":   check_options_feed,
     "features":  check_features,
+    "news_driven": check_news_driven,
 }
 # Dialog order: the blocker first, then identity, then the degradable layers.
-ORDER = ["broker", "trade_env", "config", "features", "ai", "news", "telegram", "options"]
+# news_driven sits right after the inventory — when it is on it changes what
+# every layer below it means, so it should be read before them, not after.
+ORDER = ["broker", "trade_env", "config", "features", "news_driven",
+         "ai", "news", "telegram", "options"]
 
 
 def run_one(check_id: str, use_cache: bool = False) -> Check:

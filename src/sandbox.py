@@ -614,6 +614,16 @@ def _is_cooldown_active(symbol: str, broker, sim_now: datetime) -> bool:
 # data (Gemini/DeepSeek "knows" the future). ai_score/ai_verdict fields remain
 # in SimTrade as placeholders for future offline batch annotation with
 # a cutoff-date-locked model.
+#
+# NEWS-DRIVEN MODE IS NOT MODELLED HERE, and cannot be (2026-08-07). When
+# NEWS_DRIVEN_ENABLED is on, live selection is made by the AI news read this
+# engine deliberately skips, so a sandbox run measures a DIFFERENT strategy —
+# not a pessimistic version of the live one, a different one. The switch is
+# live-only by construction and preflight.check_news_driven() says so on every
+# start. Two things would be needed to close the gap, and neither exists yet:
+# a point-in-time news archive (Tavily serves "now", not "as of 2026-03-04"),
+# and a scorer with a training cutoff before the test window — a local
+# FinBERT-class model rather than a frontier LLM.
 
 
 # ── Main Loop ─────────────────────────────────────────────

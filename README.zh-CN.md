@@ -565,6 +565,7 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 | `PATTERN_VISION_ENABLED` | 依赖形态策略；且 HOUR_1 历史数据凑不出第二个独立回测窗口 |
 | `SMART_EXIT_ENABLED` | 盘中 AI/技术智能退出，未验证；隔夜风险已由哨兵覆盖 |
 | `SENTIMENT_SCORING_ENABLED` | 券商 App 式看好/看空打分，纯建议不改下单，默认关省 API 调用 |
+| `NEWS_DRIVEN_ENABLED` | **唯一会让回测失效的开关。** 把漏斗倒过来：技术分降级为「这票能不能碰」的预筛，AI 新闻读数负责选股和定仓位，并在收盘前平掉全部持仓不留隔夜。回测引擎故意跳过 AI（避免 LLM 后见之明），所以开着它时回测测的是*另一个*策略。也没有因子研究背书 —— 实盘结果本身就是实验。fail-safe 方向同样反转：读不到新闻 ⇒ 不下单 |
 | `OPTIONS_FLOW_ENABLED` | 期权异动只被 smart_exit / sentiment 消费（都关着），单独开无意义 |
 | `STALL_OUT_ENABLED` | 停滞退出。验证引擎没有它，且 max-hold 桶净赚；实盘仅有的停滞退出全亏 |
 | `SMART_REGIME_ENABLED` | 滞回平滑的 regime 标签（500 天回测：翻转 −89%）。默认关保持与回测逐字节一致 |

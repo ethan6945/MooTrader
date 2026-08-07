@@ -565,6 +565,7 @@ All config lives in `.env` (the template [`.env.example`](.env.example) document
 | `PATTERN_VISION_ENABLED` | Depends on the pattern strategy; and HOUR_1 history can't produce a second independent backtest window |
 | `SMART_EXIT_ENABLED` | Intraday AI/technical smart exit, unvalidated; overnight risk is already covered by the sentinel |
 | `SENTIMENT_SCORING_ENABLED` | Broker-app-style bull/bear scoring, purely advisory and doesn't change orders; off by default to save API calls |
+| `NEWS_DRIVEN_ENABLED` | **The only switch that invalidates the backtest.** Inverts the funnel: the rule score demotes to a tradeability prefilter and the AI news read selects + sizes, with an EOD flatten so nothing carries overnight. The sandbox deliberately skips AI (LLM look-ahead), so while this is on the backtest measures a *different* strategy. No factor study backs it either — live results are the experiment. Fail-safe inverts too: no news ⇒ no trade |
 | `OPTIONS_FLOW_ENABLED` | Options flow is only consumed by smart_exit / sentiment (both off), so enabling it alone is pointless |
 | `STALL_OUT_ENABLED` | Stall exit. The validation engine doesn't have it, and the max-hold bucket nets a profit; the only stall exits in live all lost |
 | `SMART_REGIME_ENABLED` | Hysteresis-smoothed regime label (500-day backtest: flips −89%). Off to stay byte-for-byte identical to the backtest |

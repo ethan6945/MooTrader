@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 2026-08-07 — 新闻主导模式（`NEWS_DRIVEN_ENABLED`，默认关）
+
+机主要求的一个显式开关：把新闻从「顾问」提升为「主信号」，据此下注，收盘平仓。默认关闭时全链路逐字节不变。
+
+- **漏斗倒置**（`src/news_driven.py` 新增 + `src/main.py`）：开启后技术分降级为「这票能不能碰」的预筛（`threshold_floor` 按 `NEWS_DRIVEN_THRESHOLD_DELTA` 放松，硬地板 50 —— 再好的消息也不买烂走势），由 AI 新闻读数决定**选股**（`NEWS_DRIVEN_MIN_SCORE`，默认 65）和**仓位**（分数线性映射到 1.0–`NEWS_DRIVEN_MAX_MULT`，下游 `max_position_pct` 仍封顶）。加仓单同样过闸 —— 加仓是对同一条新闻的新下注。
+- **要求具名催化剂**（`NEWS_DRIVEN_REQUIRE_CATALYST=true`）：提示词（`ai_validator.NEWS_DRIVEN_PROMPT`）明确区分「具体事件」（上调指引、签约、升评、获批）和「氛围」（泛泛看好、涨幅复盘、维持评级）。模型标记 `stale=true` 的催化剂降级为无催化剂 —— 市场已经走完的行情不是现在进场的理由。关掉这一项等于让 LLM 的情绪分替你选股。
+- **fail-safe 方向反转**，这是本次最要紧的设计点：顾问模式下「AI 不可用 → 中性 50 → 照常下单」是对的（技术面才是论据）；新闻主导模式下新闻**就是**论据，所以无 key / 无新闻 / 配额错误 / 预算耗尽一律**不下单**，绝不回退成技术面选股 —— 那会在用户以为跑着 A 策略时偷偷跑 B。`assess_news()` 因此额外返回 `ok` 标志，`news_driven.gate()` 只认真读数。
+- **收盘平仓**（`executor` auto-flush 0.7）：`NEWS_DRIVEN_FLATTEN_ET`（默认 15:45 ET，盘中正常挂单、避开 15:30 MOC 区）无视盈亏/TP/SL 平掉全部 bot 持仓。机主手工持仓照旧豁免；取不到价的停牌票宁可留过夜也不砸向虚空。
+- **堵住两个空转**：① 平仓后加 `EOD_FLAT` 再入场冷却，否则 15:45 平掉、15:50 被扫回来、15:55 再平，在一天里价差最宽的时段来回付费；② 新增 `NEWS_DRIVEN_MIN_HOLD_MIN`（默认 30 分钟），15:15 后不再开新仓 —— 开一个五分钟后就被平掉的仓位只是白付一轮手续费和滑点。
+- **回测失效必须说出口**（`src/preflight.py` 新增 `check_news_driven`，`src/sandbox.py` 注释）：本仓库其他 AI 层一律 advisory，正是为了让回测仍然描述实盘；这个开关改的是**选股**，而 sandbox 故意跳过 AI（防 LLM 后见之明），于是两边跑的是不同策略。开着它时每次启动预检都会以 DEGRADED 说明这一点，并指出它也没有因子研究背书（对比期权放量因子的 5,980 组样本）—— 实盘结果本身就是实验。缺 Tavily/AI key 时预检明说「一单都不会下」。
+- 未加 `NEWS_DRIVEN_MODEL`：`ai.generate()` 没有 `model=` 参数，现有 `GAP_SENTINEL_MODEL` / `SMART_EXIT_MODEL` / `SENTIMENT_MODEL` 实际都没人读（`.env.example:32` 已注明）。不再增加第四个假旋钮。
+
 ## 2026-07-11 — Sandbox 配置对齐 + 真实 VIX + sandbox↔backtest 交易级差分
 
 三件事把 sandbox 从"独立但配置漂移"修成可信的差分基准（快引擎 engine_compare 只互查 V3 与冻结 oracle，此前**没有任何东西**把快引擎和 sandbox 对过账）：

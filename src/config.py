@@ -308,6 +308,70 @@ class Settings:
     sentiment_model: str = os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash")
     sentiment_budget: int = _int("SENTIMENT_BUDGET", 8)
 
+    # ── News-driven mode (2026-08-07): news as the PRIMARY signal ──────────
+    # Everything above treats news as advisory: it annotates, it can veto, it
+    # can nudge size, but the technical score decides WHICH trade fires. This
+    # switch inverts that — the rule score becomes a cheap prefilter and the
+    # news read becomes the thing that selects and sizes. Owner-requested
+    # (2026-08-07) after being shown the risks below; DEFAULT OFF.
+    #
+    # WHAT IT COSTS, stated plainly so nobody rediscovers it via a drawdown:
+    #  1. BACKTEST PARITY IS GONE while this is on. Every other AI layer is
+    #     advisory precisely so the backtest still describes the live system.
+    #     This one changes selection, and sandbox.py deliberately skips AI to
+    #     avoid LLM look-ahead, so the backtest models a DIFFERENT strategy.
+    #     preflight.check_news_driven() says so on every start.
+    #  2. The news is 3 days old (news_fetcher uses days=3, 30-min cache), so
+    #     this trades a narrative, not an event. It is not a fast-news edge.
+    #  3. No measured factor study backs it — unlike the options-volume factor
+    #     (scripts/options_factor_study.py, 5,980 name-days). Treat live
+    #     results as the experiment.
+    #
+    # FAIL-SAFE DIRECTION FLIPS HERE. In advisory mode "AI unavailable" →
+    # neutral 50 → trade anyway (correct: the technicals were the thesis). In
+    # news-driven mode the news IS the thesis, so no news / no key / API error
+    # → NO TRADE. news_driven.gate() enforces that; it never falls back to a
+    # technical-only entry, because that would silently be a different system.
+    news_driven_enabled: bool = os.getenv("NEWS_DRIVEN_ENABLED", "false").lower() in ("1", "true", "yes")
+    # Minimum 0-100 bullishness for an entry. 50 = neutral, so 65 asks for a
+    # clearly positive read rather than "nothing bad in the headlines".
+    news_driven_min_score: int = _int("NEWS_DRIVEN_MIN_SCORE", 65)
+    # Require a NAMED concrete catalyst (guidance raise, contract, upgrade…),
+    # not just a warm tone. Without this the mode degrades into letting an LLM
+    # mood score pick trades, which is the failure everyone means by "AI slop".
+    news_driven_require_catalyst: bool = os.getenv("NEWS_DRIVEN_REQUIRE_CATALYST", "true").lower() in ("1", "true", "yes")
+    # The rule score stops being the decider, so the bar it has to clear drops
+    # — it is now only "is this tradeable at all" (liquidity, not-broken tape).
+    # Negative = looser. The floor never goes below 50 (see news_driven.py).
+    news_driven_threshold_delta: float = _float("NEWS_DRIVEN_THRESHOLD_DELTA", -10.0)
+    # Score → size. min_score maps to 1.0x, 100 maps to this. Deliberately
+    # wider than the advisory channel's 1.25 cap, because here the news is the
+    # conviction, but still bounded by max_position_pct downstream.
+    news_driven_max_mult: float = _float("NEWS_DRIVEN_MAX_MULT", 1.5)
+    # Per-scan AI call budget for the news read. Higher than sentiment_budget
+    # (8) because in this mode a name that doesn't get read cannot trade.
+    news_driven_budget: int = _int("NEWS_DRIVEN_BUDGET", 12)
+    # (No NEWS_DRIVEN_MODEL knob: ai.generate() has no model= parameter — every
+    # layer runs the provider cascade in ai.model_cascade(). The *_MODEL
+    # settings above are read by nobody today; adding a fourth dead one would
+    # only tell the user they had control they don't have.)
+    # 收盘平仓: flatten every bot-managed position before the close, so a
+    # news-driven bet never carries overnight gap risk. Owner-requested and ON
+    # by default WITH the mode (it is half of what was asked for), but separable
+    # — set false to let the normal TP/SL bracket run its course instead.
+    # NOTE: this caps the trade at one session, while the documented
+    # post-news drift (PEAD) runs for days. That tradeoff is deliberate.
+    news_driven_eod_flatten: bool = os.getenv("NEWS_DRIVEN_EOD_FLATTEN", "true").lower() in ("1", "true", "yes")
+    # ET wall-clock time to flatten, HH:MM. Default 15:45 — inside RTH so the
+    # order is a normal marketable exit, and past 15:30 only by enough to still
+    # get out before the close auction (clock.py warns about the MOC zone).
+    news_driven_flatten_et: str = os.getenv("NEWS_DRIVEN_FLATTEN_ET", "15:45")
+    # Stop opening NEW positions this many minutes before the flatten. Without
+    # it the scanner happily opens at 15:40 a position the flatten kills at
+    # 15:45 — a round trip's cost and slippage for five minutes of exposure,
+    # every day. Default 30 ⇒ last new entry 15:15 ET.
+    news_driven_min_hold_min: int = _int("NEWS_DRIVEN_MIN_HOLD_MIN", 30)
+
     # ── Options flow (Phase 2D, 2026-06-23): unusual options activity ──
     # broker-style 期权异动: volume ≫ open-interest, put/call skew, OI-concentration
     # support/resistance (src/options_flow.py). BLOCKED until the account has US
