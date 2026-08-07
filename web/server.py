@@ -541,6 +541,39 @@ def api_status():
         acct["budget"] = risk_manager.budget_usd()   # live override beats stale snapshot
     except Exception:
         pass
+    # AI health (2026-08-07). Read from the runtime ledger + the watchdog's last
+    # verdict — NOT by probing here, because /api/status is polled every 4s and
+    # a probe per poll would bill the provider ~900 times an hour. Surfaced so
+    # the dashboard can show a banner: a fail-safe AI layer degrades silently by
+    # design, and "silently" is the part that cost four blind trading days.
+    try:
+        from src import ai as _ai
+        from src import db as _db
+        _ch = _ai.call_health()
+        _st = _db.get_state()
+        _watchdog_ok = _st.get("health_gemini_ok")
+        _calls_ok = _st.get("health_ai_calls_ok")
+        _has_key = _ai.has_key()
+        _down = _has_key and (_watchdog_ok is False or _calls_ok is False)
+        try:
+            from src import news_driven as _nd
+            _nd_on = _nd.enabled()
+        except Exception:
+            _nd_on = False
+        acct["ai_health"] = {
+            "ok": not _down,
+            "has_key": _has_key,
+            "provider": _ai.PROVIDER_LABELS.get(_ai.active_provider(), "AI"),
+            "model": _ai.active_model(),
+            "fail_streak": _ch.get("fail_streak", 0),
+            "last_error": _ch.get("last_error", ""),
+            "last_ok": _ch.get("last_ok"),
+            # Whether an outage stops trading outright or only blinds the
+            # advisory layers — the banner says different things for each.
+            "blocks_trading": bool(_nd_on),
+        }
+    except Exception:
+        pass
     # Enrich per_position with the GUI's open-trade fields (entry/stop/tp/atr) so the
     # web positions table mirrors the desktop GUI exactly. account.per_position only
     # carries live price/PnL; the static trade params live in open_trades.json.

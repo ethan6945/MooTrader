@@ -243,6 +243,15 @@
 </style>
 </head>
 <body>
+  <!-- AI-down banner. Every AI layer here fail-safes to neutral, so an outage
+       degrades the bot in total silence — that is the whole reason this exists.
+       Dismissible per-outage (see aiBannerKey), not per-page-load: a banner you
+       re-close every 4s is a banner you learn to ignore. -->
+  <div id="aiBanner" class="hidden" style="background:#3d1518;border-bottom:1px solid #f8514966;color:#ffb4ab;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:12px">
+    <span style="font-size:16px">⚠️</span>
+    <span id="aiBannerMsg" style="flex:1"></span>
+    <button class="sm" id="aiBannerDismiss" style="background:transparent;border-color:#f8514966;color:#ffb4ab">知道了</button>
+  </div>
   <div class="topbar">
     <div class="logo">Moo<span class="b">Trader</span></div>
     <span class="pill" id="sched"><span class="dot" style="background:#8b949e"></span>scheduler …</span>
@@ -497,9 +506,35 @@ function setTab(t){
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 
 let LAST_STATUS=null;
+// Dismissal is keyed to the OUTAGE (provider+model+error), not to the session.
+// Poll is every 4s: a per-load dismissal would re-fire forever and train you to
+// click it away without reading, which is how the four silent days happened.
+// A NEW/different failure re-opens the banner even if you dismissed the last one.
+let AI_BANNER_DISMISSED='';
+function renderAiBanner(h){
+  const el=$('#aiBanner');
+  if(!h||h.ok||!h.has_key){el.classList.add('hidden');return;}
+  const key=`${h.provider}|${h.model}|${(h.last_error||'').slice(0,80)}`;
+  if(AI_BANNER_DISMISSED===key){el.classList.add('hidden');return;}
+  const zh=LANG!=='en';
+  const consequence=h.blocks_trading
+    ? (zh?'新闻主导模式已开启 —— 读不到新闻就不下单，现在是完全停止交易。'
+         :'News-driven mode is ON — no news means no orders, so trading has stopped entirely.')
+    : (zh?'AI 层已 fail-safe（不会乱动仓位），但智能退出/情绪打分处于失明状态。'
+         :'The AI layers have failed safe (no rogue orders), but smart exit and sentiment are blind.');
+  const err=(h.last_error||'').slice(0,120);
+  $('#aiBannerMsg').innerHTML=
+    `<b>${h.provider} ${zh?'调用失败':'is failing'}</b>${h.fail_streak?` (${h.fail_streak}${zh?' 次连续':' in a row'})`:''} — ${consequence}`
+    +(err?`<br><span style="opacity:.75;font-size:11.5px">${h.model||''} · ${err.replace(/</g,'&lt;')}</span>`:'');
+  el.dataset.key=key;
+  el.classList.remove('hidden');
+}
+$('#aiBannerDismiss').onclick=()=>{AI_BANNER_DISMISSED=$('#aiBanner').dataset.key||'';$('#aiBanner').classList.add('hidden');};
+
 async function refresh(){
   let a; try{a=await api('/api/status');}catch(e){return;}
   LAST_STATUS=a;
+  renderAiBanner(a.ai_health);
   const run=a.scheduler_running;
   $('#sched').innerHTML=`<span class="dot ${run?'live':''}" style="background:${run?'#3fb950':'#f85149'};color:${run?'#3fb950':'#f85149'}"></span>scheduler ${run?'running':'stopped'}`;
   $('#sched').style.borderColor=(run?'#3fb950':'#f85149')+'66';

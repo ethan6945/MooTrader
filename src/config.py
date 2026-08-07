@@ -329,6 +329,34 @@ class Settings:
     # input is a narrative rather than an event; 1 suits a same-session bet.
     news_ticker_days: int = _int("NEWS_TICKER_DAYS", 3)
 
+    # ── SEC EDGAR filings as a catalyst source (2026-08-07, src/sec_edgar.py) ──
+    # The primary source rather than prose about it: an 8-K IS the material
+    # event, timestamped by the issuer. Highest-signal answer available to
+    # news-driven mode's "is there a concrete, fresh catalyst" question, and
+    # free. ADDS to Tavily, does not replace it (filings miss downgrades,
+    # sector moves, and anything about a company that isn't the filer).
+    # DEFAULT OFF.
+    sec_edgar_enabled: bool = os.getenv("SEC_EDGAR_ENABLED", "false").lower() in ("1", "true", "yes")
+    # REQUIRED when enabled: SEC wants a User-Agent naming you with a contact
+    # email ("Jane Doe jane@example.com"). A missing or generic one earns a 403
+    # and can block the IP for ~10 minutes — the same IP that talks to your
+    # broker. sec_edgar.py refuses to make the call rather than risk that, so
+    # there is deliberately no invented default here.
+    sec_edgar_user_agent: str = os.getenv("SEC_EDGAR_USER_AGENT", "")
+    sec_edgar_days: int = _int("SEC_EDGAR_DAYS", 3)
+
+    # ── FinBERT local scorer (2026-08-07, src/news_score_local.py) ────────
+    # Deterministic, local, and — the actual point — trained on a corpus that
+    # predates any window you would test on, so unlike a frontier LLM it does
+    # not know what happened next. ADVISORY: logged next to the LLM's read so
+    # disagreement becomes measurable, never gates a trade.
+    # NOT a packaged dependency: torch + transformers add ~1-2 GB to a frozen
+    # bundle that excludes matplotlib to save 53 MB. Source installs can
+    # `pip install transformers torch`; the .app degrades to "unavailable".
+    finbert_enabled: bool = os.getenv("FINBERT_ENABLED", "false").lower() in ("1", "true", "yes")
+    finbert_model: str = os.getenv("FINBERT_MODEL", "ProsusAI/finbert")
+    finbert_threads: int = _int("FINBERT_THREADS", 2)
+
     # ── News-driven mode (2026-08-07): news as the PRIMARY signal ──────────
     # Everything above treats news as advisory: it annotates, it can veto, it
     # can nudge size, but the technical score decides WHICH trade fires. This

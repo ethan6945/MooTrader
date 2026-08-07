@@ -29,6 +29,14 @@ log = logging.getLogger(__name__)
 _K_OPT = "health_options_ok"
 _K_OPT_STATS = "health_options_stats_ok"
 _K_GEM = "health_gemini_ok"
+_K_AI_CALLS = "health_ai_calls_ok"
+
+# Consecutive REAL call failures before the runtime ledger is called bad. The
+# probe below asks "can I reach the provider right now"; this asks "are the
+# calls this bot actually makes working" — different questions, and the probe
+# can pass while the real ones fail (a prompt the model rejects, a per-model
+# entitlement, a payload the layer builds wrong). 3 rides out one flaky scan.
+_CALL_FAIL_THRESHOLD = 3
 
 # Debounce: a transition must be seen on this many CONSECUTIVE checks before we
 # flip state + alert. Stops a flaky/intermittent failure (e.g. an occasional
@@ -110,6 +118,15 @@ def check_ai() -> tuple[str, str]:
         return "bad", f"API key 失效/无权限 ({last_err[:90]})"
     if "location" in el or "failed_precondition" in el:
         return "bad", f"地区限制 / location not supported ({last_err[:90]})"
+    # A retired / misspelled model name (2026-08-07). This bucket did not exist
+    # and it is precisely the hole DeepSeek's 2026-07-24 alias retirement fell
+    # through: the 404 matched nothing above, landed in "unclassified" → 'skip',
+    # and 'skip' never toggles state or alerts. So the AI was dead for days
+    # while this watchdog — the thing built to catch exactly that — stayed
+    # silent. It is owner-actionable (change one setting), so it is 'bad'.
+    if ("404" in last_err or "model not found" in el or "does not exist" in el
+            or "unknown model" in el or "model_not_found" in el):
+        return "bad", f"模型不存在/已下线 ({last_err[:90]})"
     return "skip", f"unclassified ({last_err[:90]})"
 
 
@@ -184,8 +201,52 @@ def run(client=None) -> None:
     except Exception as e:
         gem_status, gem_detail = "skip", f"check error ({e})"
     log.info("health: ai=%s (%s)", gem_status, gem_detail)
+    # News-driven mode changes what an AI outage MEANS. Normally the loop keeps
+    # trading on technicals and the AI layers fail-safe to neutral — annoying,
+    # not urgent. With NEWS_DRIVEN_ENABLED the news IS the thesis, so no AI is
+    # no trades at all: the bot sits out the whole session. Same alert channel,
+    # but the message has to say which of those two situations you are in.
+    try:
+        from . import news_driven
+        nd_on = news_driven.enabled()
+    except Exception:
+        nd_on = False
+    _consequence = (
+        "\n🚨 新闻主导模式已开启 —— 读不到新闻就不下单，"
+        "所以现在是**完全停止交易**，不是降级运行。"
+        if nd_on else
+        "\nAI 层会 fail-safe（不会乱动仓位），但智能退出/情绪选股会变盲。"
+    )
     _edge(_K_GEM, gem_status,
           fail_msg=(f"⚠️ *{provider_label} API 不可用*：" + gem_detail +
-                    "\nAI 层会 fail-safe（不会乱动仓位），但智能退出/情绪选股会变盲。"
-                    "请尽快充值或检查 API key，或在面板切换到另一个 AI 引擎。"),
+                    _consequence +
+                    "\n请尽快充值或检查 API key / 模型名，或在面板切换 AI 引擎。"),
           recover_msg=f"✅ {provider_label} API 已恢复正常。")
+
+    # --- real call outcomes (2026-08-07) ---
+    # Second, independent signal: what the calls this bot actually makes did.
+    # The probe above can be green while these fail. Only meaningful once a key
+    # exists — with no key nothing is attempted and the streak stays 0 forever,
+    # which check_ai() already reports as 'skip'.
+    try:
+        from . import ai as _ai
+        ch = _ai.call_health()
+        streak = int(ch.get("fail_streak") or 0)
+        if not _ai.has_key():
+            call_status, call_detail = "skip", "no key — nothing attempted"
+        elif streak >= _CALL_FAIL_THRESHOLD:
+            call_status = "bad"
+            call_detail = f"最近 {streak} 次调用连续失败：{ch.get('last_error', '')[:90]}"
+        elif streak == 0 and ch.get("last_ok"):
+            call_status, call_detail = "ok", "recent calls succeeding"
+        else:
+            # 1-2 failures, or nothing recorded yet — inconclusive on purpose.
+            call_status, call_detail = "skip", f"streak={streak} (inconclusive)"
+    except Exception as e:
+        call_status, call_detail = "skip", f"ledger error ({e})"
+    log.info("health: ai_calls=%s (%s)", call_status, call_detail)
+    _edge(_K_AI_CALLS, call_status,
+          fail_msg=(f"⚠️ *{provider_label} 实际调用连续失败*\n" + call_detail +
+                    _consequence +
+                    "\n（探针可能仍显示正常 —— 这条看的是机器人真正发出的请求。）"),
+          recover_msg=f"✅ {provider_label} 调用已恢复，AI 层重新生效。")

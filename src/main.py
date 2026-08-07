@@ -809,6 +809,10 @@ def scan_once() -> None:
             # score into conviction (sizing only). FAIL-SAFE → neutral 50.
             sent_verdict = sent_reason = None
             sent_score = None
+            # Initialised here, not inside the news-driven branch below: the
+            # trade dict is built outside that branch, so a mode-off scan would
+            # hit a NameError on it.
+            fin_score = None
             # 2026-07-27: don't pay for sentiment on a name that cannot be sized
             # no matter what the score comes back as. SENTIMENT_SIZING can only
             # scale conviction by up to 1.25 (see below), so if qty is already 0
@@ -859,6 +863,14 @@ def scan_once() -> None:
                 # Record the read on the trade regardless of outcome, so a
                 # rejected name is still auditable ("what did it see?").
                 sent_verdict, sent_score, sent_reason = nd_verdict, nd_score, nd_reason
+                # Deterministic cross-check on the same headlines (advisory,
+                # None when off/unavailable). Logged and persisted so
+                # LLM-vs-FinBERT disagreement is measurable later instead of a
+                # hunch — it does NOT influence the gate.
+                fin_score, fin_detail = ai_validator.finbert_crosscheck(sig.symbol)
+                if fin_score is not None:
+                    log.info("%s finbert=%s vs llm=%s (%s)",
+                             sig.symbol, fin_score, nd_score, fin_detail)
                 nd_pass, nd_gate_reason = news_driven.gate(
                     sig.symbol, nd_score, nd_verdict, nd_catalyst, nd_ok)
                 log.info("%s news-driven=%s score=%s catalyst=%s → %s (%s)",
@@ -1008,6 +1020,10 @@ def scan_once() -> None:
                                     "sentiment_verdict": sent_verdict,
                                     "sentiment_score": sent_score,
                                     "news_driven": news_driven.enabled(),
+                                    # Deterministic scorer's read on the same
+                                    # headlines (None when off). Persisted so
+                                    # the two can be scored against outcomes.
+                                    "finbert_score": fin_score,
                                     # Aggregate options flow (advisory; None when
                                     # off). Persisted so the factor can be scored
                                     # against real outcomes later — the 1y study

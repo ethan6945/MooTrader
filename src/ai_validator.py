@@ -390,6 +390,13 @@ Recent news:
 Macro / market context:
 {macro_news}
 
+SEC filings by this company (PRIMARY SOURCE — the filing IS the event, filed by
+the issuer with an exact timestamp. Trust these over any press write-up that
+disagrees with them. "(none in the window)" means no material filing, which is
+normal and is NOT evidence against a catalyst reported elsewhere; "(disabled)"
+means we did not look):
+{filings}
+
 Technical signals the bot computed (CONTEXT ONLY — do not let a pretty chart
 raise the score; this mode is betting on the news):
 {reasons}
@@ -419,6 +426,24 @@ stock has plainly already reacted to it.
 """
 
 
+def finbert_crosscheck(symbol: str) -> tuple[int | None, str]:
+    """Deterministic second opinion on the SAME headlines the LLM just read.
+
+    None when FinBERT is off or unavailable — deliberately not a neutral 50, so
+    "FinBERT saw nothing bullish" stays distinguishable from "FinBERT did not
+    run". Advisory only; nothing consumes this to gate a trade.
+    """
+    try:
+        from . import news_score_local
+        if not news_score_local.enabled():
+            return None, "off"
+        # Hits news_fetcher's 30-min cache, so this costs no extra API call.
+        return news_score_local.score_news(news_fetcher.fetch_ticker_news(symbol))
+    except Exception as e:
+        log.warning("FinBERT cross-check failed for %s: %s", symbol, e)
+        return None, f"error: {e}"
+
+
 def assess_news(signal) -> tuple[str, int, bool, str, bool]:
     """News-driven read for a BUY candidate. Returns
     (verdict, score_0_100, has_catalyst, reason, ok).
@@ -441,11 +466,30 @@ def assess_news(signal) -> tuple[str, int, bool, str, bool]:
         macro_news = news_fetcher.format_news(news_fetcher.fetch_macro_news(), "Macro")
     except Exception as e:
         return "neutral", 50, False, f"news fetch failed ({e})", False
-    if not raw_ticker:
-        # No TAVILY_API_KEY, or genuinely nothing published. Either way there is
-        # no thesis to act on, and asking the model anyway invites it to invent
-        # one from the ticker alone.
-        return "neutral", 50, False, "no ticker news in the last 3 days", False
+
+    # EDGAR is additive and best-effort: a failure here degrades the read back
+    # to Tavily-only, which is what this did yesterday. It must never be able to
+    # block a news read.
+    raw_filings: list = []
+    filings = "(disabled)"
+    try:
+        from . import sec_edgar
+        if sec_edgar.enabled():
+            raw_filings = sec_edgar.fetch_filings(signal.symbol)
+            filings = sec_edgar.format_filings(raw_filings, "SEC filings")
+    except Exception as e:
+        log.warning("SEC EDGAR lookup failed for %s: %s — continuing without it",
+                    signal.symbol, e)
+        filings = "(lookup failed)"
+
+    if not raw_ticker and not raw_filings:
+        # Nothing from either source: no TAVILY_API_KEY, or genuinely nothing
+        # published and nothing filed. Either way there is no thesis to act on,
+        # and asking the model anyway invites it to invent one from the ticker.
+        # Note the AND — an 8-K with no press coverage yet is the BEST case this
+        # mode can see (the primary source, before the write-ups), so a silent
+        # Tavily must not veto it.
+        return "neutral", 50, False, "no ticker news and no material filings", False
 
     try:
         from . import clock
@@ -454,7 +498,7 @@ def assess_news(signal) -> tuple[str, int, bool, str, bool]:
         now_et = "(unknown)"
     prompt = NEWS_DRIVEN_PROMPT.format(
         symbol=signal.symbol, price=signal.price, now_et=now_et,
-        ticker_news=ticker_news, macro_news=macro_news,
+        ticker_news=ticker_news, macro_news=macro_news, filings=filings,
         reasons="\n".join(f"- {r}" for r in signal.reasons))
 
     try:

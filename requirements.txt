@@ -23,4 +23,11 @@ lxml>=5.0.0
 matplotlib>=3.8.0
 flask>=3.0.0
 # (xgboost / scikit-learn / joblib removed 2026-06-03 with the inert ML subsystem)
+#
+# FinBERT (src/news_score_local.py, FINBERT_ENABLED, default off) is
+# deliberately NOT listed here. transformers + torch add ~1-2 GB to the frozen
+# bundle, and packaging/mmt-backend.spec excludes matplotlib to save 53 MB —
+# shipping a deep-learning stack for an advisory cross-check is not that trade.
+# The import is lazy and every failure path degrades to "unavailable", so:
+#     pip install transformers torch    # opt in, source installs only
 # (rumps / pywebview removed 2026-07-20 — replaced by the native SwiftUI shell in macos/)

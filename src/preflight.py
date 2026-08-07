@@ -287,6 +287,39 @@ def check_news() -> Check:
                  fix_hint_en="Get a free key at tavily.com and retry.")
 
 
+def check_sec_edgar() -> Check:
+    """Off ⇒ silent. On ⇒ the User-Agent is the only thing that can go wrong,
+    and it goes wrong as a 403 plus a ~10-minute IP block on the machine that
+    also talks to the broker — worth one line at start-up."""
+    from . import sec_edgar
+    if not sec_edgar.enabled():
+        return Check(id="sec_edgar", ok=True, severity=OK,
+                     title="SEC EDGAR 申报", title_en="SEC EDGAR filings",
+                     detail="关闭", detail_en="off")
+    try:
+        ok, detail = sec_edgar.probe()
+    except Exception as e:
+        ok, detail = False, str(e)[:80]
+    if ok:
+        return Check(id="sec_edgar", ok=True, severity=OK,
+                     title="SEC EDGAR 申报", title_en="SEC EDGAR filings",
+                     detail=detail, detail_en=detail)
+    return Check(id="sec_edgar", ok=False, severity=DEGRADED,
+                 title="SEC EDGAR 申报", title_en="SEC EDGAR filings",
+                 detail=detail, detail_en=detail,
+                 impact="8-K 一手催化剂源不可用，新闻判断退回只看 Tavily 转述。"
+                        "SEC 要求 User-Agent 写明你是谁 + 联系邮箱，否则 403 并可能"
+                        "封禁本机 IP 约 10 分钟 —— 所以缺配置时模块直接不发请求。",
+                 impact_en="The primary-source 8-K catalyst feed is unavailable and "
+                           "the news read falls back to Tavily write-ups. SEC requires "
+                           "a User-Agent naming you plus a contact email; without it "
+                           "you get a 403 and a ~10-minute IP block, so the module "
+                           "refuses to call rather than risk it.",
+                 fix_key="SEC_EDGAR_USER_AGENT",
+                 fix_hint="填写「你的名字 你的邮箱」，例如：Jane Doe jane@example.com",
+                 fix_hint_en="Set it to 'Your Name your@email.com'.")
+
+
 def check_news_driven() -> Check:
     """The one switch in this bot that invalidates its own backtest.
 
@@ -475,12 +508,13 @@ _CHECKS = {
     "options":   check_options_feed,
     "features":  check_features,
     "news_driven": check_news_driven,
+    "sec_edgar": check_sec_edgar,
 }
 # Dialog order: the blocker first, then identity, then the degradable layers.
 # news_driven sits right after the inventory — when it is on it changes what
 # every layer below it means, so it should be read before them, not after.
 ORDER = ["broker", "trade_env", "config", "features", "news_driven",
-         "ai", "news", "telegram", "options"]
+         "ai", "news", "sec_edgar", "telegram", "options"]
 
 
 def run_one(check_id: str, use_cache: bool = False) -> Check:
