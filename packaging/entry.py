@@ -39,7 +39,7 @@ _CRITICAL = (
     # News-driven mode and its sources (2026-08-07). All default OFF, but a
     # missing import here would surface as a mode that silently never fires
     # rather than as a build failure — which is the whole point of this check.
-    "src.news_driven", "src.news_fetcher", "src.finnhub_news", "src.sec_edgar",
+    "src.news_driven", "src.news_fetcher", "src.finnhub_news", "src.moo_notices",
     "src.news_score_local",
     # FinBERT's runtime. Imported lazily inside functions so the PyInstaller
     # graph walk cannot see them; they are in the spec's hiddenimports, and

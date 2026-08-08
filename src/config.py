@@ -341,21 +341,17 @@ class Settings:
     finnhub_days: int = _int("FINNHUB_DAYS", 3)
     finnhub_max_results: int = _int("FINNHUB_MAX_RESULTS", 5)
 
-    # ── SEC EDGAR filings as a catalyst source (2026-08-07, src/sec_edgar.py) ──
-    # The primary source rather than prose about it: an 8-K IS the material
-    # event, timestamped by the issuer. Highest-signal answer available to
-    # news-driven mode's "is there a concrete, fresh catalyst" question, and
-    # free. ADDS to Tavily, does not replace it (filings miss downgrades,
-    # sector moves, and anything about a company that isn't the filer).
-    # DEFAULT OFF.
-    sec_edgar_enabled: bool = os.getenv("SEC_EDGAR_ENABLED", "false").lower() in ("1", "true", "yes")
-    # REQUIRED when enabled: SEC wants a User-Agent naming you with a contact
-    # email ("Jane Doe jane@example.com"). A missing or generic one earns a 403
-    # and can block the IP for ~10 minutes — the same IP that talks to your
-    # broker. sec_edgar.py refuses to make the call rather than risk that, so
-    # there is deliberately no invented default here.
-    sec_edgar_user_agent: str = os.getenv("SEC_EDGAR_USER_AGENT", "")
-    sec_edgar_days: int = _int("SEC_EDGAR_DAYS", 3)
+    # ── filings + analyst actions via moomoo (2026-08-08, src/moo_notices.py) ──
+    # Replaced SEC EDGAR, which was dropped on the owner's instruction: this bot
+    # is not to talk to a US government service. OpenD already relays SEC
+    # filings (NewsSubType.NOTICE) and analyst actions (RATING), so the same
+    # gateway we trade through answers the "is there a concrete, fresh catalyst"
+    # question and this process only ever connects to 127.0.0.1.
+    # The trade is real and is documented in moo_notices.py: no item codes, so a
+    # notice says something was filed but not what; dates only, no clock time.
+    # ADDS to Tavily, does not replace it. DEFAULT OFF.
+    moo_notices_enabled: bool = os.getenv("MOO_NOTICES_ENABLED", "false").lower() in ("1", "true", "yes")
+    moo_notices_days: int = _int("MOO_NOTICES_DAYS", 3)
 
     # ── FinBERT local scorer (2026-08-07, src/news_score_local.py) ────────
     # Deterministic, local, and — the actual point — trained on a corpus that

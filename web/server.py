@@ -836,24 +836,22 @@ SETTING_KEYS = {
     "TAVILY_API_KEY": "Tavily 新闻搜索 Key — 给 AI 提供实时新闻上下文。",
     "FINNHUB_API_KEY": "Finnhub Key(免费 60次/分)— 按股票代码标注的新闻，"
                        "且能查历史某一天(Tavily 只能查\"现在\")。需 FINNHUB_ENABLED=true。",
-    "SEC_EDGAR_USER_AGENT": "SEC EDGAR 联系方式，格式「名字 邮箱」— SEC 强制要求，"
-                            "没有它 EDGAR 会 403 并封 IP 约 10 分钟，而那是同一台连着券商的机器。"
-                            "例：Ethan Tan ethan@example.com",
     "TELEGRAM_TOKEN": "Telegram Bot Token — 推送交易通知 + 审批卡片。",
     "TELEGRAM_CHAT_ID": "Telegram Chat ID — 接收通知的聊天 ID。",
 }
 
-# Not every .env value here is a secret. The UA is a contact string the user is
-# supposed to be able to read back and check — masking it to ••••com would hide
-# the typo that gets their IP blocked, and a password field for it is theatre.
-_PLAIN_KEYS = {"SEC_EDGAR_USER_AGENT"}
+# Not every .env value is a secret, and a password field for one that isn't is
+# theatre that hides typos. Empty right now — SEC_EDGAR_USER_AGENT was the only
+# member and that source is gone — but the distinction is load-bearing, so the
+# mechanism stays rather than being rebuilt the next time a plain key appears.
+_PLAIN_KEYS: set[str] = set()
 
 # Booleans the panel can flip. Kept apart from SETTING_KEYS because these are
 # switches, not secrets: they render as toggles, they are never masked, and the
 # write path only ever puts "true"/"false" in .env.
 SETTING_TOGGLES = {
     "FINNHUB_ENABLED": "Finnhub 新闻源 — 按代码标注、可查历史某一天，是回测新闻策略的前提。需要先填 FINNHUB_API_KEY。",
-    "SEC_EDGAR_ENABLED": "SEC EDGAR 8-K — 一手催化剂，带发行人时间戳。需要先填 SEC_EDGAR_USER_AGENT，否则不会发出任何请求。",
+    "MOO_NOTICES_ENABLED": "申报 + 分析师动作 — 由 OpenD 转发的 SEC 申报和评级变动，不直连任何监管机构，也不需要注册。注意：只知道「发了 8-K」，不知道内容；日期精确到天，没有时分。",
     "FINBERT_ENABLED": "FinBERT 本地情绪打分 — 训练语料早于任何测试窗口，所以没有后见之明。要先在下面下载模型(约 120 MB)，否则开了也不会被调用。",
     "NEWS_DRIVEN_ENABLED": "新闻主导模式 — 技术分降级为预筛，选股和仓位交给 AI 新闻读数，收盘前平掉全部持仓。这会换掉整套策略。",
     "NEWS_DRIVEN_SHADOW": "影子模式 — 完整跑完新闻主导的决策链路，在下单前一行停住并记录。开着它就不会下单。",

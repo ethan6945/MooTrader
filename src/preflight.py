@@ -350,37 +350,36 @@ def check_finbert() -> Check:
                  detail_en=f"ready ({st['runtime']}, {st['disk_mb']} MB)")
 
 
-def check_sec_edgar() -> Check:
-    """Off ⇒ silent. On ⇒ the User-Agent is the only thing that can go wrong,
-    and it goes wrong as a 403 plus a ~10-minute IP block on the machine that
-    also talks to the broker — worth one line at start-up."""
-    from . import sec_edgar
-    if not sec_edgar.enabled():
-        return Check(id="sec_edgar", ok=True, severity=OK,
-                     title="SEC EDGAR 申报", title_en="SEC EDGAR filings",
+def check_moo_notices() -> Check:
+    """Off ⇒ silent. On ⇒ the only thing that can go wrong is OpenD, and this
+    check exists to distinguish 'nothing was filed' from 'the gateway is not
+    answering' — those look identical to every caller downstream."""
+    from . import moo_notices
+    if not moo_notices.enabled():
+        return Check(id="moo_notices", ok=True, severity=OK,
+                     title="申报 / 分析师动作", title_en="Filings / analyst actions",
                      detail="关闭", detail_en="off")
     try:
-        ok, detail = sec_edgar.probe()
+        ok, detail = moo_notices.probe()
     except Exception as e:
         ok, detail = False, str(e)[:80]
     if ok:
-        return Check(id="sec_edgar", ok=True, severity=OK,
-                     title="SEC EDGAR 申报", title_en="SEC EDGAR filings",
+        return Check(id="moo_notices", ok=True, severity=OK,
+                     title="申报 / 分析师动作", title_en="Filings / analyst actions",
                      detail=detail, detail_en=detail)
-    return Check(id="sec_edgar", ok=False, severity=DEGRADED,
-                 title="SEC EDGAR 申报", title_en="SEC EDGAR filings",
+    return Check(id="moo_notices", ok=False, severity=DEGRADED,
+                 title="申报 / 分析师动作", title_en="Filings / analyst actions",
                  detail=detail, detail_en=detail,
-                 impact="8-K 一手催化剂源不可用，新闻判断退回只看 Tavily 转述。"
-                        "SEC 要求 User-Agent 写明你是谁 + 联系邮箱，否则 403 并可能"
-                        "封禁本机 IP 约 10 分钟 —— 所以缺配置时模块直接不发请求。",
-                 impact_en="The primary-source 8-K catalyst feed is unavailable and "
-                           "the news read falls back to Tavily write-ups. SEC requires "
-                           "a User-Agent naming you plus a contact email; without it "
-                           "you get a 403 and a ~10-minute IP block, so the module "
-                           "refuses to call rather than risk it.",
-                 fix_key="SEC_EDGAR_USER_AGENT",
-                 fix_hint="填写「你的名字 你的邮箱」，例如：Jane Doe jane@example.com",
-                 fix_hint_en="Set it to 'Your Name your@email.com'.")
+                 impact="申报和分析师动作两条催化剂线不可用，新闻判断退回只看 Tavily 转述。"
+                        "这条走的是 OpenD 转发的 SEC / 评级资讯，所以 OpenD 没连上时它也没有。",
+                 impact_en="Both the filings and the analyst-action catalyst lines are "
+                           "unavailable and the news read falls back to Tavily write-ups. "
+                           "This source is relayed by OpenD, so it is gone whenever the "
+                           "gateway is.",
+                 fix_key="MOO_NOTICES_ENABLED",
+                 fix_hint="确认 OpenD 已启动并登录；这条资讯由 OpenD 转发，不直连任何监管机构。",
+                 fix_hint_en="Check OpenD is running and logged in — this feed is relayed "
+                             "by the gateway, not fetched from any regulator directly.")
 
 
 def check_news_driven() -> Check:
@@ -596,7 +595,7 @@ _CHECKS = {
     "options":   check_options_feed,
     "features":  check_features,
     "news_driven": check_news_driven,
-    "sec_edgar": check_sec_edgar,
+    "moo_notices": check_moo_notices,
     "finnhub": check_finnhub,
     "finbert": check_finbert,
 }
@@ -604,7 +603,7 @@ _CHECKS = {
 # news_driven sits right after the inventory — when it is on it changes what
 # every layer below it means, so it should be read before them, not after.
 ORDER = ["broker", "trade_env", "config", "features", "news_driven",
-         "ai", "news", "finnhub", "sec_edgar", "finbert", "telegram", "options"]
+         "ai", "news", "finnhub", "moo_notices", "finbert", "telegram", "options"]
 
 
 def run_one(check_id: str, use_cache: bool = False) -> Check:

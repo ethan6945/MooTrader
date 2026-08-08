@@ -467,18 +467,23 @@ def assess_news(signal) -> tuple[str, int, bool, str, bool]:
     except Exception as e:
         return "neutral", 50, False, f"news fetch failed ({e})", False
 
-    # EDGAR is additive and best-effort: a failure here degrades the read back
-    # to Tavily-only, which is what this did yesterday. It must never be able to
-    # block a news read.
+    # Filings and analyst actions are additive and best-effort: a failure here
+    # degrades the read back to Tavily-only, which is what this did before the
+    # source existed. It must never be able to block a news read.
     raw_filings: list = []
     filings = "(disabled)"
     try:
-        from . import sec_edgar
-        if sec_edgar.enabled():
-            raw_filings = sec_edgar.fetch_filings(signal.symbol)
-            filings = sec_edgar.format_filings(raw_filings, "SEC filings")
+        from . import moo_notices
+        if moo_notices.enabled():
+            found = moo_notices.fetch_filings(signal.symbol)
+            ratings = moo_notices.fetch_ratings(signal.symbol)
+            # Ratings count as material for the "is there anything at all" test
+            # below: an upgrade with no press write-up yet is exactly the early
+            # catalyst this mode exists to catch.
+            raw_filings = found + ratings
+            filings = moo_notices.format_block(found, ratings)
     except Exception as e:
-        log.warning("SEC EDGAR lookup failed for %s: %s — continuing without it",
+        log.warning("moomoo notices lookup failed for %s: %s — continuing without it",
                     signal.symbol, e)
         filings = "(lookup failed)"
 

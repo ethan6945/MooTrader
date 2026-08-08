@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 2026-08-08 — 移除 SEC EDGAR，改用 OpenD 转发的申报 + 分析师动作
+
+机主要求：这个机器人不要跟美国政府的服务通信。EDGAR 整条链路删除（`src/sec_edgar.py`、config 四项、`ai_validator` 里的调用、预检检查、`.env.example` 段落、设置面板里的开关和 UA 输入框）。
+
+**替代品是 `src/moo_notices.py`** —— 你已经连着的那台 OpenD 本来就在转发 SEC 申报（`NewsSubType.NOTICE`）和分析师动作（`RATING`）。本进程只跟 `127.0.0.1` 说话，不注册、不要 key、不要 User-Agent。
+
+代价必须讲清楚，因为它改变了模型能得出什么结论：
+
+- **没有 item code。** EDGAR 说的是「8-K，item 2.02 = 业绩发布」；这里只说「8-K: Current report」。你知道**发了**一份材料文件，不知道**它说了什么** —— 所以要求「具名催化剂」的提示词不能把申报本身当催化剂，事件内容仍要从新闻源来。
+- **只有日期，没有时分。** 实测对照（2026-08-08，AAPL，120 天窗口）：**同样的三份 8-K 都在，但每一份都晚一天** —— EDGAR 的 accepted 是 07-30 20:30 / 04-30 20:30 / 04-20 21:29，这里是 07-31 / 05-01 / 04-21。三份都是盘后提交的，而这个源按发布日期计。覆盖等价，时点系统性偏移；point-in-time 回放不能把这些日期当成提交时刻。
+- **更薄**：每个代码约 30 条、两三个月。
+
+**EDGAR 没有的东西：分析师动作。** 升评、初评、目标价调整 —— 按新闻主导模式提示词自己的定义，这些就是具名催化剂，而它们根本不是申报。NVDA 120 天内 69 条，AAPL 61 条。
+
+**过滤走 `related_securities` 而不是标题字符串。** NVIDIA 自己的申报标记 `['US.NVDA']`，只是跟踪它的杠杆 ETF 标记 `['US.NVDS']` —— 精确匹配天然滤掉 wrapper 噪音，而对「497K: Tradr 1.5X Short NVDA Daily ETF」做任何字符串手术都不可能安全做到这件事。
+
+写的时候踩了一次同类的坑并修掉：这个源的标题有两种形状（`8-K: NVIDIA | 8-K: Current report` 和 `NVIDIA | 8-K: ...`），按开头解析会把第二种整批丢掉，而结果读起来像「这个源很薄」而不像 bug —— NVDA 因此只报出 3 条，实际有 6 条。改成从最后一段解析。
+
+
 ## 2026-08-08 — 新闻开关接进设置面板 + FinBERT 权重源修复（v2.4.0）
 
 **FinBERT 的 ONNX 下载指向了一个没有 ONNX 的 repo。** `ProsusAI/finbert` 只发布 torch checkpoint —— 没有 `onnx/` 目录、没有 `tokenizer.json`。所以 `ensure_model()` 先 404 掉量化图、再 404 掉 fp32 fallback，对**每一个开了 FinBERT 的用户**返回「could not download an ONNX graph」。沙箱测不出来：推理逻辑是拿本地构造的真实 ONNX 图验的，那张图是对的，错的是它的来源。ONNX 路径改指 `Xenova/finbert`（同权重的 ONNX 导出，`id2label` 与架构均已比对一致），torch 路径留在 `ProsusAI` —— 反过来 Xenova 没有 `pytorch_model.bin`，两个 repo 各有一半。`FINBERT_MODEL` 仍可覆盖两者，但仅在它被指向 torch 默认值以外时才算数：把那个默认值当成用户的选择，正是 ONNX 路径撞 404 的原因。macOS 实测：111.7 MB / 7.8 秒，bullish 76 > neutral 56 > bearish 24。
