@@ -116,6 +116,15 @@ def flatten_now() -> bool:
     """
     if not (enabled() and settings.news_driven_eod_flatten):
         return False
+    # Shadow mode sends NOTHING, and that has to include sells. The entry gate
+    # was already shadowed while this path was not, so switching on what reads
+    # as an observation-only mode would still have liquidated an existing book
+    # at 15:45 — with the preflight text on screen saying the mode places no
+    # orders. Selling is an order. The asymmetry was the bug, not the wording.
+    if settings.news_driven_shadow:
+        log.info("news-driven flatten: shadow mode — would flatten now, "
+                 "sending nothing")
+        return False
     try:
         from . import clock
         if not clock.market_open():
