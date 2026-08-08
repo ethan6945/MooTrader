@@ -287,6 +287,69 @@ def check_news() -> Check:
                  fix_hint_en="Get a free key at tavily.com and retry.")
 
 
+def check_finnhub() -> Check:
+    from . import finnhub_news
+    if not settings.finnhub_enabled:
+        return Check(id="finnhub", ok=True, severity=OK,
+                     title="Finnhub 公司新闻", title_en="Finnhub company news",
+                     detail="关闭", detail_en="off")
+    try:
+        ok, detail = finnhub_news.probe()
+    except Exception as e:
+        ok, detail = False, str(e)[:80]
+    if ok:
+        return Check(id="finnhub", ok=True, severity=OK,
+                     title="Finnhub 公司新闻", title_en="Finnhub company news",
+                     detail=detail, detail_en=detail)
+    return Check(id="finnhub", ok=False, severity=DEGRADED,
+                 title="Finnhub 公司新闻", title_en="Finnhub company news",
+                 detail=detail, detail_en=detail,
+                 impact="按 ticker 标注的新闻源不可用，新闻输入退回只有 Tavily 的"
+                        "关键词搜索（会把不相关的同名内容也搜进来），并且失去"
+                        "「查历史某一天」的能力 —— 那是新闻策略能被回测的前提。",
+                 impact_en="The ticker-tagged feed is unavailable and news falls back "
+                           "to Tavily keyword search alone (which pulls in unrelated "
+                           "same-name content), losing the ability to ask what was "
+                           "published on a past date — the prerequisite for ever "
+                           "backtesting a news strategy.",
+                 fix_key="FINNHUB_API_KEY",
+                 fix_hint="在 finnhub.io 注册免费 Key（60 次/分钟）后重试。",
+                 fix_hint_en="Get a free key at finnhub.io (60 calls/min) and retry.")
+
+
+def check_finbert() -> Check:
+    """Never downloads — reports what is on disk and what it would cost."""
+    from . import news_score_local as nsl
+    if not nsl.enabled():
+        return Check(id="finbert", ok=True, severity=OK,
+                     title="FinBERT 本地打分", title_en="FinBERT local scorer",
+                     detail="关闭", detail_en="off")
+    st = nsl.status()
+    if not st["can_run"]:
+        return Check(id="finbert", ok=False, severity=DEGRADED,
+                     title="FinBERT 本地打分", title_en="FinBERT local scorer",
+                     detail="运行库缺失", detail_en="runtime not installed",
+                     impact="确定性交叉验证不可用（纯顾问功能，不影响下单）。"
+                            "装上：pip install onnxruntime tokenizers",
+                     impact_en="The deterministic cross-check is unavailable "
+                               "(advisory only — no effect on orders). Install with "
+                               "pip install onnxruntime tokenizers")
+    if st["needs_download"]:
+        return Check(id="finbert", ok=False, severity=INFO,
+                     title="FinBERT 本地打分", title_en="FinBERT local scorer",
+                     detail=f"已开启但模型未下载（约 {st['est_download_mb']} MB）",
+                     detail_en=f"on, model not downloaded (~{st['est_download_mb']} MB)",
+                     impact=f"打开「设置 → FinBERT」点下载确认后才会占用磁盘。"
+                            f"路径：{st['path']}",
+                     impact_en=f"Nothing is downloaded until you confirm in "
+                               f"Settings → FinBERT. Path: {st['path']}",
+                     retryable=True)
+    return Check(id="finbert", ok=True, severity=OK,
+                 title="FinBERT 本地打分", title_en="FinBERT local scorer",
+                 detail=f"就绪（{st['runtime']}，{st['disk_mb']} MB）",
+                 detail_en=f"ready ({st['runtime']}, {st['disk_mb']} MB)")
+
+
 def check_sec_edgar() -> Check:
     """Off ⇒ silent. On ⇒ the User-Agent is the only thing that can go wrong,
     and it goes wrong as a 403 plus a ~10-minute IP block on the machine that
@@ -509,12 +572,14 @@ _CHECKS = {
     "features":  check_features,
     "news_driven": check_news_driven,
     "sec_edgar": check_sec_edgar,
+    "finnhub": check_finnhub,
+    "finbert": check_finbert,
 }
 # Dialog order: the blocker first, then identity, then the degradable layers.
 # news_driven sits right after the inventory — when it is on it changes what
 # every layer below it means, so it should be read before them, not after.
 ORDER = ["broker", "trade_env", "config", "features", "news_driven",
-         "ai", "news", "sec_edgar", "telegram", "options"]
+         "ai", "news", "finnhub", "sec_edgar", "finbert", "telegram", "options"]
 
 
 def run_one(check_id: str, use_cache: bool = False) -> Check:

@@ -24,10 +24,12 @@ matplotlib>=3.8.0
 flask>=3.0.0
 # (xgboost / scikit-learn / joblib removed 2026-06-03 with the inert ML subsystem)
 #
-# FinBERT (src/news_score_local.py, FINBERT_ENABLED, default off) is
-# deliberately NOT listed here. transformers + torch add ~1-2 GB to the frozen
-# bundle, and packaging/mmt-backend.spec excludes matplotlib to save 53 MB —
-# shipping a deep-learning stack for an advisory cross-check is not that trade.
-# The import is lazy and every failure path degrades to "unavailable", so:
-#     pip install transformers torch    # opt in, source installs only
+# FinBERT (src/news_score_local.py, FINBERT_ENABLED, default off) runs on these
+# two rather than on torch: ~25 MB against 1-2 GB, which is what lets the local
+# scorer work from the .app as well as from a source checkout. The WEIGHTS are
+# not shipped — they download once, on explicit consent, to a shared per-machine
+# path both installs resolve to. A source install that already has
+# transformers + torch will use those instead, with no second copy.
+onnxruntime>=1.17.0
+tokenizers>=0.15.0
 # (rumps / pywebview removed 2026-07-20 — replaced by the native SwiftUI shell in macos/)

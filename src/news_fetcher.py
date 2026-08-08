@@ -106,15 +106,45 @@ def fetch_macro_news() -> list[dict]:
     )
 
 
-def fetch_ticker_news(symbol: str) -> list[dict]:
-    """Per-ticker news. Window is NEWS_TICKER_DAYS (default 3 — unchanged).
+def _dedupe(items: list[dict]) -> list[dict]:
+    """Merge sources on a normalised headline. The same wire story reaches us
+    from Finnhub and Tavily with different punctuation and a different summary;
+    counting it twice would make one event look like corroboration, which is
+    exactly the illusion a news-driven bet must not be sold."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for it in items:
+        key = "".join(ch for ch in (it.get("title") or "").lower() if ch.isalnum())[:60]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
 
-    Narrow it for a same-session strategy: news_driven mode flattens at the
-    close, so a catalyst from two sessions ago has already had two sessions to
-    be priced. Widening it does not make the read better, only staler.
+
+def fetch_ticker_news(symbol: str) -> list[dict]:
+    """Per-ticker news, merged across every enabled source, newest first.
+
+    Window is NEWS_TICKER_DAYS (default 3 — unchanged). Narrow it for a
+    same-session strategy: news_driven mode flattens at the close, so a
+    catalyst from two sessions ago has already had two sessions to be priced.
+    Widening it does not make the read better, only staler.
+
+    Finnhub goes first when enabled: its results are TAGGED to the ticker by
+    the provider rather than matched by a search string, so they are the ones
+    to keep when the same story arrives twice.
     """
     days = max(1, getattr(settings, "news_ticker_days", 3))
-    return _tavily(f"{symbol} stock news earnings guidance", days=days, max_results=3)
+    items: list[dict] = []
+    try:
+        from . import finnhub_news
+        if finnhub_news.enabled():
+            items.extend(finnhub_news.fetch_company_news(symbol, days=days))
+    except Exception as e:
+        log.warning("Finnhub news failed for %s: %s — falling back to Tavily", symbol, e)
+    items.extend(_tavily(f"{symbol} stock news earnings guidance",
+                         days=days, max_results=3))
+    return _dedupe(items)
 
 
 def format_news(items: list[dict], header: str) -> str:

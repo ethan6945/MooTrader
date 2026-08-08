@@ -329,6 +329,18 @@ class Settings:
     # input is a narrative rather than an event; 1 suits a same-session bet.
     news_ticker_days: int = _int("NEWS_TICKER_DAYS", 3)
 
+    # ── Finnhub company news (2026-08-07, src/finnhub_news.py) ────────────
+    # Ticker-TAGGED news (by the provider, not by a search string) that can also
+    # answer for a PAST date range — the missing half of a backtestable news
+    # strategy, since Tavily has no point-in-time mode and you cannot replay a
+    # decision whose input you cannot reconstruct. Free tier: 60 calls/min,
+    # ~1 year of history. Merged with Tavily and de-duplicated in news_fetcher.
+    # DEFAULT OFF; needs a key from finnhub.io.
+    finnhub_enabled: bool = os.getenv("FINNHUB_ENABLED", "false").lower() in ("1", "true", "yes")
+    finnhub_key: str = os.getenv("FINNHUB_API_KEY", "")
+    finnhub_days: int = _int("FINNHUB_DAYS", 3)
+    finnhub_max_results: int = _int("FINNHUB_MAX_RESULTS", 5)
+
     # ── SEC EDGAR filings as a catalyst source (2026-08-07, src/sec_edgar.py) ──
     # The primary source rather than prose about it: an 8-K IS the material
     # event, timestamped by the issuer. Highest-signal answer available to
@@ -350,12 +362,20 @@ class Settings:
     # predates any window you would test on, so unlike a frontier LLM it does
     # not know what happened next. ADVISORY: logged next to the LLM's read so
     # disagreement becomes measurable, never gates a trade.
-    # NOT a packaged dependency: torch + transformers add ~1-2 GB to a frozen
-    # bundle that excludes matplotlib to save 53 MB. Source installs can
-    # `pip install transformers torch`; the .app degrades to "unavailable".
+    # Runs from the .app AND from a source checkout, off ONE shared copy of the
+    # weights (news_score_local.model_home() — a per-OS user path, deliberately
+    # not config.ROOT, which differs between the two and would download twice).
+    # Runtime is onnxruntime + tokenizers (~25 MB, bundleable); a source install
+    # that already has torch + transformers uses those instead.
+    #
+    # Enabling this does NOT start a download — the weights (~120 MB) are only
+    # fetched when the web panel's confirm dialog asks for them, or when
+    # FINBERT_AUTO_DOWNLOAD is set for a headless box. Spending a few hundred MB
+    # of someone's disk without asking is not a decision this code gets to make.
     finbert_enabled: bool = os.getenv("FINBERT_ENABLED", "false").lower() in ("1", "true", "yes")
     finbert_model: str = os.getenv("FINBERT_MODEL", "ProsusAI/finbert")
     finbert_threads: int = _int("FINBERT_THREADS", 2)
+    finbert_auto_download: bool = os.getenv("FINBERT_AUTO_DOWNLOAD", "false").lower() in ("1", "true", "yes")
 
     # ── News-driven mode (2026-08-07): news as the PRIMARY signal ──────────
     # Everything above treats news as advisory: it annotates, it can veto, it

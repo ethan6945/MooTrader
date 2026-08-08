@@ -834,6 +834,8 @@ SETTING_KEYS = {
     "WEB_PASSWORD": "网页访问密码 — 设了之后，从手机/局域网打开面板要先登录(本机也是)。空=不需要密码(仅本机可用)。这是开放手机访问的前提。",
     "DEEPSEEK_API_KEY": "DeepSeek API Key(可逗号分隔多个)— 所有 AI 分析(信号/情绪/退出/优化/入场验证)都用它。",
     "TAVILY_API_KEY": "Tavily 新闻搜索 Key — 给 AI 提供实时新闻上下文。",
+    "FINNHUB_API_KEY": "Finnhub Key(免费 60次/分)— 按股票代码标注的新闻，"
+                       "且能查历史某一天(Tavily 只能查\"现在\")。需 FINNHUB_ENABLED=true。",
     "TELEGRAM_TOKEN": "Telegram Bot Token — 推送交易通知 + 审批卡片。",
     "TELEGRAM_CHAT_ID": "Telegram Chat ID — 接收通知的聊天 ID。",
 }
@@ -948,6 +950,54 @@ def api_settings():
     keys = [{"key": k, "desc": d, "masked": _mask(env.get(k, "")), "set": bool(env.get(k))}
             for k, d in SETTING_KEYS.items()]
     return jsonify({"keys": keys})
+
+
+# ── FinBERT local model: status / consented download / removal ───────────────
+# The download is a few hundred MB of the user's disk, so it happens ONLY on an
+# explicit POST from the confirm dialog. GET is always safe and never downloads.
+_finbert_job: dict = {"running": False, "file": "", "done": 0, "total": 0,
+                      "ok": None, "detail": ""}
+
+
+@app.route("/api/finbert")
+def api_finbert_status():
+    from src import news_score_local as nsl
+    st = nsl.status()
+    st["job"] = dict(_finbert_job)
+    return jsonify(st)
+
+
+@app.route("/api/finbert/download", methods=["POST"])
+def api_finbert_download():
+    """Explicit consent to spend disk. Runs in a thread so the request returns
+    immediately and the panel can poll progress."""
+    from src import news_score_local as nsl
+    if _finbert_job["running"]:
+        return jsonify({"ok": True, "note": "download already running"})
+    if nsl.is_downloaded():
+        return jsonify({"ok": True, "note": "already downloaded"})
+
+    def _progress(name, done, total):
+        _finbert_job.update(file=name, done=done, total=total)
+
+    def _run():
+        _finbert_job.update(running=True, ok=None, detail="", done=0, total=0)
+        try:
+            ok, detail = nsl.ensure_model(progress=_progress)
+        except Exception as e:                                  # noqa: BLE001
+            ok, detail = False, str(e)
+        _finbert_job.update(running=False, ok=ok, detail=detail)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "note": "download started",
+                    "path": str(nsl.model_home())})
+
+
+@app.route("/api/finbert/remove", methods=["POST"])
+def api_finbert_remove():
+    from src import news_score_local as nsl
+    ok, detail = nsl.remove_model()
+    return jsonify({"ok": ok, "note": detail})
 
 
 @app.route("/api/preflight")

@@ -419,6 +419,17 @@
           <button class="sm" id="btnEnvToggle">切换</button></div>
       </div>
 
+      <div class="set-sec"><h3>本地新闻打分模型 FinBERT</h3>
+        <div class="set-row"><div style="flex:1"><b>FinBERT（本地运行，确定性）</b>
+          <div class="setdesc">对 AI 读过的<b>同一批</b>标题给一个确定性的第二意见，两个分数一起记进成交记录，让「AI 和 FinBERT 分歧」变成可量化的东西。<b>仅供参考，不参与下单决策。</b>它评的是句子情绪、不是价格影响 —— 真正的价值是它的训练语料早于任何回测窗口，没有后见之明。<br>
+          模型只下载一次，<b>app 和源码版共用同一份</b>。</div>
+          <div id="finbertState" class="setdesc" style="margin-top:6px">—</div></div>
+          <span style="display:flex;gap:6px">
+            <button class="sm" id="btnFinbertGet">下载</button>
+            <button class="sm" id="btnFinbertDel">删除</button>
+          </span></div>
+      </div>
+
       <div class="set-sec"><h3>资金 Capital</h3>
         <div class="set-row"><div style="flex:1"><b>预算 Budget</b><div class="setdesc">分配给交易的本金。改了下次扫描生效（免重启）；仓位/风控按它派生，并自动不超过实盘 equity。</div></div>
           <span style="display:flex;gap:6px"><input id="setBudget" type="number" step="100" placeholder="$"/><button class="sm" id="btnSetBudget">保存</button></span></div>
@@ -1093,7 +1104,57 @@ async function saveKey(key){
   alert(r.note||(r.ok?'已保存':('失败: '+(r.error||'')))); el.value=''; loadSettings();
 }
 $('#btnSetBudget').onclick=async()=>{const v=+$('#setBudget').value; if(v>0){await api('/api/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})});refresh();alert('预算已更新: $'+v);}};
-$('#btnSettings').onclick=async()=>{await loadSettings();$('#settingsModal').classList.remove('hidden');};
+// ── FinBERT: status + a consent dialog before spending the user's disk ──
+// The download is only ever started by this button. Opening Settings, or even
+// setting FINBERT_ENABLED, never pulls a byte — the confirm below IS the
+// consent, and it names the size and the exact path before asking.
+let FINBERT_POLL=null;
+async function loadFinbert(){
+  let s; try{s=await api('/api/finbert');}catch(e){return;}
+  const el=$('#finbertState'), get=$('#btnFinbertGet'), del=$('#btnFinbertDel');
+  const j=s.job||{};
+  if(j.running){
+    const pct=j.total?Math.round(100*j.done/j.total):0;
+    el.innerHTML=`⬇️ 下载中 ${j.file||''} — ${pct}% (${(j.done/1e6).toFixed(1)}/${(j.total/1e6).toFixed(1)} MB)`;
+    get.disabled=true; del.disabled=true;
+    if(!FINBERT_POLL) FINBERT_POLL=setInterval(loadFinbert,1000);
+    return;
+  }
+  if(FINBERT_POLL){clearInterval(FINBERT_POLL);FINBERT_POLL=null;}
+  if(!s.can_run){
+    el.innerHTML=`⚪ 运行库缺失 — <code>pip install onnxruntime tokenizers</code>`;
+    get.disabled=true; del.disabled=!s.downloaded;
+  }else if(s.runtime==='torch'){
+    el.innerHTML=`✅ 就绪（torch/transformers，模型走 HuggingFace 缓存）`;
+    get.disabled=true; del.disabled=true;
+  }else if(s.downloaded){
+    el.innerHTML=`✅ 已下载 · ${s.disk_mb} MB · <span style="opacity:.7">${s.path}</span>`
+      +(s.enabled?'':' <span style="color:#d29922">（FINBERT_ENABLED 仍是 false，不会被调用）</span>');
+    get.disabled=true; del.disabled=false;
+  }else{
+    el.innerHTML=`⚪ 未下载 — 约 ${s.est_download_mb} MB`
+      +(j.ok===false?` <span style="color:#f85149">上次失败：${(j.detail||'').slice(0,80)}</span>`:'');
+    get.disabled=false; del.disabled=true;
+  }
+}
+$('#btnFinbertGet').onclick=async()=>{
+  let s; try{s=await api('/api/finbert');}catch(e){return;}
+  const okd=confirm(
+    `将从 HuggingFace 下载 FinBERT 模型（约 ${s.est_download_mb} MB）到：\n\n${s.path}\n\n`
+    +`• 占用你硬盘约 ${s.est_download_mb} MB，可随时点「删除」收回\n`
+    +`• 只下载一次，app 版和源码版共用\n`
+    +`• 下载期间可以继续用，不影响交易\n\n继续？`);
+  if(!okd) return;
+  await api('/api/finbert/download',{method:'POST'});
+  loadFinbert();
+};
+$('#btnFinbertDel').onclick=async()=>{
+  if(!confirm('删除本地 FinBERT 模型？会释放硬盘空间，之后可以重新下载。')) return;
+  const r=await api('/api/finbert/remove',{method:'POST'});
+  alert(r.note||'已删除'); loadFinbert();
+};
+
+$('#btnSettings').onclick=async()=>{await loadSettings();await loadFinbert();$('#settingsModal').classList.remove('hidden');};
 $('#btnCloseSet').onclick=()=>$('#settingsModal').classList.add('hidden');
 $('#settingsModal').onclick=e=>{if(e.target.id==='settingsModal')$('#settingsModal').classList.add('hidden');};
 $('#selTheme').onchange=e=>applyTheme(e.target.value);

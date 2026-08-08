@@ -79,6 +79,14 @@ hiddenimports = [
     # AI provider (src/ai.py) — `from google import genai` is a namespace pkg.
     "google.genai",
     "google.genai.types",
+    # FinBERT (src/news_score_local.py). ~25 MB for the pair, which is what
+    # makes the local scorer work from the .app at all — torch + transformers
+    # would have been 1-2 GB. Imported lazily inside functions, so the graph
+    # walk cannot see them. The WEIGHTS are NOT bundled: they download once, on
+    # explicit consent, to a shared per-machine path (news_score_local.
+    # model_home()) that a source checkout resolves to as well.
+    "onnxruntime",
+    "tokenizers",
 ]
 
 # ── excluded ─────────────────────────────────────────────────────────────────

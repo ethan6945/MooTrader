@@ -1718,6 +1718,16 @@ def run_loop() -> None:
     # Wrapped so a broker hiccup here can never stop the scheduler from arming.
     _startup_protect_stops()
 
+    # Headless opt-in only (FINBERT_AUTO_DOWNLOAD). A desktop user consents via
+    # the Settings dialog instead, which names the size and path first. No-op
+    # unless both flags are on and the weights are absent, and it runs AFTER
+    # protective exits so a slow download can never delay a stop.
+    try:
+        from . import news_score_local
+        news_score_local.maybe_auto_download()
+    except Exception as e:
+        log.warning("FinBERT auto-download skipped: %s", e)
+
     # Detect missed scheduled jobs and run them once before the normal loop
     # takes over. Synchronous on purpose — a quick Telegram lets the user know
     # what's happening. Long jobs (Optuna ~10 min) delay the first ENTRY scan,

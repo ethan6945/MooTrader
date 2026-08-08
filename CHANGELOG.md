@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2026-08-07 — Finnhub 新闻源 + FinBERT 落地（app / 源码共用一份模型）
+
+**Finnhub**（`src/finnhub_news.py`，默认关，需 finnhub.io 免费 Key：60 次/分钟、约 1 年历史）
+
+- 新闻由**供应商按股票代码标注**，而不是靠搜索字符串匹配 —— "AAPL" 不会再搜进无关的同名内容。
+- 真正的意义是它能**查历史某一天**（`from` / `to`）。Tavily 只答"现在"，而**你没法回放一个输入都无法重建的决策** —— 这就是新闻策略至今无法回测的根本原因。`fetch_company_news(..., until=某个过去日期)` 就是为此留的接口；窗口边界在本地二次校验，不信任服务端（point-in-time 回放里漏进一条未来新闻就是前视 bug）。
+- 与 Tavily 合并后按标题归一化去重 —— 同一条通讯社原稿从两个源进来会被算成两条，让单个事件看起来像互相印证，而这恰恰是新闻下注最不能有的错觉。Finnhub 优先保留。
+- 复用 `NEWS_INCLUDE_DOMAINS` 做来源过滤（Finnhub 返回的是 source 名不是 URL，所以是宽松子串匹配，目的是滤掉明显的聚合噪音）。
+
+**FinBERT 改造：从"源码版专属"变成"哪里都能用"**（`src/news_score_local.py`）
+
+上一版把 FinBERT 做成了可选依赖，`.app` 用户实际上用不了。按要求改了三处：
+
+- **运行时换成 ONNX Runtime**。`onnxruntime` + `tokenizers` 约 25 MB，进 `requirements.txt` 和打包 hiddenimports —— 这是让 `.app` 也能跑的唯一可行代价（torch + transformers 是 1–2 GB，而这个项目为省 53 MB 排除了 matplotlib）。源码版若已装 torch + transformers 则自动走那条路，不会存第二份权重。
+- **模型放一份共享路径**，`news_score_local.model_home()`，**刻意不用 `config.ROOT`** —— ROOT 在源码版是仓库目录、frozen 是 app-support，用它会让两边各下一份。权重是机器级用户数据，不是每个安装各自的状态。macOS 走 `~/Library/Application Support/MooMooTrader/models/finbert`，Linux/Windows 各自的标准位置，`FINBERT_HOME` 可覆盖。
+- **绝不隐式下载**。`FINBERT_ENABLED=true` 本身不拉一个字节。新增「设置 → FinBERT」面板：先 `confirm` 弹窗说明**约 120 MB、下载到哪个具体路径、随时可删回收**，用户点了才开始；后台线程下载 + 进度条轮询，另有「删除」按钮把空间还回去。headless 机器可以用 `FINBERT_AUTO_DOWNLOAD=true` 跳过弹窗，且该调用排在开机保护性止损**之后**，慢下载永远不会拖延止损。
+- 下载走 `.part` 临时文件再改名，中断不会留下一个能加载但输出垃圾的截断图；加载前还有 1 MB 体积下限兜底。
+- 新增 `/api/finbert`（GET 永远安全、不触发下载）、`/api/finbert/download`（POST 即为知情同意）、`/api/finbert/remove`。预检把「已开启但未下载」报成 INFO 并写明路径和体积，而不是报错。
+
+**验证**：用真实 ONNX 图 + 真实 tokenizer 端到端跑通推理路径（padding、`token_type_ids` 输入名检测、softmax、`id2label` 映射），确认 bullish > neutral > bearish 单调且落在 0–100；`remove_model` 正确回收。真实权重下载和 Finnhub 实网调用在本沙箱被出网代理挡住，未端到端验证。
+
 ## 2026-08-07 — AI 故障必须发声 + SEC EDGAR 一手源 + FinBERT 交叉验证
 
 **1. AI 挂掉不再静默**（`ai.py` / `health_check.py` / `web/`）
