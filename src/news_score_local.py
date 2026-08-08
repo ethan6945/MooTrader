@@ -50,6 +50,12 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 _MODEL_ID = "ProsusAI/finbert"
+# The same weights, re-exported to ONNX. ProsusAI publishes the torch checkpoint
+# and nothing else — no onnx/ directory and no tokenizer.json — so the ONNX path
+# has to pull from the export repo or it 404s on every file it needs. Verified
+# 2026-08-08: identical id2label ({0: positive, 1: negative, 2: neutral}) and
+# architecture, so the two runtimes score the same sentence the same way.
+_ONNX_MODEL_ID = "Xenova/finbert"
 # FinBERT's label order. Read from the model config when available rather than
 # assumed — a fine-tune with a different ordering would silently invert every
 # score, and that bug looks like "the factor doesn't work" rather than a bug.
@@ -89,6 +95,17 @@ def model_home() -> Path:
 
 def enabled() -> bool:
     return bool(getattr(settings, "finbert_enabled", False))
+
+
+def _repo(onnx: bool) -> str:
+    """Which HF repo to pull from. The two runtimes need different ones (see
+    _ONNX_MODEL_ID), so FINBERT_MODEL only takes over when it has actually been
+    pointed somewhere else — it defaults to the torch id, and treating that
+    default as a deliberate choice is what sent the ONNX path to a 404."""
+    override = (getattr(settings, "finbert_model", "") or "").strip()
+    if override and override != _MODEL_ID:
+        return override
+    return _ONNX_MODEL_ID if onnx else _MODEL_ID
 
 
 def _onnx_path() -> Path:
@@ -161,7 +178,7 @@ def ensure_model(progress=None) -> tuple[bool, str]:
         return True, f"already present ({disk_usage_mb()} MB)"
 
     import requests
-    repo = getattr(settings, "finbert_model", "") or _MODEL_ID
+    repo = _repo(onnx=True)
     dest = model_home()
     try:
         dest.mkdir(parents=True, exist_ok=True)
@@ -253,7 +270,7 @@ def _load():
             if _torch_available():
                 import torch
                 from transformers import AutoModelForSequenceClassification, AutoTokenizer
-                repo = getattr(settings, "finbert_model", "") or _MODEL_ID
+                repo = _repo(onnx=False)
                 log.info("FinBERT: loading %s via torch", repo)
                 tok = AutoTokenizer.from_pretrained(repo)
                 mdl = AutoModelForSequenceClassification.from_pretrained(repo)
