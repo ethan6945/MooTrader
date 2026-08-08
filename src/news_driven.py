@@ -156,10 +156,38 @@ def entries_closed() -> tuple[bool, str]:
                   "a new position would be closed before it can work")
 
 
+def shadow_log_path():
+    from .config import ROOT
+    return ROOT / "data" / "news_shadow.jsonl"
+
+
+def record_shadow(**fields) -> None:
+    """Append one would-have-traded decision. Never raises.
+
+    JSON-lines, appended: a study reads it later and attaches outcomes, and an
+    append-only file cannot lose earlier rows to a crash mid-write. Timestamped
+    in ET because every other timing decision in this bot is, and a UTC row in
+    an ET dataset is a silent one-session alignment error.
+    """
+    try:
+        import json
+        from . import clock
+        rec = {"ts_et": f"{clock.ny_now():%Y-%m-%d %H:%M:%S}", **fields}
+        p = shadow_log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except Exception as e:
+        log.warning("shadow log write failed: %s", e)
+
+
 def describe() -> str:
     """One-line status for logs and the preflight inventory."""
     if not enabled():
         return "news-driven mode OFF (news is advisory; technicals select)"
+    if settings.news_driven_shadow:
+        return ("news-driven SHADOW mode — full gate runs, decisions logged to "
+                f"{shadow_log_path().name}, NO orders placed")
     bits = [
         f"min_score={settings.news_driven_min_score}",
         f"catalyst={'required' if settings.news_driven_require_catalyst else 'optional'}",

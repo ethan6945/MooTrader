@@ -402,6 +402,16 @@ class Settings:
     # → NO TRADE. news_driven.gate() enforces that; it never falls back to a
     # technical-only entry, because that would silently be a different system.
     news_driven_enabled: bool = os.getenv("NEWS_DRIVEN_ENABLED", "false").lower() in ("1", "true", "yes")
+    # SHADOW: run the entire gate for real — news read, catalyst requirement,
+    # risk, sizing — then stop one line before the order and write down what it
+    # would have done (data/news_shadow.jsonl). The offline factor study can
+    # test whether FinBERT sentiment sorts returns; it CANNOT test this gate,
+    # which is an LLM's judgement plus a named-catalyst rule. The only way to
+    # learn whether the live pipeline has an edge is to collect its decisions
+    # with outcomes attached, and that is either done with money or without.
+    # Strongly recommended for the first few weeks. Score it with:
+    #   python -m scripts.news_factor_study --shadow
+    news_driven_shadow: bool = os.getenv("NEWS_DRIVEN_SHADOW", "false").lower() in ("1", "true", "yes")
     # Minimum 0-100 bullishness for an entry. 50 = neutral, so 65 asks for a
     # clearly positive read rather than "nothing bad in the headlines".
     news_driven_min_score: int = _int("NEWS_DRIVEN_MIN_SCORE", 65)

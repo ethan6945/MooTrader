@@ -428,6 +428,31 @@ def check_news_driven() -> Check:
                      fix_hint_en=f"Add the Tavily + {ai.PROVIDER_LABELS.get(provider, provider)} "
                                  "keys and retry.")
 
+    # Shadow is the recommended first posture, so it reads as INFO rather than
+    # DEGRADED — nothing is degraded, it is deliberately not trading. But it
+    # must be unmissable: someone who forgets this is on will wonder for weeks
+    # why a mode they armed never buys anything.
+    if settings.news_driven_shadow:
+        return Check(id="news_driven", ok=True, severity=INFO,
+                     title="新闻主导模式（影子）", title_en="News-driven mode (shadow)",
+                     detail="影子模式 — 完整跑闸门但不下单",
+                     detail_en="shadow — full gate runs, no orders placed",
+                     impact="这个模式当前**不会下任何单**。新闻读数、催化剂判断、"
+                            "风控、仓位全部照跑，只是在下单前一行停住并记录到 "
+                            "data/news_shadow.jsonl。攒几周后用 "
+                            "`python -m scripts.news_factor_study --shadow` "
+                            "看它到底赚不赚，再决定要不要真开。",
+                     impact_en="This mode places NO orders right now. The news read, "
+                               "catalyst check, risk and sizing all run for real; it "
+                               "stops one line before the order and logs to "
+                               "data/news_shadow.jsonl. After a few weeks, score it "
+                               "with `python -m scripts.news_factor_study --shadow` "
+                               "and decide from evidence.",
+                     fix_key="NEWS_DRIVEN_SHADOW",
+                     fix_hint="设为 false 才会真正下单。",
+                     fix_hint_en="Set false to place real orders.",
+                     retryable=False)
+
     return Check(id="news_driven", ok=False, severity=DEGRADED,
                  title="新闻主导模式", title_en="News-driven mode",
                  detail=news_driven.describe(), detail_en=news_driven.describe(),

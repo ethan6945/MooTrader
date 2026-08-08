@@ -944,6 +944,34 @@ def scan_once() -> None:
             qty = risk_manager.calc_position_size(
                 sig, vix=vix, conviction=conviction, regime_mult=regime_mult)
 
+            # --- NEWS-DRIVEN SHADOW MODE (2026-08-07) ---------------------------
+            # Everything above has run for real — the news read, the catalyst
+            # requirement, the risk gate, the sizing. Shadow stops exactly here,
+            # one line before the order, and writes down what it WOULD have done.
+            #
+            # This exists because the offline factor study can measure whether
+            # FinBERT sentiment sorts returns, but it cannot measure THIS gate:
+            # an LLM's read plus a named-catalyst requirement. The only way to
+            # find out whether the live pipeline has an edge is to collect its
+            # decisions with outcomes attached, and the choice of how to do that
+            # is between "with money" and "without". This is without.
+            if news_driven.enabled() and settings.news_driven_shadow:
+                news_driven.record_shadow(
+                    symbol=sig.symbol, price=sig.price, qty=qty,
+                    score=sent_score, verdict=sent_verdict, reason=sent_reason,
+                    finbert=fin_score, conviction=conviction,
+                    strategy=getattr(sig, "strategy", "trend"),
+                    rule_score=sig.score,
+                )
+                log.info("SHADOW %s: would buy %s @ $%.2f (news=%s finbert=%s) "
+                         "— not ordering", sig.symbol, qty, sig.price,
+                         sent_score, fin_score)
+                audit.record("skip", symbol=sig.symbol, gate="news_shadow",
+                             reason=f"shadow mode — would have bought {qty} "
+                                    f"@ ${sig.price:.2f} (news={sent_score})",
+                             score=sig.score)
+                continue
+
             # 2026-06-03: portfolio.heat_check gate removed — structurally
             # non-binding (heat cap = 20% of account while per-trade risk is also
             # a % of account, so both scale together and it never fires).
