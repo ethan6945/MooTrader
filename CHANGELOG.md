@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 2026-08-08 — 新闻开关接进设置面板 + FinBERT 权重源修复（v2.4.0）
+
+**FinBERT 的 ONNX 下载指向了一个没有 ONNX 的 repo。** `ProsusAI/finbert` 只发布 torch checkpoint —— 没有 `onnx/` 目录、没有 `tokenizer.json`。所以 `ensure_model()` 先 404 掉量化图、再 404 掉 fp32 fallback，对**每一个开了 FinBERT 的用户**返回「could not download an ONNX graph」。沙箱测不出来：推理逻辑是拿本地构造的真实 ONNX 图验的，那张图是对的，错的是它的来源。ONNX 路径改指 `Xenova/finbert`（同权重的 ONNX 导出，`id2label` 与架构均已比对一致），torch 路径留在 `ProsusAI` —— 反过来 Xenova 没有 `pytorch_model.bin`，两个 repo 各有一半。`FINBERT_MODEL` 仍可覆盖两者，但仅在它被指向 torch 默认值以外时才算数：把那个默认值当成用户的选择，正是 ONNX 路径撞 404 的原因。macOS 实测：111.7 MB / 7.8 秒，bullish 76 > neutral 56 > bearish 24。
+
+**新闻功能在 DMG 安装上根本开不起来。** 上一版新增的开关全部只存在于 `.env`，而打包安装的 `.env` 在 `~/Library/Application Support/MooMooTrader/`，界面里没有任何入口能碰它 —— 装了 2.4.0 的人看到的和 2.3.0 完全一样。
+
+- `/api/settings/toggles` + `/api/settings/toggle`：五个开关（`FINNHUB_ENABLED` / `SEC_EDGAR_ENABLED` / `FINBERT_ENABLED` / `NEWS_DRIVEN_ENABLED` / `NEWS_DRIVEN_SHADOW`）走独立布尔白名单，写入只可能是 `true`/`false`；原生面板与网页面板共用同一批端点。
+- **开启新闻主导模式时，若用户从未对影子模式表过态，同时把影子模式打开并明说**。要避免的失败是：有人翻了一个开关，就在不知情的情况下拿真钱赌 LLM 对一条标题的读数。一旦用户明确关掉影子模式，这个偏好就被尊重，不会再被改回去。
+- `SEC_EDGAR_USER_AGENT` 进 key 白名单，且**不打码**（它是联系方式不是密钥；`••••com` 会藏住那个让你 IP 被封 10 分钟的拼写错误）。原生面板对非密钥用普通输入框并预填。
+- FinBERT 那一行显示模型实际状态 —— 「已开启但没下载」= 打分器永不被调用，这个陷阱现在写在开关旁边，而不是留给用户去日志里发现。
+
 ## 2026-08-07 — 新闻因子研究 + 影子模式（v2.4.0）
 
 给 `NEWS_DRIVEN_ENABLED` 补上它一直欠着的那道闸门。期权放量因子当初必须先过 `scripts/options_factor_study.py`（5,980 组名日）才被允许碰仓位；新闻主导模式至今没有对应的东西，预检里那句「没有因子研究背书」写的就是这件事。

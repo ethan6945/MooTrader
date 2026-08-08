@@ -419,6 +419,11 @@
           <button class="sm" id="btnEnvToggle">切换</button></div>
       </div>
 
+      <div class="set-sec"><h3>新闻源与模式 News sources &amp; mode</h3>
+        <div class="setdesc">全部默认关闭。开关写入 .env，需<b>重启交易循环</b>生效。</div>
+        <div id="toggleList" style="margin-top:8px"></div>
+      </div>
+
       <div class="set-sec"><h3>本地新闻打分模型 FinBERT</h3>
         <div class="set-row"><div style="flex:1"><b>FinBERT（本地运行，确定性）</b>
           <div class="setdesc">对 AI 读过的<b>同一批</b>标题给一个确定性的第二意见，两个分数一起记进成交记录，让「AI 和 FinBERT 分歧」变成可量化的东西。<b>仅供参考，不参与下单决策。</b>它评的是句子情绪、不是价格影响 —— 真正的价值是它的训练语料早于任何回测窗口，没有后见之明。<br>
@@ -955,10 +960,18 @@ function applyTheme(t){document.body.classList.toggle('light',t==='light');local
 // ── settings ──
 async function loadSettings(){
   try{const s=await api('/api/settings');
+    // A contact string (SEC_EDGAR_USER_AGENT) is not a secret — a password
+    // field for it hides the typo that gets the IP blocked.
     $('#keyList').innerHTML=s.keys.map(k=>`<div class="set-row"><div style="flex:1"><b>${k.key}</b>
        <div class="setdesc">${k.desc}</div><div class="setdesc">当前: ${k.masked||'(未设置)'}</div></div>
-       <span style="display:flex;gap:6px"><input id="k_${k.key}" type="password" placeholder="新值(留空不改)"/>
+       <span style="display:flex;gap:6px"><input id="k_${k.key}" type="${k.secret===false?'text':'password'}" placeholder="新值(留空不改)"/>
        <button class="sm" onclick="saveKey('${k.key}')">保存</button></span></div>`).join('');
+  }catch(e){}
+  try{const t=await api('/api/settings/toggles');
+    $('#toggleList').innerHTML=t.toggles.map(g=>`<div class="set-row"><div style="flex:1"><b>${g.key}</b>
+       <div class="setdesc">${g.desc}</div></div>
+       <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="t_${g.key}"
+       ${g.on?'checked':''} onchange="saveToggle('${g.key}',this.checked)"/><span>${g.on?'开':'关'}</span></label></div>`).join('');
   }catch(e){}
   try{const a=LAST_STATUS||await api('/api/status');
     $('#setBudget').value=Math.round(a.budget||0);
@@ -1102,6 +1115,12 @@ async function saveKey(key){
   const el=$('#k_'+key),v=el.value.trim(); if(!v)return;
   const r=await api('/api/settings/key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value:v})});
   alert(r.note||(r.ok?'已保存':('失败: '+(r.error||'')))); el.value=''; loadSettings();
+}
+// The server's note is what gets shown: turning news-driven mode on may also
+// have turned shadow mode on, and only the server knows whether it did.
+async function saveToggle(key,on){
+  const r=await api('/api/settings/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,on})});
+  alert(r.note||(r.ok?'已保存':('失败: '+(r.error||'')))); loadSettings();
 }
 $('#btnSetBudget').onclick=async()=>{const v=+$('#setBudget').value; if(v>0){await api('/api/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})});refresh();alert('预算已更新: $'+v);}};
 // ── FinBERT: status + a consent dialog before spending the user's disk ──

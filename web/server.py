@@ -836,9 +836,32 @@ SETTING_KEYS = {
     "TAVILY_API_KEY": "Tavily 新闻搜索 Key — 给 AI 提供实时新闻上下文。",
     "FINNHUB_API_KEY": "Finnhub Key(免费 60次/分)— 按股票代码标注的新闻，"
                        "且能查历史某一天(Tavily 只能查\"现在\")。需 FINNHUB_ENABLED=true。",
+    "SEC_EDGAR_USER_AGENT": "SEC EDGAR 联系方式，格式「名字 邮箱」— SEC 强制要求，"
+                            "没有它 EDGAR 会 403 并封 IP 约 10 分钟，而那是同一台连着券商的机器。"
+                            "例：Ethan Tan ethan@example.com",
     "TELEGRAM_TOKEN": "Telegram Bot Token — 推送交易通知 + 审批卡片。",
     "TELEGRAM_CHAT_ID": "Telegram Chat ID — 接收通知的聊天 ID。",
 }
+
+# Not every .env value here is a secret. The UA is a contact string the user is
+# supposed to be able to read back and check — masking it to ••••com would hide
+# the typo that gets their IP blocked, and a password field for it is theatre.
+_PLAIN_KEYS = {"SEC_EDGAR_USER_AGENT"}
+
+# Booleans the panel can flip. Kept apart from SETTING_KEYS because these are
+# switches, not secrets: they render as toggles, they are never masked, and the
+# write path only ever puts "true"/"false" in .env.
+SETTING_TOGGLES = {
+    "FINNHUB_ENABLED": "Finnhub 新闻源 — 按代码标注、可查历史某一天，是回测新闻策略的前提。需要先填 FINNHUB_API_KEY。",
+    "SEC_EDGAR_ENABLED": "SEC EDGAR 8-K — 一手催化剂，带发行人时间戳。需要先填 SEC_EDGAR_USER_AGENT，否则不会发出任何请求。",
+    "FINBERT_ENABLED": "FinBERT 本地情绪打分 — 训练语料早于任何测试窗口，所以没有后见之明。要先在下面下载模型(约 120 MB)，否则开了也不会被调用。",
+    "NEWS_DRIVEN_ENABLED": "新闻主导模式 — 技术分降级为预筛，选股和仓位交给 AI 新闻读数，收盘前平掉全部持仓。这会换掉整套策略。",
+    "NEWS_DRIVEN_SHADOW": "影子模式 — 完整跑完新闻主导的决策链路，在下单前一行停住并记录。开着它就不会下单。",
+}
+
+
+def _truthy(v: str) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _read_env() -> dict:
@@ -947,9 +970,49 @@ def api_setup_status():
 @app.route("/api/settings")
 def api_settings():
     env = _read_env()
-    keys = [{"key": k, "desc": d, "masked": _mask(env.get(k, "")), "set": bool(env.get(k))}
+    keys = [{"key": k, "desc": d,
+             "masked": (env.get(k, "") if k in _PLAIN_KEYS else _mask(env.get(k, ""))),
+             "secret": k not in _PLAIN_KEYS,
+             "set": bool(env.get(k))}
             for k, d in SETTING_KEYS.items()]
     return jsonify({"keys": keys})
+
+
+@app.route("/api/settings/toggles")
+def api_settings_toggles():
+    """The .env switches the panel can flip. Values are what the file says, i.e.
+    what will be in force after a restart — same contract as the key rows."""
+    env = _read_env()
+    return jsonify({"toggles": [{"key": k, "desc": d, "on": _truthy(env.get(k, ""))}
+                                for k, d in SETTING_TOGGLES.items()]})
+
+
+@app.route("/api/settings/toggle", methods=["POST"])
+def api_set_toggle():
+    body = request.json or {}
+    k, on = body.get("key"), bool(body.get("on"))
+    if k not in SETTING_TOGGLES:
+        return jsonify({"ok": False, "error": "unknown toggle"}), 400
+    try:
+        _write_env_key(k, "true" if on else "false")
+        note = "已写入 .env — 重启 bot 后生效"
+        # Turning news-driven mode on is a strategy swap, and the recommended
+        # order is shadow first. If the user has never expressed a preference
+        # about shadow, choose the safe one FOR them and say so — the failure we
+        # are avoiding is someone flipping one switch and unknowingly betting
+        # real money on an LLM's read of a headline.
+        if k == "NEWS_DRIVEN_ENABLED" and on and "NEWS_DRIVEN_SHADOW" not in _read_env():
+            _write_env_key("NEWS_DRIVEN_SHADOW", "true")
+            note = ("已开启新闻主导模式，并同时开启影子模式 — 会完整跑决策链路但不下单。"
+                    "确认有 edge 之后再手动关掉影子模式。重启 bot 后生效")
+        try:
+            from src import preflight
+            preflight.invalidate()
+        except Exception:
+            pass
+        return jsonify({"ok": True, "note": note})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ── FinBERT local model: status / consented download / removal ───────────────
