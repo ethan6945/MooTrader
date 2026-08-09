@@ -129,6 +129,49 @@ def _extension_mode(default: str = "shadow") -> str:
     return m
 
 
+# ── which layer selects the trades ───────────────────────────────────────────
+# Two modes exist, and they are mutually exclusive by construction — one thing
+# has to decide what gets bought:
+#
+#   technical  rule score selects and sizes; news/AI annotate and may veto.
+#              The backtest describes this mode, because the backtest engine
+#              deliberately runs no LLM.
+#   news       the news read selects and sizes; the rule score drops to a
+#              prefilter; everything is flattened before the close. NO backtest
+#              describes this — live results are the experiment.
+#
+# This used to be the boolean NEWS_DRIVEN_ENABLED, i.e. a two-way choice named
+# after one of its two options, which reads as a feature you add rather than a
+# mode you switch into. That framing hid the actual trade-off: turning it on
+# does not add news to the existing strategy, it REPLACES what selects trades.
+STRATEGY_MODES = ("technical", "news")
+
+
+def _strategy_mode(default: str = "technical") -> str:
+    """STRATEGY_MODE guard, with the legacy switch still honoured.
+
+    An unrecognised value falls back to `technical` and says so: this decides
+    which strategy runs, and a typo silently swapping it is the worst outcome
+    available here. NEWS_DRIVEN_ENABLED is read only when STRATEGY_MODE is
+    absent, so an install that predates this setting keeps its behaviour and an
+    explicit mode always wins over the leftover boolean.
+    """
+    raw = os.getenv("STRATEGY_MODE", "").strip().lower()
+    if not raw:
+        legacy = os.getenv("NEWS_DRIVEN_ENABLED", "").strip().lower()
+        return "news" if legacy in ("1", "true", "yes", "on") else default
+    if raw not in STRATEGY_MODES:
+        import logging
+        logging.getLogger(__name__).warning(
+            "STRATEGY_MODE=%r is not one of %s — falling back to %r.",
+            raw, "/".join(STRATEGY_MODES), default)
+        return default
+    return raw
+
+
+_MODE = _strategy_mode()
+
+
 @dataclass(frozen=True)
 class Settings:
     moo_host: str = os.getenv("MOO_HOST", "127.0.0.1")
@@ -397,7 +440,12 @@ class Settings:
     # news-driven mode the news IS the thesis, so no news / no key / API error
     # → NO TRADE. news_driven.gate() enforces that; it never falls back to a
     # technical-only entry, because that would silently be a different system.
-    news_driven_enabled: bool = os.getenv("NEWS_DRIVEN_ENABLED", "false").lower() in ("1", "true", "yes")
+    # Which layer selects — see STRATEGY_MODES above.
+    strategy_mode: str = _MODE
+    # Derived, and kept as a field so every existing `news_driven.enabled()`
+    # caller keeps working unchanged. STRATEGY_MODE is the setting; this is the
+    # answer to "is the news layer the one selecting right now".
+    news_driven_enabled: bool = (_MODE == "news")
     # Minimum 0-100 bullishness for an entry. 50 = neutral, so 65 asks for a
     # clearly positive read rather than "nothing bad in the headlines".
     news_driven_min_score: int = _int("NEWS_DRIVEN_MIN_SCORE", 65)

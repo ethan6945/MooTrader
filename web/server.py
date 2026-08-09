@@ -853,7 +853,6 @@ SETTING_TOGGLES = {
     "FINNHUB_ENABLED": "Finnhub 新闻源 — 按代码标注、可查历史某一天，是回测新闻策略的前提。需要先填 FINNHUB_API_KEY。",
     "MOO_NOTICES_ENABLED": "申报 + 分析师动作 — 由 OpenD 转发的 SEC 申报和评级变动，不直连任何监管机构，也不需要注册。注意：只知道「发了 8-K」，不知道内容；日期精确到天，没有时分。",
     "FINBERT_ENABLED": "FinBERT 本地情绪打分 — 训练语料早于任何测试窗口，所以没有后见之明。要先在下面下载模型(约 120 MB)，否则开了也不会被调用。",
-    "NEWS_DRIVEN_ENABLED": "新闻主导模式 — 技术分降级为预筛，选股和仓位交给 AI 新闻读数，收盘前平掉全部持仓。这会换掉整套策略。",
 }
 
 
@@ -973,6 +972,69 @@ def api_settings():
              "set": bool(env.get(k))}
             for k, d in SETTING_KEYS.items()]
     return jsonify({"keys": keys})
+
+
+# ── strategy mode: which layer selects the trades ────────────────────────────
+# Deliberately NOT one of the toggles above. A toggle says "add this feature";
+# this is a choice between two mutually exclusive strategies, and presenting it
+# as a switch labelled with one of its options is what made the old
+# NEWS_DRIVEN_ENABLED read as an addition rather than a replacement.
+STRATEGY_MODE_INFO = {
+    "technical": {
+        "label": "技术指标模式", "label_en": "Technical",
+        "desc": "指标评分选股和定仓位，新闻/AI 只做注释和否决。"
+                "回测描述的就是这个模式 —— 回测引擎故意不跑 LLM。",
+    },
+    "news": {
+        "label": "新闻主导模式", "label_en": "News-driven",
+        "desc": "AI 的新闻读数选股和定仓位，指标评分降级为预筛(硬地板 50)，"
+                "收盘前平掉全部持仓。没有任何回测描述这个模式 —— 实盘结果本身就是实验。",
+    },
+}
+
+
+@app.route("/api/strategy-mode")
+def api_strategy_mode():
+    env = _read_env()
+    return jsonify({
+        "mode": settings.strategy_mode,
+        # What the FILE says, which is what takes effect after a restart —
+        # settings.strategy_mode is this process's frozen snapshot and the two
+        # differ exactly between a save and the restart that applies it.
+        "pending": (env.get("STRATEGY_MODE") or "").strip().lower() or None,
+        "trade_env": (settings.moo_trade_env or "").upper(),
+        "options": [{"id": k, **v} for k, v in STRATEGY_MODE_INFO.items()],
+    })
+
+
+@app.route("/api/strategy-mode", methods=["POST"])
+def api_set_strategy_mode():
+    mode = str((request.json or {}).get("mode", "")).strip().lower()
+    if mode not in STRATEGY_MODE_INFO:
+        return jsonify({"ok": False, "error": "unknown mode"}), 400
+    try:
+        _write_env_key("STRATEGY_MODE", mode)
+        # Keep the legacy boolean consistent rather than leaving a line that
+        # contradicts the mode. config only reads it when STRATEGY_MODE is
+        # absent, so this is about the file not lying to whoever opens it.
+        _write_env_key("NEWS_DRIVEN_ENABLED", "true" if mode == "news" else "false")
+        try:
+            from src import preflight
+            preflight.invalidate()
+        except Exception:
+            pass
+        if mode == "news":
+            live = (settings.moo_trade_env or "").upper() != "SIMULATE"
+            note = ("⚠️ 已切到新闻主导模式，而当前是**实盘**。这个模式没有因子研究背书，"
+                    "实盘结果本身就是实验 —— 建议先切模拟盘。重启 bot 后生效"
+                    if live else
+                    "已切到新闻主导模式 —— 当前是**模拟盘**，下的是虚拟单。"
+                    "跑几周后用 `news_factor_study --live` 看有没有 edge。重启 bot 后生效")
+        else:
+            note = "已切回技术指标模式 —— 指标评分选股，新闻只做注释。重启 bot 后生效"
+        return jsonify({"ok": True, "note": note})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/settings/toggles")
