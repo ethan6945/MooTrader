@@ -854,7 +854,6 @@ SETTING_TOGGLES = {
     "MOO_NOTICES_ENABLED": "申报 + 分析师动作 — 由 OpenD 转发的 SEC 申报和评级变动，不直连任何监管机构，也不需要注册。注意：只知道「发了 8-K」，不知道内容；日期精确到天，没有时分。",
     "FINBERT_ENABLED": "FinBERT 本地情绪打分 — 训练语料早于任何测试窗口，所以没有后见之明。要先在下面下载模型(约 120 MB)，否则开了也不会被调用。",
     "NEWS_DRIVEN_ENABLED": "新闻主导模式 — 技术分降级为预筛，选股和仓位交给 AI 新闻读数，收盘前平掉全部持仓。这会换掉整套策略。",
-    "NEWS_DRIVEN_SHADOW": "影子模式 — 完整跑完新闻主导的决策链路，在下单前一行停住并记录。开着它就不会下单。",
 }
 
 
@@ -994,15 +993,19 @@ def api_set_toggle():
     try:
         _write_env_key(k, "true" if on else "false")
         note = "已写入 .env — 重启 bot 后生效"
-        # Turning news-driven mode on is a strategy swap, and the recommended
-        # order is shadow first. If the user has never expressed a preference
-        # about shadow, choose the safe one FOR them and say so — the failure we
-        # are avoiding is someone flipping one switch and unknowingly betting
-        # real money on an LLM's read of a headline.
-        if k == "NEWS_DRIVEN_ENABLED" and on and "NEWS_DRIVEN_SHADOW" not in _read_env():
-            _write_env_key("NEWS_DRIVEN_SHADOW", "true")
-            note = ("已开启新闻主导模式，并同时开启影子模式 — 会完整跑决策链路但不下单。"
-                    "确认有 edge 之后再手动关掉影子模式。重启 bot 后生效")
+        # Turning news-driven mode on is a strategy swap, so say which account
+        # is about to run it. The switch itself is not the dangerous part —
+        # doing it on the REAL account with no factor study behind the mode is,
+        # and that combination is easy to arrive at without noticing.
+        if k == "NEWS_DRIVEN_ENABLED" and on:
+            if (settings.moo_trade_env or "").upper() == "SIMULATE":
+                note = ("已开启新闻主导模式 —— 当前是**模拟盘**，下的是虚拟单。"
+                        "跑几周后用 `news_factor_study --live` 看有没有 edge，"
+                        "再决定要不要切实盘。重启 bot 后生效")
+            else:
+                note = ("⚠️ 已开启新闻主导模式，而当前是**实盘**。这个模式没有因子"
+                        "研究背书，实盘结果本身就是实验 —— 建议先切模拟盘跑几周。"
+                        "重启 bot 后生效")
         try:
             from src import preflight
             preflight.invalidate()

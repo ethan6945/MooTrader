@@ -40,7 +40,8 @@ small enough that a couple of names can carry it.
 And note what this CANNOT measure: the live path scores with an LLM and demands
 a named catalyst, neither of which is modelled here. FinBERT sentiment sorting
 returns is evidence that news carries signal in this universe. It is not proof
-the live gate captures it. Shadow mode (NEWS_DRIVEN_SHADOW) collects that.
+the live gate captures it. Running the mode on the SIMULATED account collects
+that, and `--live` scores it.
 
 Usage (from repo root; needs FINNHUB_API_KEY and a downloaded FinBERT):
     .venv/bin/python -m scripts.news_factor_study --days 180
@@ -243,7 +244,8 @@ def report(panel: pd.DataFrame, threshold: int) -> bool:
     print("  • FinBERT scores sentiment, not price impact. A PASS says news")
     print("    carries signal in this universe, not that the LIVE gate (an LLM")
     print("    plus a named-catalyst requirement) captures it — that is what")
-    print("    NEWS_DRIVEN_SHADOW collects.")
+    print("    running the mode on the paper account collects — score it")
+    print("    with `--live`.")
     print("  • One regime, one scorer, and buckets small enough that a couple")
     print("    of names can carry them. A PASS means 'keep collecting', never")
     print("    'arm it and size up'.")
@@ -252,112 +254,132 @@ def report(panel: pd.DataFrame, threshold: int) -> bool:
     return ok
 
 
-def report_shadow() -> int:
-    """Score data/news_shadow.jsonl — what the LIVE gate would have done.
+def report_live() -> int:
+    """Score what the mode ACTUALLY did, by joining the news read onto outcomes.
 
     This is the measurement the offline study above cannot make. Every row is a
-    decision the real pipeline reached (LLM read, named-catalyst requirement,
-    risk, sizing) and then declined to act on, so attaching outcomes to it
-    measures the thing that will actually trade rather than a proxy for it.
-    """
-    from src import news_driven
-    p = news_driven.shadow_log_path()
-    if not p.exists():
-        print(f"No shadow log at {p}.\n"
-              "Set NEWS_DRIVEN_ENABLED=true and NEWS_DRIVEN_SHADOW=true and let "
-              "it run for a few weeks — it places no orders.")
-        return 2
-    rows = []
-    for line in p.read_text().splitlines():
-        try:
-            rows.append(json.loads(line))
-        except Exception:
-            continue
-    if not rows:
-        print(f"{p} is empty.")
-        return 2
-    df = pd.DataFrame(rows)
-    df["day"] = pd.to_datetime(df["ts_et"], errors="coerce").dt.normalize()
-    df = df.dropna(subset=["day"])
-    print(f"Shadow decisions: {len(df)}   "
-          f"span {str(df.day.min())[:10]} .. {str(df.day.max())[:10]}   "
-          f"names: {df['symbol'].nunique()}\n")
+    decision the real pipeline reached — LLM read, named-catalyst requirement,
+    risk, sizing — and then acted on, so the outcome attached to it is the
+    thing that will trade rather than a proxy for it.
 
-    out = []
-    for sym, g in df.groupby("symbol"):
-        px = fetch_prices(sym, g.day.min().date() - timedelta(days=5),
-                          g.day.max().date() + timedelta(days=8))
-        if px is None or px.empty:
-            continue
-        sess = list(px.index)
-        for _, r in g.iterrows():
-            # The decision was made intraday on `day`, and the live mode exits
-            # at that day's close — so the outcome is entry price → same close.
-            # No next-day leg: the mode cannot hold overnight.
-            match = [i for i, d in enumerate(sess) if d.normalize() == r["day"]]
-            if not match:
-                continue
-            i = match[0]
+    Both halves are already on disk and neither needed a feature to produce:
+    audit.jsonl carries the news score and the FinBERT cross-check on every buy
+    (audit.record flattens `extra` into the row), and trades.jsonl carries the
+    realised P&L when the position closes. Run this against the SIMULATED
+    account and it costs nothing but time.
+
+    This replaced a "shadow mode" that logged what the gate WOULD have bought
+    without ordering. Paper mode produces the same dataset plus real fills and
+    P&L, so shadow was a strictly weaker duplicate — and the parallel code path
+    had already grown a bug where it blocked buys but not the 15:45 flatten.
+    """
+    def _rows(path):
+        out = []
+        if not path.exists():
+            return out
+        for line in path.read_text().splitlines():
             try:
-                entry = float(r.get("price") or 0)
-                close = float(px.iloc[i]["close"])
+                out.append(json.loads(line))
             except Exception:
                 continue
-            if entry <= 0:
-                continue
-            out.append({"symbol": sym, "day": r["day"],
-                        "score": r.get("score"), "finbert": r.get("finbert"),
-                        "ret_session": (close / entry - 1) * 100})
+        return out
+
+    audit_p, trades_p = ROOT / "data" / "audit.jsonl", ROOT / "data" / "trades.jsonl"
+    buys = [r for r in _rows(audit_p)
+            if r.get("action") == "buy" and r.get("news_driven")]
+    if not buys:
+        print(f"No news-driven buys in {audit_p}.\n"
+              "Set NEWS_DRIVEN_ENABLED=true with TRADE_ENV=SIMULATE and let it "
+              "run — every paper fill records the news read and the outcome.")
+        return 2
+    closed = _rows(trades_p)
+    if not closed:
+        print(f"{len(buys)} news-driven buys recorded, but {trades_p} has no "
+              "closed trades yet — outcomes arrive when the positions close.")
+        return 2
+
+    def _day(v):
+        d = pd.to_datetime(str(v), errors="coerce", utc=True)
+        return None if pd.isna(d) else d.normalize()
+
+    # Join on (symbol, day). The mode flattens at the close, so a symbol cannot
+    # have two open entries in one session and the pair is unique in practice.
+    by_key = {}
+    for c in closed:
+        k = (str(c.get("symbol", "")).upper(), _day(c.get("opened_at") or c.get("ts")))
+        if k[1] is not None:
+            by_key.setdefault(k, c)
+
+    out, unmatched = [], 0
+    for b in buys:
+        k = (str(b.get("symbol", "")).upper(), _day(b.get("ts")))
+        c = by_key.get(k)
+        if c is None:
+            unmatched += 1
+            continue
+        try:
+            ret = float(c.get("pnl_pct"))
+        except (TypeError, ValueError):
+            continue
+        out.append({"symbol": k[0], "day": k[1],
+                    "score": b.get("sentiment_score"),
+                    "finbert": b.get("finbert_score"),
+                    "ret": ret, "exit_reason": c.get("exit_reason") or "?",
+                    "mfe": c.get("mfe_pct"), "mae": c.get("mae_pct")})
     if not out:
-        print("No shadow rows could be matched to price data yet — the most "
-              "recent session may not have closed.")
+        print(f"{len(buys)} news-driven buys, none matched to a closed trade "
+              "yet — the positions are still open.")
         return 2
 
     res = pd.DataFrame(out)
-    wins = (res.ret_session > 0).mean() * 100
-    print("=== what the LIVE gate would have done (entry → same-day close) ===")
-    print(f"  decisions matched : {len(res)}")
-    print(f"  win rate          : {wins:.1f}%")
-    print(f"  mean per trade    : {res.ret_session.mean():+.3f}%")
-    print(f"  median            : {res.ret_session.median():+.3f}%")
-    print(f"  best / worst      : {res.ret_session.max():+.2f}% / {res.ret_session.min():+.2f}%")
-    print(f"  total (unweighted): {res.ret_session.sum():+.2f}%")
+    print(f"=== what news-driven mode ACTUALLY did (n={len(res)}"
+          + (f", {unmatched} still open" if unmatched else "") + ") ===")
+    print(f"  span              : {str(res.day.min())[:10]} .. {str(res.day.max())[:10]}")
+    print(f"  names             : {res.symbol.nunique()}")
+    print(f"  win rate          : {(res.ret > 0).mean() * 100:.1f}%")
+    print(f"  mean per trade    : {res.ret.mean():+.3f}%")
+    print(f"  median            : {res.ret.median():+.3f}%")
+    print(f"  best / worst      : {res.ret.max():+.2f}% / {res.ret.min():+.2f}%")
+    print(f"  total (unweighted): {res.ret.sum():+.2f}%")
+    if res["exit_reason"].notna().any():
+        print("\n  exits:", ", ".join(f"{k}={v}" for k, v in
+                                      res.exit_reason.value_counts().items()))
+
     if res["score"].notna().any():
         print("\n=== by the LLM's news score ===")
         for lo, hi in [(0, 70), (70, 80), (80, 90), (90, 101)]:
             sub = res[(res.score >= lo) & (res.score < hi)]
             if len(sub):
                 print(f"  score {lo}-{min(hi,100):3d}  n={len(sub):4d}  "
-                      f"win%={100*(sub.ret_session>0).mean():5.1f}  "
-                      f"mean={sub.ret_session.mean():+6.3f}%")
+                      f"win%={100*(sub.ret>0).mean():5.1f}  "
+                      f"mean={sub.ret.mean():+6.3f}%")
     if res["finbert"].notna().any():
         agree = res.dropna(subset=["score", "finbert"])
         if len(agree) >= 20:
             print(f"\n=== LLM vs FinBERT (n={len(agree)}) ===")
             gap = (agree.score - agree.finbert).abs()
-            close_, far = agree[gap <= 15], agree[gap > 15]
-            for lbl, sub in [("they agree (gap<=15)", close_),
-                             ("they disagree (gap>15)", far)]:
+            for lbl, sub in [("they agree (gap<=15)", agree[gap <= 15]),
+                             ("they disagree (gap>15)", agree[gap > 15])]:
                 if len(sub):
                     print(f"  {lbl:24s} n={len(sub):4d}  "
-                          f"win%={100*(sub.ret_session>0).mean():5.1f}  "
-                          f"mean={sub.ret_session.mean():+6.3f}%")
+                          f"win%={100*(sub.ret>0).mean():5.1f}  "
+                          f"mean={sub.ret.mean():+6.3f}%")
             print("  (if disagreement marks the losers, the cross-check is worth "
                   "promoting from advisory)")
 
-    print("\nCosts are NOT modelled. A same-session round trip pays spread plus")
-    print("fees every single time, so a mean below roughly +0.10%/trade is a")
-    print("losing strategy once it is real. And a few weeks is not a sample —")
-    print("this tells you whether to keep collecting, not whether to go live.")
+    print("\nP&L here is net of nothing but the simulator's own fill model, which")
+    print("is optimistic — a same-session round trip pays spread plus fees every")
+    print("time. And a few weeks is not a sample: this tells you whether to keep")
+    print("collecting, not whether to go live.")
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--shadow", action="store_true",
-                    help="score data/news_shadow.jsonl (the LIVE gate's decisions) "
-                         "instead of running the offline FinBERT study")
+    ap.add_argument("--live", action="store_true",
+                    help="score what the mode actually traded (audit.jsonl joined "
+                         "to trades.jsonl) instead of the offline FinBERT study")
     ap.add_argument("--symbols", help="comma-separated; default = the liquidity pool")
     ap.add_argument("--days", type=int, default=180, help="lookback window (default 180)")
     ap.add_argument("--news-days", type=int, default=None,
@@ -368,10 +390,10 @@ def main() -> int:
     ap.add_argument("--csv", help="write the raw name-day panel here")
     args = ap.parse_args()
 
-    # Shadow scoring needs neither Finnhub nor FinBERT — it reads a log the live
-    # loop already wrote — so it is handled before those preconditions.
-    if args.shadow:
-        return report_shadow()
+    # Live scoring needs neither Finnhub nor FinBERT — it reads what the loop
+    # already wrote — so it is handled before those preconditions.
+    if args.live:
+        return report_live()
 
     from src.config import settings
     threshold = args.threshold if args.threshold is not None else settings.news_driven_min_score

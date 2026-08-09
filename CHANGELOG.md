@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 2026-08-08 — 删掉影子模式：模拟盘本来就在产出同一份数据
+
+机主的质疑是对的：影子模式作为**测量**手段是多余的。
+
+`audit.record` 会把 `extra` 摊平进每一行，所以每一笔买入本来就记了 `sentiment_score`（新闻主导模式下就是新闻读数）、`finbert_score`、`news_driven` 和 `call_rvol`；`trades.jsonl` 那边记了实际盈亏、MFE/MAE 和离场方式。**这正是 `news_shadow.jsonl` 要写的那份数据，而且多了真实成交和 P&L。** 影子模式是它的严格子集。
+
+代价不是假设的：这条平行路径今天已经长出过一个 bug —— 它挡住了买入却没挡住 15:45 收盘平仓，于是一个宣称「不下任何单」的模式仍然会卖掉你的持仓。多一条平行路径就多一处两边可能不同步的地方。
+
+删除范围：`news_driven.py` 的 `shadow_log_path` / `record_shadow` / describe 分支、`main.py` 的整段影子分支、`config.py` 的 `news_driven_shadow`、预检那条 INFO 检查、`.env.example` 段落、网页和原生面板的开关，以及后端那个「开新闻主导时连带开影子」的保护。
+
+**替代品是 `--live`**：`scripts/news_factor_study.py` 现在把 audit 的买入按 (代码, 日期) join 上 trades 的结果，直接算胜率、按新闻分分桶、以及 LLM 与 FinBERT 分歧时的表现。不需要拉行情 —— 盈亏是记录下来的真实值，不是用收盘价推的。
+
+**新的第一姿势是模拟盘。** 预检在 `TRADE_ENV=SIMULATE` 时报 INFO 并说明「下的是模拟单」；原生面板的红色警告改成盯 **新闻主导 + 实盘** 这个组合，而不是原来的「影子关了」—— 在模拟盘上开这个模式本来就是它该被评估的方式，警告不该在那时候响。
+
+**升级注意**：`NEWS_DRIVEN_SHADOW` 这个设置不再存在。原本靠它挡着不下单的配置，升级后新闻主导模式会真的开始下单（在模拟盘上就是模拟单）。
+
+
 ## 2026-08-08 — 移除 SEC EDGAR，改用 OpenD 转发的申报 + 分析师动作
 
 机主要求：这个机器人不要跟美国政府的服务通信。EDGAR 整条链路删除（`src/sec_edgar.py`、config 四项、`ai_validator` 里的调用、预检检查、`.env.example` 段落、设置面板里的开关和 UA 输入框）。
