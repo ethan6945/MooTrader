@@ -46,6 +46,7 @@ PY = sys.executable
 CHECKS = {
     "freeze":     ("scripts/test_param_freeze.py", True),
     "callchains": ("scripts/test_freeze_callchains.py", True),
+    "identity":   ("scripts/test_identity.py", True),
     "redaction":  ("scripts/test_env_redaction.py", True),
     "budget":     ("scripts/test_auto_budget.py", True),
     "baseline":   ("scripts/config_baseline.py", False),
