@@ -58,7 +58,16 @@ _K_HISTORY = "auto_budget_history"        # audit list of applied changes
 # ── toggle + armed-state readers ─────────────────────────────────────────────
 
 def enabled() -> bool:
-    """Runtime db-state toggle wins (web, no restart); else the .env default."""
+    """Runtime db-state toggle wins (web, no restart); else the .env default.
+
+    The param freeze overrides both. Without that, the db toggle was a freeze
+    bypass: `AUTO_BUDGET_ENABLED=false` in .env plus one panel click writing
+    `auto_budget_enabled: True` to db-state, and compounding was live again —
+    the db value is read first, so the .env setting never got a say.
+    """
+    from . import runtime_config
+    if runtime_config.frozen():
+        return False
     try:
         v = db.get_state().get(_K_ENABLED)
         if v is not None:
@@ -137,14 +146,24 @@ def compute_target(seed: float, base_real: float, realized: float,
 
 # ── arm / disarm ─────────────────────────────────────────────────────────────
 
-def arm(seed: float | None = None) -> dict:
+def arm(seed: float | None = None, force: bool = False) -> dict:
     """Capture the compounding reference line. seed defaults to the live budget.
+
+    Refuses while the param freeze is on: arming is what makes the budget start
+    moving on its own, which is the whole thing the freeze exists to stop.
+    `disarm()` is deliberately NOT guarded — it only ever moves toward less
+    autonomy, and blocking the safe direction helps nobody.
 
     Idempotent-ish: re-arming overwrites the reference (use when the owner
     deposits/withdraws capital and wants a fresh starting line). Returns the
     stored reference.
     """
-    from . import risk_manager
+    from . import risk_manager, runtime_config
+    if runtime_config.frozen() and not force:
+        raise runtime_config.ParamsFrozen(
+            "param freeze active (PARAMS_FROZEN) — refused to arm auto-budget "
+            "compounding. Fix sandbox↔backtest_v3 parity first."
+        )
     s = float(seed) if seed is not None else risk_manager.budget_usd()
     state = db.get_state()
     base = float(state.get("realized_pnl_total") or 0.0)
@@ -179,18 +198,23 @@ def recompute_and_apply() -> dict:
 
     Returns a structured result (also handy for tests / the web panel).
     """
-    if not enabled():
-        return {"applied": False, "reason": "disabled"}
-
-    # Phase 0 freeze. budget_usd is written straight to db-state here, not via
-    # runtime_config.set_param, so AUTO_APPLY_PARAMS never covered it — the
-    # 2026-08-10 audit found an armed seed of $5,000 that would have silently
-    # walked an owner-set $10,000 budget back to ~$4,549 at the next daily
-    # close. The budget also drives derive_max_positions(), so an unattended
-    # write here changes how many names the bot holds at once.
+    # Phase 0 freeze, checked BEFORE enabled(). enabled() already returns False
+    # while frozen, so testing it first would report "disabled" — technically
+    # true, but it sends whoever reads the log looking for a toggle that is not
+    # the reason. Say which gate actually stopped it.
+    #
+    # This is its own gate because budget_usd is written straight to db-state
+    # here, not through runtime_config.set_param, so AUTO_APPLY_PARAMS never
+    # covered it. The 2026-08-10 audit found an armed seed of $5,000 that would
+    # have walked an owner-set $10,000 budget back to ~$4,549 at the next daily
+    # close — and the budget used to drive derive_max_positions() too, so an
+    # unattended write here also changed how many names the bot holds at once.
     from . import runtime_config
     if runtime_config.frozen():
         return {"applied": False, "reason": "params frozen (PARAMS_FROZEN)"}
+
+    if not enabled():
+        return {"applied": False, "reason": "disabled"}
 
     from . import risk_manager
 

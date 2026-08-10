@@ -1192,18 +1192,16 @@ def api_budget():
         assert val > 0
     except Exception:
         return jsonify({"ok": False, "error": "bad value"}), 400
-    # Re-anchor the DD breaker's peak to the NEW capital base + realized PnL.
-    # 2026-07-07: a peak recorded under the old budget is meaningless under the
-    # new one — after a 50k→5k change the bot computed a phantom 90% drawdown
-    # and halted all new entries until the 7-day auto-release.
-    def _apply(s: dict) -> dict:
-        realized = float(s.get("realized_pnl_total") or 0.0)
-        base = float(s.get("auto_budget_seed") or val)
-        return {"budget_usd": val,
-                "peak_equity": max(base + realized, 1.0),
-                "halt_started_at": None}
-    db.atomic_state(_apply)
-    return jsonify({"ok": True, "budget": val,
+    # Re-anchoring the DD breaker's peak to the new capital base is NOT optional
+    # — see risk_manager.set_budget for both ways it fails when skipped. That
+    # logic used to be inlined right here, which is exactly why a later writer
+    # elsewhere missed it. One path now, for every caller.
+    from src import risk_manager
+    try:
+        res = risk_manager.set_budget(val, source="web-panel")
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "budget": val, "peak_equity": res["peak_equity"],
                     "note": "预算已更新，回撤峰值已重锚到新资金基数"})
 
 
@@ -1219,6 +1217,17 @@ def api_auto_budget():
         return jsonify({"ok": True, **auto_budget.status()})
     body = request.json or {}
     action = (body.get("action") or "").lower()
+    # While the param freeze is on, refuse anything that turns compounding back
+    # ON, and say so. auto_budget.enabled() already ignores the db toggle under
+    # the freeze, so letting the write succeed would show the panel a state the
+    # bot does not act on — worse than an error.
+    from src import runtime_config
+    _turning_on = action == "arm" or (
+        "enabled" in body and not action and bool(body["enabled"]))
+    if _turning_on and runtime_config.frozen():
+        return jsonify({"ok": False, "error": (
+            "参数冻结中 (PARAMS_FROZEN)，不能启用自动复利预算。"
+            "先修好 sandbox↔backtest_v3 一致性再解冻。")}), 409
     try:
         if "enabled" in body and not action:
             db.update_state({"auto_budget_enabled": bool(body["enabled"])})

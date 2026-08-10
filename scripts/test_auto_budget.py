@@ -24,6 +24,13 @@ db.update_state = _update
 # that too so budget_usd reflects our fake state.
 risk_manager._load_state = lambda: dict(_STATE)
 
+# Sections 1-4 exercise the compounding MECHANISM (arm, hysteresis, clamps,
+# equity baseline). The Phase-0 freeze blocks all of it, so lift the freeze for
+# them; section 5 turns it back on and asserts it actually holds. Patched here
+# rather than mid-file because arm() is first reached in section 2.
+from src import runtime_config as _rc
+_rc.frozen = lambda: False
+
 PASS = 0
 FAIL = 0
 def check(name, cond):
@@ -87,11 +94,7 @@ _STATE["peak_equity"] = 6000.0
 check("current_drawdown_pct == 0 at new high", abs(risk_manager.current_drawdown_pct()) < 1e-6)
 
 # ── 3. recompute_and_apply hysteresis + apply ────────────────────────────────
-# The Phase-0 freeze (PARAMS_FROZEN) blocks this whole path — see section 5.
-# Section 3 tests the compounding MECHANISM, so run it with the freeze lifted.
-from src import runtime_config as _rc
-_rc.frozen = lambda: False
-
+# Freeze already lifted at the top of the file — see the note there.
 _STATE.clear()
 _STATE["budget_usd"] = 4500.0
 _STATE["auto_budget_enabled"] = True

@@ -134,5 +134,69 @@ check("auto_budget refuses while frozen", r.get("applied") is False)
 check("auto_budget names the freeze", "frozen" in str(r.get("reason", "")))
 check("auto_budget: owner's $10,000 survives", _STATE["budget_usd"] == 10000.0)
 
+# ── 6. the db toggle must not out-vote the freeze ────────────────────────────
+# auto_budget.enabled() reads db-state BEFORE .env, so one panel click writing
+# auto_budget_enabled=True to db resurrected compounding even with
+# AUTO_BUDGET_ENABLED=false in .env. The freeze has to win over both.
+_STATE["auto_budget_enabled"] = True
+check("db toggle cannot re-enable auto_budget while frozen",
+      auto_budget.enabled() is False)
+
+# ── 7. arming is blocked; disarming never is ─────────────────────────────────
+# arm() starts the budget moving on its own — the exact autonomy the freeze
+# removes. disarm() only ever reduces autonomy, so blocking it would help nobody.
+_STATE.pop("auto_budget_seed", None)        # section 5 left one behind
+_STATE.pop("auto_budget_base_realized", None)
+try:
+    auto_budget.arm(5000.0)
+    check("arm() refused while frozen", False)
+except rc.ParamsFrozen:
+    check("arm() refused while frozen", True)
+check("arm() wrote no seed", _STATE.get("auto_budget_seed") is None)
+
+_STATE["auto_budget_seed"] = 5000.0
+_STATE["auto_budget_base_realized"] = -100.0
+auto_budget.disarm()
+check("disarm() still works while frozen",
+      _STATE.get("auto_budget_seed") is None)
+
+# ── 8. setting the budget re-anchors the drawdown peak ───────────────────────
+# Skipping the re-anchor silently disables the DD breaker. Upward it pins
+# drawdown at 0% forever (2026-08-10, budget $4,740 → $10,000 left peak at
+# $5,000, so DD_HALT_PCT=18 needed a 59% real loss to fire); downward it reads a
+# phantom drawdown and halts everything (2026-07-07, $50k → $5k). The logic used
+# to live inline in the web handler, which is how a later writer skipped it.
+_STATE.clear()
+_STATE["budget_usd"] = 4740.82
+_STATE["peak_equity"] = 5000.0
+_STATE["realized_pnl_total"] = -625.47
+_STATE["halt_started_at"] = "2026-08-01T00:00:00"
+
+# atomic_state is the write path set_budget uses — fake it over _STATE.
+def _atomic(fn):
+    _STATE.update(fn(dict(_STATE)))
+    return dict(_STATE)
+db.atomic_state = _atomic
+
+res = risk_manager.set_budget(10000.0, source="test")
+check("set_budget writes the budget", _STATE["budget_usd"] == 10000.0)
+check("set_budget re-anchors peak to budget+realized",
+      abs(_STATE["peak_equity"] - (10000.0 - 625.47)) < 0.01)
+check("set_budget clears a stale halt", _STATE["halt_started_at"] is None)
+check("drawdown is 0 right after re-anchor, not negative or stale",
+      abs(risk_manager.current_drawdown_pct()) < 1e-6)
+
+# The breaker must now be reachable: an 18% fall from the NEW peak, not from a
+# forgotten smaller one.
+_STATE["realized_pnl_total"] = -625.47 - 1700.0     # ~18% below the new peak
+check("DD breaker fires again after re-anchoring",
+      risk_manager.current_drawdown_pct() > 18.0)
+
+try:
+    risk_manager.set_budget(0, source="test")
+    check("set_budget rejects a non-positive budget", False)
+except ValueError:
+    check("set_budget rejects a non-positive budget", True)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

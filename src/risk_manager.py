@@ -132,6 +132,56 @@ def budget_usd() -> float:
     return settings.account_usd
 
 
+def set_budget(value: float, source: str) -> dict:
+    """The ONLY way to change deployable capital. Re-anchors the DD breaker.
+
+    Changing the budget without moving `peak_equity` with it silently disables
+    the drawdown circuit breaker, because `current_drawdown_pct()` measures
+    equity against a peak recorded under the OLD capital base:
+
+      • budget DOWN (50k → 5k): the stale high peak reads as a phantom ~90%
+        drawdown and halts all entries — the 2026-07-07 incident.
+      • budget UP (4.7k → 10k): equity immediately exceeds the stale low peak,
+        so drawdown pins at 0.0% and the breaker can never fire. On 2026-08-10
+        this left DD_HALT_PCT=18 needing a 59% real loss before it would trip.
+
+    That re-anchoring used to live inline inside the web /api/budget handler, so
+    it protected exactly one caller and silently missed every other. Both
+    failure modes above were caused by a writer that skipped it. It lives here
+    now; write `budget_usd` through this function and nowhere else.
+
+    Not blocked by the param freeze — setting capital is the owner's decision,
+    and the freeze exists to stop the bot retuning ITSELF. It is audited though,
+    so a budget change is never anonymous.
+    """
+    value = float(value)
+    if value <= 0:
+        raise ValueError(f"budget must be positive, got {value}")
+
+    def _apply(s: dict) -> dict:
+        realized = float(s.get("realized_pnl_total") or 0.0)
+        # While compounding is armed the equity baseline is the frozen seed, so
+        # the peak must be re-anchored to that same base — not to the new
+        # deployable budget, which would double-count realized PnL.
+        base = float(s.get("auto_budget_seed") or value)
+        return {"budget_usd": value,
+                "peak_equity": max(base + realized, 1.0),
+                "halt_started_at": None}
+
+    merged = db.atomic_state(_apply)
+    try:
+        from . import audit
+        audit.record("budget_change", reason=f"budget → ${value:,.0f} ({source})",
+                     extra={"budget_usd": value,
+                            "peak_equity": merged.get("peak_equity"),
+                            "source": source})
+    except Exception as e:
+        log.debug("budget audit record failed: %s", e)
+    log.info("budget set to $%.0f by %s — DD peak re-anchored to $%.0f",
+             value, source, merged.get("peak_equity", 0))
+    return {"budget_usd": value, "peak_equity": merged.get("peak_equity")}
+
+
 def equity_baseline() -> float:
     """Capital base for equity/drawdown math (peak_equity, current_drawdown_pct).
 

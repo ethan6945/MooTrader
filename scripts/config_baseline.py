@@ -74,11 +74,11 @@ def _same(a, b) -> bool:
     return abs(fa - fb) < 1e-9
 
 
-def read_env_file() -> dict:
-    """Parse .env directly. settings.* already folds in code defaults, so it
-    cannot tell 'owner set this' apart from 'nobody set it'."""
+def read_env_file(name: str = ".env") -> dict:
+    """Parse an env file directly. settings.* already folds in code defaults, so
+    it cannot tell 'owner set this' apart from 'nobody set it'."""
     out = {}
-    p = ROOT / ".env"
+    p = ROOT / name
     if not p.exists():
         return out
     for line in p.read_text().splitlines():
@@ -118,13 +118,103 @@ def provenance(history: list, key: str) -> dict:
     }
 
 
+# Keys that must not drift between .env and .env.example. A fresh install (and
+# the packaged .app on first run) gets .env.example, so any disagreement here
+# means a new user silently runs a different strategy than the one that was
+# tested. On 2026-08-10, 13 of these 15 disagreed: threshold 60 vs 70, TP 3.0
+# vs 10.0, 10 concurrent positions vs 5, single-name cap 40% vs 10%.
+EXAMPLE_MUST_MATCH = [
+    "ACCOUNT_USD", "RISK_PER_TRADE", "MAX_POSITIONS", "MAX_POSITION_PCT",
+    "DAILY_DRAWDOWN_STOP", "DD_HALT_PCT", "ENTRY_SCORE_THRESHOLD",
+    "SCAN_INTERVAL_MIN", "MAX_HOLD_DAYS", "TP_ATR_MULT", "SL_ATR_MULT",
+    "PARAMS_FROZEN", "AUTO_APPLY_PARAMS", "AUTO_BUDGET_ENABLED",
+    "MAX_POSITIONS_AUTOSCALE",
+]
+
+
+def check_budget_baseline(state: dict, env: dict) -> list[dict]:
+    """The drawdown breaker measures equity against `peak_equity`. If the budget
+    moves and the peak does not, the breaker silently stops working — upward it
+    pins drawdown at 0% forever, downward it reads a phantom drawdown and halts
+    everything. Both have happened here."""
+    out = []
+    try:
+        from src import risk_manager
+        peak = float(state.get("peak_equity") or 0.0)
+        budget = risk_manager.budget_usd()
+        realized = float(state.get("realized_pnl_total") or 0.0)
+        equity = risk_manager.equity_baseline() + realized
+    except Exception as e:
+        return [{"severity": "medium", "key": "peak_equity",
+                 "what": f"could not evaluate the drawdown baseline ({e})",
+                 "why": "the DD breaker cannot be verified",
+                 "action": "investigate before trading"}]
+
+    if peak <= 0:
+        out.append({
+            "severity": "medium", "key": "peak_equity",
+            "what": "peak_equity is unset",
+            "why": "current_drawdown_pct() returns 0 with no peak, so the DD "
+                   "breaker cannot fire at all.",
+            "action": "run risk_manager.set_budget(<budget>, 'baseline') to anchor it",
+        })
+    elif equity > peak * 1.001:
+        out.append({
+            "severity": "high", "key": "peak_equity",
+            "what": f"equity ${equity:,.0f} already exceeds peak_equity "
+                    f"${peak:,.0f} — the peak is stale, from a smaller budget",
+            "why": "Drawdown is measured against this peak, so it pins at 0.0% "
+                   "and the breaker can never trip until the account falls "
+                   "below the OLD, smaller base.",
+            "action": "risk_manager.set_budget(<budget>, 'reanchor') — it "
+                      "re-anchors the peak as part of setting the budget",
+        })
+
+    # ACCOUNT_USD is the fallback when the db key is missing. If they disagree,
+    # losing or resetting db-state silently changes deployable capital.
+    env_budget = _num(env.get("ACCOUNT_USD"))
+    if env_budget is not None and abs(env_budget - budget) > 1e-6:
+        out.append({
+            "severity": "medium", "key": "ACCOUNT_USD",
+            "what": f"ACCOUNT_USD={env_budget:,.0f} in .env but live budget is "
+                    f"${budget:,.0f} (db-state budget_usd)",
+            "why": "ACCOUNT_USD is the fallback if the db key is ever missing; "
+                   "while they disagree, a db reset silently changes capital.",
+            "action": f"set ACCOUNT_USD={budget:,.0f} in .env",
+        })
+    return out
+
+
 def collect() -> dict:
     state = db.get_state()
     history = list(state.get("param_history") or [])
     env = read_env_file()
+    example = read_env_file(".env.example")
     readme = read_readme_table()
 
     rows, findings = [], []
+
+    findings += check_budget_baseline(state, env)
+
+    for key in EXAMPLE_MUST_MATCH:
+        have, want = env.get(key), example.get(key)
+        if want is None:
+            findings.append({
+                "severity": "medium", "key": key,
+                "what": f"{key} is missing from .env.example",
+                "why": "A fresh install gets .env.example. An undocumented key "
+                       "means new users silently run the code default.",
+                "action": f"add {key}={have if have is not None else '<value>'} "
+                          f"to .env.example",
+            })
+        elif have is not None and not _same(have, want):
+            findings.append({
+                "severity": "medium", "key": key,
+                "what": f"{key}: .env has {have}, .env.example has {want}",
+                "why": "A fresh install would run a different strategy than the "
+                       "one being tested here.",
+                "action": f"set {key}={have} in .env.example",
+            })
 
     for key, (env_name, attr) in TRACKED.items():
         db_val = state.get(f"param_{key}")
