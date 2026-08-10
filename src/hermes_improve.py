@@ -42,6 +42,34 @@ def _cmd(args: list, cwd=ROOT, timeout=300) -> subprocess.CompletedProcess:
 
 # ── DIAGNOSE ──────────────────────────────────────────────
 
+_SECRET_MARKERS = ("KEY", "SECRET", "PASSWORD", "TOKEN", "PWD")
+_REDACTED = "<redacted-by-snapshot>"
+
+
+def is_secret_key(name: str) -> bool:
+    """True for .env keys whose VALUE must never be copied anywhere."""
+    return any(s in name.upper() for s in _SECRET_MARKERS)
+
+
+def redacted_env_text(text: str) -> str:
+    """.env content with every secret VALUE replaced, keys and layout intact.
+
+    Keys and comments are kept so a snapshot still answers "what was configured
+    at the time" and so rollback() can still read back non-secret values; only
+    the credentials are removed.
+    """
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k, _, v = line.partition("=")
+            if is_secret_key(k) and v.split("#")[0].strip():
+                out.append(f"{k}={_REDACTED}")
+                continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
 def diagnose() -> dict:
     """Collect full bot state for AI analysis. Returns JSON-serializable dict."""
     account = _load_json(DATA / "account.json")
@@ -56,8 +84,7 @@ def diagnose() -> dict:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                # Skip secrets
-                if any(s in k.upper() for s in ("KEY", "SECRET", "PASSWORD", "TOKEN")):
+                if is_secret_key(k):
                     continue
                 env[k.strip()] = v.split("#")[0].strip()
 
@@ -263,14 +290,23 @@ _RUNTIME_KEY_MAP.update({v: v for v in set(_RUNTIME_KEY_MAP.values())})
 
 
 def snapshot_before() -> Path:
-    """Save current .env and account.json for rollback."""
+    """Save current .env (REDACTED) and account.json for rollback.
+
+    2026-08-10: this used to shutil.copy the .env verbatim, so every snapshot
+    was a second plaintext copy of DEEPSEEK_API_KEY, TAVILY_API_KEY,
+    TELEGRAM_TOKEN and WEB_PASSWORD sitting in data/hermes_snapshots/. Three
+    such copies existed. data/ is gitignored so none reached the public repo,
+    but "the credential is in four files instead of one" is not a property
+    anybody chose. rollback() only ever reads back non-secret keys (tunable
+    params route through runtime_config, not .env), so redacting costs nothing.
+    """
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap = SNAPSHOT_DIR / ts
     snap.mkdir()
     env_file = ROOT / ".env"
     if env_file.exists():
-        shutil.copy(env_file, snap / ".env")
+        (snap / ".env").write_text(redacted_env_text(env_file.read_text()))
     account_file = DATA / "account.json"
     if account_file.exists():
         shutil.copy(account_file, snap / "account.json")
@@ -396,7 +432,17 @@ def rollback() -> dict:
             s = line.strip()
             for k in env_keys:
                 if s.startswith(f"{k}="):
-                    old_vals[k] = s.split("=", 1)[1]
+                    val = s.split("=", 1)[1]
+                    # Snapshots redact secret values (see snapshot_before). If
+                    # one somehow reached applied_env, restoring the placeholder
+                    # would overwrite a live credential with literal text —
+                    # worse than not rolling that key back at all. Skip it.
+                    if is_secret_key(k) or val.strip() == _REDACTED:
+                        print(f"rollback: refusing to restore {k} from a "
+                              f"redacted snapshot — set it by hand",
+                              file=sys.stderr)
+                        continue
+                    old_vals[k] = val
         if old_vals:
             env_file = ROOT / ".env"
             lines = env_file.read_text().splitlines()

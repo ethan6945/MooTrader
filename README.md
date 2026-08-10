@@ -403,12 +403,12 @@ base risk $ = available capital × RISK_PER_TRADE(5%)
    × with-trend boost       (only "strong bull + low VIX" → 1.4×)
 
 shares by risk  = risk $ ÷ (entry − stop)
-shares by cap   = capital × MAX_POSITION_PCT(40%) ÷ entry   ← single-name concentration cap
+shares by cap   = capital × MAX_POSITION_PCT(10%) ÷ entry   ← single-name concentration cap
 final shares    = min(the two), then adjusted by VIX (>25 halve, >35 quarter)
 ```
 
 - **Capital basis**: uses your allotted budget `ACCOUNT_USD`, but never exceeds live account equity. Budget is editable in the web panel and takes effect on the next scan.
-- **The 40% single-name cap is the real gap guard** — stops can't stop a gap (price jumps straight past the stop), so you protect yourself by "not betting too big," not by "watching more closely."
+- **The single-name cap is the real gap guard** — stops can't stop a gap (price jumps straight past the stop), so you protect yourself by "not betting too big," not by "watching more closely." It was 40% until 2026-08-10 and is now **10%**; at that cap the two together produce ~0.5–0.6% account risk per trade and ~3% across five full slots. Note the cap binds before `RISK_PER_TRADE` does for any normal stop distance, so it — not the 5% risk knob — is what actually sets position size.
 
 ### Step 4: Exit management
 
@@ -547,7 +547,7 @@ All config lives in `.env` (the template [`.env.example`](.env.example) document
 | `REAL_USE_SOFT_EXITS` | `true` | REAL also uses soft exits, matching backtest parity |
 | `DYNAMIC_UNIVERSE_ENABLED` | `true` | Rebuild the watchlist weekly by 6-1 momentum |
 | `UNIVERSE_TOP_N` | `15` | Pick 15 (10/15/20 plateau tested: 15 is best) |
-| `AUTO_APPLY_PARAMS` | `true` | Suggestions that pass the two-window backtest and are in-guardrail auto-apply + auto-roll-back on regression |
+| `AUTO_APPLY_PARAMS` | `false` | **Frozen 2026-08-10** together with everything else that writes params — see `PARAMS_FROZEN`. Was `true` |
 | `REGIME_BULL_MULT` | `1.4` | With-trend boost (only strong bull + low VIX) |
 | `HEALTH_CHECK_ENABLED` | `true` | Probe API/subscription every 30 min, edge-triggered Telegram if it drops |
 | `FAST_STOP_SECONDS` | `60` | Fast-stop loop interval |
@@ -569,7 +569,7 @@ All config lives in `.env` (the template [`.env.example`](.env.example) document
 | `OPTIONS_FLOW_ENABLED` | Options flow is only consumed by smart_exit / sentiment (both off), so enabling it alone is pointless |
 | `STALL_OUT_ENABLED` | Stall exit. The validation engine doesn't have it, and the max-hold bucket nets a profit; the only stall exits in live all lost |
 | `SMART_REGIME_ENABLED` | Hysteresis-smoothed regime label (500-day backtest: flips −89%). Off to stay byte-for-byte identical to the backtest |
-| `AUTO_BUDGET_ENABLED` | Compounding budget: realized profit auto-rolls into the budget (guardrails: seed×0.5–5, equity cap, hysteresis step) |
+| `AUTO_BUDGET_ENABLED` | Compounding budget: realized profit auto-rolls into the budget (guardrails: seed×0.5–5, equity cap, hysteresis step). **Disarmed 2026-08-10** — it writes `budget_usd` directly rather than through the param path, so `AUTO_APPLY_PARAMS` never covered it, and a seed frozen at an old value silently walks a hand-set budget back. Budget also fed the position-slot count until that was decoupled |
 | `CASH_YIELD_*` | Park bear-market idle cash in a T-bill ETF (SGOV) for yield, sold back to cash when the market turns bullish |
 | `INVERSE_SLEEVE_ENABLED` | Inverse-ETF hedge (a cash account can't short). **The only feature that can lose money in a new way** — must clear its own two-window backtest gate first |
 | `USE_SCALE_OUT` | Scale-out is **intentionally idle**: backtests show a lower ladder that actually triggers reduces $/day (banking too early kills fat tails) |
@@ -586,10 +586,10 @@ All config lives in `.env` (the template [`.env.example`](.env.example) document
 | Param | Value | Param | Value |
 |------|----|------|----|
 | `ENTRY_SCORE_THRESHOLD` | 70 | `TP_ATR_MULT` | 10.0 |
-| `SCAN_INTERVAL_MIN` | 30 | `SL_ATR_MULT` | 3.5 |
+| `SCAN_INTERVAL_MIN` | 15 | `SL_ATR_MULT` | 2.8 |
 | `TIMEFRAME` | HOUR_1 | `MAX_GAP_PCT` | 4.0 |
-| `MAX_HOLD_DAYS` | 7 | `RISK_PER_TRADE` | 0.05 |
-| `MAX_POSITIONS` | 5 | `MAX_POSITION_PCT` | 0.40 |
+| `MAX_HOLD_DAYS` | 4 | `RISK_PER_TRADE` | 0.05 |
+| `MAX_POSITIONS` | 5 | `MAX_POSITION_PCT` | 0.10 |
 | `DAILY_DRAWDOWN_STOP` | 0.06 | `DD_HALT_PCT` | 18 |
 
 </details>

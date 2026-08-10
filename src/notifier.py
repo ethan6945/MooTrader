@@ -63,7 +63,12 @@ def send(text: str) -> None:
             if attempt < 2:
                 time.sleep(3)
             else:
-                log.warning("telegram send failed: %s", e)
+                # Scrub explicitly, don't lean on the root filter: requests
+                # embeds the failing URL in its exception text and the Telegram
+                # API carries the bot token in that URL's path. This exact line
+                # put the live token into trader.log 14× and scheduler.log 6×.
+                from . import log_redact
+                log.warning("telegram send failed: %s", log_redact.scrub(str(e)))
 
 
 def signal_msg(signal, ai_reason: str, qty: int) -> str:

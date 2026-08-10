@@ -231,6 +231,11 @@ class Settings:
     # constraint at small budgets.
     slot_target_usd: float = _float("SLOT_TARGET_USD", 1000.0)
     max_positions_cap: int = _int("MAX_POSITIONS_CAP", 10)
+    # 2026-08-10: budget and concurrency are now decoupled by default — see
+    # derive_max_positions(). Raising the budget to $10,000 would otherwise have
+    # taken the bot from 5 concurrent names to 10 with nothing validating it.
+    max_positions_autoscale: bool = os.getenv(
+        "MAX_POSITIONS_AUTOSCALE", "false").lower() in ("1", "true", "yes")
     daily_drawdown_stop: float = _float("DAILY_DRAWDOWN_STOP", 0.03)
 
     # Concentration mode — open fewer new names per scan, pyramid into winners.
@@ -560,6 +565,23 @@ class Settings:
     # (default), every change still queues for owner approval.
     auto_apply_params: bool = os.getenv("AUTO_APPLY_PARAMS", "false").lower() in ("1", "true", "yes")
 
+    # ── Phase 0 param freeze (2026-08-10) ──
+    # AUTO_APPLY_PARAMS alone does not stop every writer. The 2026-08-10 audit
+    # found SEVEN paths that mutate live strategy params — approvals, autopilot,
+    # hermes_improve, optimizer_ai, optimize_system (twice), lever_recheck — and
+    # one of them (optimize_system._inject) wrote param_* DIRECTLY, bypassing
+    # set_param's bounds check AND the param_history audit trail. The evidence
+    # it left: db has param_sl_atr_mult=3.0 live while param_history marks that
+    # record active=false, and param_max_position_pct=0.36 has no provenance
+    # record at all. Effective config and audit trail have already diverged.
+    #
+    # This flag is the single choke point that closes all of them at once. It
+    # defaults ON: sandbox↔backtest_v3 parity is currently BREACH (20% signal
+    # match, 83.5% PnL gap — data/sandbox_vs_backtest.json), so no engine here
+    # is qualified to tune production. Turn it off only after parity passes and
+    # a human baseline has been re-established.
+    params_frozen: bool = os.getenv("PARAMS_FROZEN", "true").lower() in ("1", "true", "yes")
+
     # ── Phase 1 (2026-06-11): rule-based dynamic universe ──
     # Weekly: watchlist := top N of the liquidity pool (config/universe_pool.json)
     # by 6-1 momentum (src/universe.py). OFF by default — flip
@@ -781,15 +803,29 @@ _check_scale_out(settings.sl_atr_mult, settings.tp_atr_mult)
 
 
 def derive_max_positions(capital: float) -> int:
-    """Position-slot cap derived from allocated capital, so changing the budget
-    recomputes how many concurrent names the bot may hold (req#1) instead of a
-    hardcoded number. `max_positions` is the floor (never fewer slots than today);
-    slots scale by capital / SLOT_TARGET_USD up to `max_positions_cap` (≈ the
-    watchlist size, to avoid over-diversification). At the $4.5k default the raw
-    slot math gives round(4500/1000)=4, which the max_positions floor clamps back
-    up to 5 — so this returns exactly settings.max_positions and live + backtest
-    behaviour is unchanged until capital grows past ~$5.5k. The cash wall stays
-    binding at small budgets."""
+    """How many names may be held at once.
+
+    Default (MAX_POSITIONS_AUTOSCALE off): exactly `max_positions`, whatever the
+    budget is. Capital and concurrency are separate decisions — more money does
+    not mean the strategy can suddenly supervise twice as many positions, and
+    the evidence for how many it can supervise comes from trade results, not
+    from the account balance.
+
+    This used to autoscale unconditionally: slots = round(capital /
+    SLOT_TARGET_USD), floored at `max_positions`, capped at `max_positions_cap`.
+    At $4,740 that resolved to 5, so nobody saw it move — but raising the budget
+    to $10,000 would silently have made it 10. That is a strategy change (double
+    the concurrent names, half the average position, sector caps suddenly
+    binding at a different fraction) arriving through a capital field, with no
+    backtest behind it and no line in any changelog. The 2026-08-10 audit caught
+    it one step before it fired.
+
+    Set MAX_POSITIONS_AUTOSCALE=true to restore the old coupling — but validate
+    the slot count you expect first. Shared by live sizing and all three
+    backtest engines, so the two stay in parity either way.
+    """
+    if not settings.max_positions_autoscale:
+        return settings.max_positions
     slot = settings.slot_target_usd
     if slot <= 0:
         return settings.max_positions

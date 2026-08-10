@@ -5,9 +5,15 @@ aggregation, and DIRECT auto-apply (owner directive 2026-07-07: no approval
 step — "确认是最优化了就直接套用").
 
 RUNS: Weekly via cron (before the Monday 20:00 KL autopilot chain).
-MECHANISM: params are injected into db-state param_* keys (sandbox reads
-runtime_config); the winner is applied through runtime_config.set_param() so
-param_history records the change and Telegram is notified (铁律: never silent).
+MECHANISM: each combo is pushed as an EPHEMERAL thread-local override that the
+sandbox reads through runtime_config; db-state is never written by the sweep.
+The winner would be applied through runtime_config.set_param() (param_history
+records it, Telegram notified — 铁律: never silent), but see FREEZE below.
+
+FREEZE (2026-08-10): while settings.params_frozen the sweep still runs and
+still reports its winner, but applies nothing. sandbox↔backtest_v3 parity is
+currently BREACH (20% signal match, 83.5% net-PnL gap), so a winner chosen on
+one side of that pair is not evidence about the other.
 
 ARCHITECTURE (v2, 2026-07-07 audit rewrite):
   1. Rolling 30-day windows over the last 60 days (matches the 2026-07-02
@@ -20,8 +26,8 @@ ARCHITECTURE (v2, 2026-07-07 audit rewrite):
   4. Best combo auto-applied via set_param(source="optimizer_auto") + Telegram.
 
 SAFETY:
-  - Sweep injections write param_* directly (no param_history pollution);
-    try/finally ALWAYS restores pre-sweep params, crash or not.
+  - Sweep combos live in a thread-local, never in db-state, so a killed process
+    cannot leave the live account running on a grid combo.
   - Values clamped to ALLOWED_PARAMS bounds.
   - A combo needs ≥3 trades in ≥2 windows to be eligible; the winner must
     also show positive mean net PnL. Otherwise: no change.
@@ -169,12 +175,26 @@ def _snap_weekdays(w_start: datetime, w_end: datetime) -> tuple[datetime, dateti
 # ── Combo evaluation ────────────────────────────────────
 
 def _inject(th: float, tp: float, sl: float) -> None:
-    """Direct param_* write — bypasses set_param so the sweep doesn't flood
-    param_history (which powers the autopilot's evidence-based rollback)."""
-    _db.update_state({
-        "param_entry_threshold": float(th),
-        "param_tp_atr_mult": float(tp),
-        "param_sl_atr_mult": float(sl),
+    """Make the sandbox evaluate this combo — WITHOUT touching db-state.
+
+    2026-08-10: this used to write param_* straight into live db-state, so the
+    scheduler's own strategy params were mutated once per combo. It bypassed
+    set_param's bounds check and the param_history audit trail deliberately
+    ("so the sweep doesn't flood param_history"), and relied on a finally block
+    to put things back. A finally block does not run on SIGKILL, on a machine
+    losing power, or on the packaged app being force-quit — and the audit found
+    db and param_history already disagreeing (param_sl_atr_mult=3.0 live while
+    its history record says active=false), which is exactly the fingerprint of
+    a sweep that died mid-flight.
+
+    Thread-local overrides carry the same information to the sandbox (it reads
+    runtime_config in this thread) but cannot survive the process, so a crash
+    now degrades to "sweep produced no result" instead of "live account is
+    trading a grid combo nobody chose"."""
+    runtime_config.push_overrides({
+        "entry_threshold": float(th),
+        "tp_atr_mult": float(tp),
+        "sl_atr_mult": float(sl),
     })
 
 
@@ -235,9 +255,10 @@ def optimize(quick: bool = False, quiet: bool = False,
     pipeline, then it is auto-applied (owner directive 2026-07-07)."""
     now = datetime.now(ET)
 
-    # ── Safety interlock: the sweep INJECTS grid params into live db-state.
-    # A concurrently-scanning scheduler would trade on them. Only run when
-    # the US market is closed (all crons are scheduled accordingly).
+    # ── Market-closed interlock. Combos no longer touch db-state (see _inject),
+    # so a concurrent scan can no longer trade on a grid value — but the sweep
+    # runs dozens of sandbox replays in-process and would starve the scan tick
+    # of CPU and OpenD quota. Keep it to a closed market.
     if not force:
         try:
             from src import clock
@@ -245,9 +266,9 @@ def optimize(quick: bool = False, quiet: bool = False,
         except Exception:
             sess = "unknown"
         if sess == "open":
-            msg = ("REFUSED: US market is OPEN — the sweep injects live params "
-                   "and a scanning scheduler would trade on grid values. "
-                   "Run while closed, or --force after stopping the scheduler.")
+            msg = ("REFUSED: US market is OPEN — the sweep runs dozens of "
+                   "in-process sandbox replays and would starve the live scan "
+                   "tick. Run while closed, or --force after stopping the scheduler.")
             print(msg)
             return {"refused": "market_open", "note": msg}
 
@@ -301,12 +322,10 @@ def optimize(quick: bool = False, quiet: bool = False,
                       f"agg={rec['agg_score']:.1f} meanPnL=${rec['mean_pnl']:.0f} "
                       f"({rec['valid_windows']}/{len(windows)} windows)")
     finally:
-        # ALWAYS restore pre-sweep params — the live scheduler must never be
-        # left running on a grid combo, crash or not.
-        try:
-            _db.update_state({f"param_{k}": v for k, v in saved.items()})
-        except Exception as e:
-            print(f"CRITICAL: failed to restore pre-sweep params {saved}: {e}")
+        # Drop the ephemeral combo overrides. db-state was never written, so
+        # this is tidiness rather than the load-bearing restore it used to be —
+        # the thread-local dies with the thread either way.
+        runtime_config.clear_overrides()
 
     baseline = next((r for r in results if r.get("is_baseline")), None)
     baseline_score = baseline["agg_score"] if (baseline and baseline["eligible"]) else 0.0
@@ -320,7 +339,21 @@ def optimize(quick: bool = False, quiet: bool = False,
                 if daily and baseline_score > 0 else max(baseline_score, 0.0))
 
     applied = False
-    if best and best["agg_score"] > required:
+    if best and best["agg_score"] > required and runtime_config.frozen():
+        # Phase 0: report the finding, change nothing. The sweep measures with
+        # sandbox, and sandbox currently disagrees with backtest_v3 by 83.5% of
+        # net PnL (data/sandbox_vs_backtest.json, verdict BREACH) — a winner
+        # picked on one side of an unreconciled pair is not evidence.
+        best_desc = ", ".join(
+            f"{k}: {saved[k]:g} → {v:g}"
+            for k, v in zip(PARAM_KEYS, (best["th"], best["tp"], best["sl"]))
+            if float(v) != saved[k]
+        ) or "no change vs baseline"
+        if not quiet:
+            print(f"FROZEN: would have applied [{best_desc}] "
+                  f"(agg {best['agg_score']:.1f} vs baseline {baseline_score:.1f}) "
+                  f"— PARAMS_FROZEN is on, nothing written.")
+    elif best and best["agg_score"] > required:
         # Winner beats the incumbent on the identical pipeline → APPLY.
         # (Owner directive 2026-07-07: validated best is applied directly,
         # no approval step.) set_param records param_history + bounds-checks.

@@ -579,10 +579,43 @@ def check_trade_env() -> Check:
                  retryable=False)
 
 
+def check_param_freeze() -> Check:
+    """Phase-0 freeze status. Reported either way: a frozen bot silently not
+    self-tuning, and an unfrozen bot silently self-tuning, are both surprises
+    worth one line in the dialog."""
+    from . import runtime_config
+    if not runtime_config.frozen():
+        return Check(
+            id="param_freeze", ok=True, severity=DEGRADED,
+            title="参数自动调整", title_en="Automated parameter tuning",
+            detail="已启用 —— 优化器可自行改写策略参数",
+            detail_en="ENABLED — optimizers may rewrite strategy params",
+            impact="回测与实盘路径尚未对齐（sandbox↔v3：信号匹配 20%、净盈亏差 "
+                   "83.5%），此时任何一侧的优化结果都不足以作为改参依据。"
+                   "建议在 .env 设 PARAMS_FROZEN=true。",
+            impact_en="Backtest and live paths are not reconciled (sandbox↔v3: "
+                      "20% signal match, 83.5% net-PnL gap), so neither side's "
+                      "optimisation is evidence for a param change. Consider "
+                      "PARAMS_FROZEN=true in .env.",
+            retryable=False)
+    return Check(
+        id="param_freeze", ok=True, severity=INFO,
+        title="参数自动调整", title_en="Automated parameter tuning",
+        detail="已冻结 (PARAMS_FROZEN) —— 参数只能人工设定",
+        detail_en="FROZEN (PARAMS_FROZEN) — params are human-set only",
+        impact="自动调参、自动回滚、自动复利预算全部停用。网格扫描仍会运行并"
+               "报告结果，但不会写入。解冻前需先修好 sandbox↔v3 一致性。",
+        impact_en="Auto-tuning, auto-rollback and budget compounding are all "
+                  "off. The grid sweep still runs and reports, but writes "
+                  "nothing. Fix sandbox↔v3 parity before unfreezing.",
+        retryable=False)
+
+
 _CHECKS = {
     "broker":    check_broker,
     "config":    check_config_file,
     "trade_env": check_trade_env,
+    "param_freeze": check_param_freeze,
     "ai":        check_ai,
     "telegram":  check_telegram,
     "news":      check_news,
@@ -596,7 +629,7 @@ _CHECKS = {
 # Dialog order: the blocker first, then identity, then the degradable layers.
 # news_driven sits right after the inventory — when it is on it changes what
 # every layer below it means, so it should be read before them, not after.
-ORDER = ["broker", "trade_env", "config", "features", "news_driven",
+ORDER = ["broker", "trade_env", "param_freeze", "config", "features", "news_driven",
          "ai", "news", "finnhub", "moo_notices", "finbert", "telegram", "options"]
 
 

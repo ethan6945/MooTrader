@@ -87,6 +87,11 @@ _STATE["peak_equity"] = 6000.0
 check("current_drawdown_pct == 0 at new high", abs(risk_manager.current_drawdown_pct()) < 1e-6)
 
 # ── 3. recompute_and_apply hysteresis + apply ────────────────────────────────
+# The Phase-0 freeze (PARAMS_FROZEN) blocks this whole path — see section 5.
+# Section 3 tests the compounding MECHANISM, so run it with the freeze lifted.
+from src import runtime_config as _rc
+_rc.frozen = lambda: False
+
 _STATE.clear()
 _STATE["budget_usd"] = 4500.0
 _STATE["auto_budget_enabled"] = True
@@ -114,6 +119,41 @@ _STATE["auto_budget_enabled"] = False
 r = auto_budget.recompute_and_apply()
 check("disabled is no-op", r.get("reason") == "disabled")
 check("disabled: equity_baseline == budget (legacy)", abs(risk_manager.equity_baseline() - 4500.0) < 1e-6)
+
+# ── 5. Phase-0 freeze blocks the budget write ────────────────────────────────
+# Regression guard for the 2026-08-10 audit finding: auto_budget writes
+# budget_usd straight to db-state, NOT through runtime_config.set_param, so
+# AUTO_APPLY_PARAMS never covered it. An armed seed of $5,000 would have walked
+# an owner-set $10,000 budget back to ~$4,549 at the next daily close. The
+# freeze must hold even with AUTO_BUDGET_ENABLED back on.
+_rc.frozen = lambda: True
+_STATE.clear()
+_STATE["budget_usd"] = 10000.0          # owner just set this by hand
+_STATE["auto_budget_enabled"] = True
+_STATE["auto_budget_seed"] = 5000.0     # stale armed seed from before
+_STATE["auto_budget_base_realized"] = -174.91
+_STATE["realized_pnl_total"] = -625.47  # target would be ~4549
+r = auto_budget.recompute_and_apply()
+check("frozen: refuses to apply", r.get("applied") is False)
+check("frozen: reason names the freeze", "frozen" in str(r.get("reason", "")))
+check("frozen: owner's $10,000 survives", abs(_STATE["budget_usd"] - 10000.0) < 1e-6)
+
+# ── 6. budget must not silently change concurrency ───────────────────────────
+# derive_max_positions() used to scale slots with capital: round(capital/1000),
+# floored at MAX_POSITIONS, capped at MAX_POSITIONS_CAP. At $4,740 that resolved
+# to 5 so it never visibly moved — but raising the budget to $10,000 would have
+# taken the bot from 5 concurrent names to 10. Double the names, half the average
+# position, sector caps binding at a different fraction: a strategy change
+# arriving through a capital field, with no backtest behind it.
+from src.config import derive_max_positions   # noqa: E402
+
+check("slots stay at MAX_POSITIONS when budget doubles",
+      derive_max_positions(10000.0) == settings.max_positions)
+check("slots unchanged at the old budget (backtest parity)",
+      derive_max_positions(4740.82) == settings.max_positions)
+check("slots unchanged at an absurd budget",
+      derive_max_positions(1_000_000.0) == settings.max_positions)
+check("autoscale is off by default", settings.max_positions_autoscale is False)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

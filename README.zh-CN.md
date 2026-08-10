@@ -403,12 +403,12 @@ flowchart LR
    × 顺势加压     （仅「强牛 + 低 VIX」→ 1.4×）
 
 按风险股数 = 风险金额 ÷ (入场价 − 止损价)
-按上限股数 = 资金 × MAX_POSITION_PCT(40%) ÷ 入场价      ← 单股集中度上限
+按上限股数 = 资金 × MAX_POSITION_PCT(10%) ÷ 入场价      ← 单股集中度上限
 最终股数   = min(两者)，再按 VIX 调（>25 减半，>35 砍到 1/4）
 ```
 
 - **资金口径**：用你分配的预算 `ACCOUNT_USD`，但绝不超过实时账户净值。预算可在 Web 面板改，下一轮扫描生效。
-- **单股上限 40% 才是防跳空的真护栏**——止损挡不住跳空（价格直接跳过止损位），所以靠「不押太大」而非「盯得更勤」。
+- **单股上限才是防跳空的真护栏**——止损挡不住跳空（价格直接跳过止损位），所以靠「不押太大」而非「盯得更勤」。2026-08-10 之前是 40%，现在是 **10%**；在这个上限下每笔约占账户 0.5–0.6% 风险、五个满仓位合计约 3%。注意：只要止损距离正常，先咬住的永远是这个上限而不是 `RISK_PER_TRADE`，所以真正决定仓位大小的是它，不是那个 5% 的风险旋钮。
 
 ### 第 4 步：退出管理
 
@@ -547,7 +547,7 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 | `REAL_USE_SOFT_EXITS` | `true` | REAL 也用软退出，和回测口径一致 |
 | `DYNAMIC_UNIVERSE_ENABLED` | `true` | 每周按 6-1 动量重建 watchlist |
 | `UNIVERSE_TOP_N` | `15` | 选 15 只（10/15/20 平台验证：15 最优） |
-| `AUTO_APPLY_PARAMS` | `true` | 过双窗口回测且在护栏内的建议自动应用 + 退化自动回滚 |
+| `AUTO_APPLY_PARAMS` | `false` | **2026-08-10 已冻结**，与其它所有会改参数的路径一起 —— 见 `PARAMS_FROZEN`。原为 `true` |
 | `REGIME_BULL_MULT` | `1.4` | 顺势加压（仅强牛 + 低 VIX） |
 | `HEALTH_CHECK_ENABLED` | `true` | 每 30min 探测 API/订阅，掉了边沿触发 Telegram |
 | `FAST_STOP_SECONDS` | `60` | 快速止损环间隔 |
@@ -569,7 +569,7 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 | `OPTIONS_FLOW_ENABLED` | 期权异动只被 smart_exit / sentiment 消费（都关着），单独开无意义 |
 | `STALL_OUT_ENABLED` | 停滞退出。验证引擎没有它，且 max-hold 桶净赚；实盘仅有的停滞退出全亏 |
 | `SMART_REGIME_ENABLED` | 滞回平滑的 regime 标签（500 天回测：翻转 −89%）。默认关保持与回测逐字节一致 |
-| `AUTO_BUDGET_ENABLED` | 复利预算：已实现盈利自动滚入预算（护栏：seed×0.5–5、净值封顶、滞回步长） |
+| `AUTO_BUDGET_ENABLED` | 复利预算：已实现盈利自动滚入预算（护栏：seed×0.5–5、净值封顶、滞回步长）。**2026-08-10 已解除 armed** —— 它直接写 `budget_usd` 而不走参数路径，所以 `AUTO_APPLY_PARAMS` 从来管不到它；一个停留在旧值的 seed 会把你手工设的预算悄悄改回去。预算此前还决定持仓槽位数，现已解耦 |
 | `CASH_YIELD_*` | 熊市闲钱买国债 ETF（SGOV）生息，转牛自动卖回现金 |
 | `INVERSE_SLEEVE_ENABLED` | 反向 ETF 对冲（现金账户不能做空）。**唯一会以新方式亏钱的功能**，必须先跑专属回测过双窗闸门 |
 | `USE_SCALE_OUT` | 分批止盈**故意空转**：回测证明压低梯子让它真触发反而降 $/天（过早落袋杀肥尾） |
@@ -586,10 +586,10 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 | 参数 | 值 | 参数 | 值 |
 |------|----|------|----|
 | `ENTRY_SCORE_THRESHOLD` | 70 | `TP_ATR_MULT` | 10.0 |
-| `SCAN_INTERVAL_MIN` | 30 | `SL_ATR_MULT` | 3.5 |
+| `SCAN_INTERVAL_MIN` | 15 | `SL_ATR_MULT` | 2.8 |
 | `TIMEFRAME` | HOUR_1 | `MAX_GAP_PCT` | 4.0 |
-| `MAX_HOLD_DAYS` | 7 | `RISK_PER_TRADE` | 0.05 |
-| `MAX_POSITIONS` | 5 | `MAX_POSITION_PCT` | 0.40 |
+| `MAX_HOLD_DAYS` | 4 | `RISK_PER_TRADE` | 0.05 |
+| `MAX_POSITIONS` | 5 | `MAX_POSITION_PCT` | 0.10 |
 | `DAILY_DRAWDOWN_STOP` | 0.06 | `DD_HALT_PCT` | 18 |
 
 </details>

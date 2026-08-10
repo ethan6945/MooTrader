@@ -73,6 +73,16 @@ logging.basicConfig(
 # stop logging each tick at INFO. Real warnings/errors still come through.
 for _noisy in ("apscheduler", "httpx", "google_genai"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+# Scrub credentials from every log record before it reaches a handler. Installed
+# right after basicConfig so it covers third-party loggers too: the 2026-08-10
+# audit found the live Telegram bot token in trader.log 14× and scheduler.log 6×,
+# written by a requests exception whose message contained the request URL — and
+# the Telegram API puts the token IN the URL path. No call site did anything
+# wrong, which is why this belongs at the logging layer.
+from . import log_redact  # noqa: E402
+log_redact.install()
+
 log = logging.getLogger("main")
 
 WATCHLIST_FILE = settings.root / "config" / "watchlist.json"

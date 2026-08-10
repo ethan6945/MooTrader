@@ -182,6 +182,16 @@ def recompute_and_apply() -> dict:
     if not enabled():
         return {"applied": False, "reason": "disabled"}
 
+    # Phase 0 freeze. budget_usd is written straight to db-state here, not via
+    # runtime_config.set_param, so AUTO_APPLY_PARAMS never covered it — the
+    # 2026-08-10 audit found an armed seed of $5,000 that would have silently
+    # walked an owner-set $10,000 budget back to ~$4,549 at the next daily
+    # close. The budget also drives derive_max_positions(), so an unattended
+    # write here changes how many names the bot holds at once.
+    from . import runtime_config
+    if runtime_config.frozen():
+        return {"applied": False, "reason": "params frozen (PARAMS_FROZEN)"}
+
     from . import risk_manager
 
     # (2) arm on first run.

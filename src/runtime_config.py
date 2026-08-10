@@ -8,14 +8,65 @@ the owner approves a change).
 
 LIVE-ONLY: the backtest engine uses its own explicit cfg (cfg.threshold,
 cfg.tp_atr_mult, …), so these overrides never perturb a backtest measurement.
+
+Two Phase-0 additions (2026-08-10):
+
+  • set_param/revert_param refuse to write while settings.params_frozen. This
+    is the single choke point for all seven writer paths — see config.py.
+
+  • push_overrides() gives a parameter sweep an EPHEMERAL, thread-local way to
+    say "evaluate as if the params were X" without touching db-state. The grid
+    sweep used to inject its combos into live db-state and restore them in a
+    finally block; a SIGKILL mid-sweep therefore left a grid combo running the
+    live account, which is the most likely origin of the db/param_history
+    divergence found in the 2026-08-10 audit. A thread-local cannot outlive the
+    process, so that failure mode is now structurally impossible.
 """
 from __future__ import annotations
+
+import threading
 
 from . import db
 from .config import settings
 
 
+class ParamsFrozen(ValueError):
+    """Raised by set_param/revert_param while the Phase-0 freeze is active.
+
+    Subclasses ValueError deliberately: every existing caller already catches
+    ValueError (approvals, optimizer_ai) or Exception (autopilot, hermes_improve),
+    so the freeze degrades them to "queue it / skip it" instead of crashing the
+    scheduler.
+    """
+
+
+# Ephemeral, thread-local param overrides — see module docstring. Never
+# persisted; a crash or a killed process loses them, which is the point.
+_OVERRIDES = threading.local()
+
+
+def _overrides() -> dict:
+    return getattr(_OVERRIDES, "values", None) or {}
+
+
+def push_overrides(values: dict) -> None:
+    """Evaluate as if these params were live, for THIS thread only."""
+    _OVERRIDES.values = {str(k): float(v) for k, v in values.items()}
+
+
+def clear_overrides() -> None:
+    _OVERRIDES.values = {}
+
+
+def frozen() -> bool:
+    """True while Phase-0 param freeze is active (PARAMS_FROZEN, default on)."""
+    return bool(settings.params_frozen)
+
+
 def _param(key: str):
+    ov = _overrides()
+    if key in ov:
+        return ov[key]
     try:
         return db.get_state().get(f"param_{key}")
     except Exception:
@@ -100,13 +151,19 @@ ALLOWED_PARAMS = {
     "breakeven_trigger_r": (0.75, 1.5),
     "max_hold_days": (5.0, 10.0),
     "universe_top_n": (10.0, 20.0),
+    # 2026-08-10: floor lowered 0.20 → 0.10 to match the human baseline. With
+    # the floor above the baseline, every proposal the optimizer could make
+    # would necessarily RAISE single-name concentration — a one-way ratchet
+    # away from the value a human just chose. The ablation numbers below came
+    # off the same engine that disagrees with the live path by 83.5% of net
+    # PnL, so treat them as untested until parity is fixed.
     # 2026-06-12 cap ablation: 30%=$12.8 / 40%=$22.1 / 50%=$17.6 / 70%=$19.2
     # per day — 40-70 statistically flat in-sample, so the optimizer may tune
     # within [0.20, 0.55]. The 0.55 ceiling is deliberate and NOT tunable: a
     # backtest can never price the overnight single-name gap (the window
     # contains no blowup), so the upper bound is the tail-risk guard the
     # in-sample gate structurally cannot provide.
-    "max_position_pct": (0.20, 0.55),
+    "max_position_pct": (0.10, 0.55),
 }
 
 
@@ -134,12 +191,21 @@ def current(key: str):
     }[key]()
 
 
-def set_param(key: str, value: float, source: str) -> dict:
+def set_param(key: str, value: float, source: str, force: bool = False) -> dict:
     """Single write path for runtime param changes (approval executor AND the
     bounded-autonomy auto-apply both come through here). Validates against
     ALLOWED_PARAMS, records the change in the param_history db-state list
     (which powers the autopilot's auto-rollback), and returns the record.
-    Raises ValueError on an out-of-bounds/unknown key."""
+    Raises ValueError on an out-of-bounds/unknown key.
+
+    Raises ParamsFrozen while the Phase-0 freeze is on. `force=True` is for the
+    human re-baselining tool only (scripts/config_baseline.py) — no automated
+    caller may pass it."""
+    if frozen() and not force:
+        raise ParamsFrozen(
+            f"param freeze active (PARAMS_FROZEN) — refused {key}={value} "
+            f"from {source!r}. Parity must pass before automated tuning resumes."
+        )
     if not is_valid(key, value):
         raise ValueError(f"param {key}={value} outside ALLOWED_PARAMS bounds")
     old = current(key)
@@ -163,10 +229,17 @@ def set_param(key: str, value: float, source: str) -> dict:
     return rec
 
 
-def revert_param(key: str, reason: str) -> dict | None:
+def revert_param(key: str, reason: str, force: bool = False) -> dict | None:
     """Auto-rollback: restore the previous value of the most recent ACTIVE
     change for `key`. Marks the history record rolled_back; returns it (or
-    None if there was nothing active to revert)."""
+    None if there was nothing active to revert).
+
+    Also frozen in Phase 0: an automated rollback is still an automated write,
+    and with the freeze on there is nothing for it to roll back anyway."""
+    if frozen() and not force:
+        raise ParamsFrozen(
+            f"param freeze active (PARAMS_FROZEN) — refused rollback of {key}"
+        )
     state = db.get_state()
     hist = list(state.get("param_history", []))
     for h in reversed(hist):
