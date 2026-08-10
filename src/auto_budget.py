@@ -53,6 +53,7 @@ _K_ENABLED = "auto_budget_enabled"        # runtime toggle (web), falls back to 
 _K_SEED = "auto_budget_seed"              # frozen deployable base at arm time
 _K_BASE_REALIZED = "auto_budget_base_realized"  # cumulative realized at arm time
 _K_HISTORY = "auto_budget_history"        # audit list of applied changes
+_K_DISARMED = "auto_budget_disarmed"      # sticky owner stop — only arm() clears it
 
 
 # ── toggle + armed-state readers ─────────────────────────────────────────────
@@ -167,20 +168,37 @@ def arm(seed: float | None = None, force: bool = False) -> dict:
     s = float(seed) if seed is not None else risk_manager.budget_usd()
     state = db.get_state()
     base = float(state.get("realized_pnl_total") or 0.0)
-    db.update_state({_K_SEED: s, _K_BASE_REALIZED: base})
+    # Arming is the one deliberate act that clears a sticky disarm.
+    db.update_state({_K_SEED: s, _K_BASE_REALIZED: base, _K_DISARMED: False})
     log.info("auto_budget armed: seed=$%.0f base_realized=$%.2f", s, base)
     return {"seed": s, "base_realized": base}
 
 
 def disarm() -> None:
-    """Clear the reference line — equity_baseline() reverts to the live budget.
+    """Permanently stop compounding until the owner explicitly re-arms.
 
-    Use when the owner wants full manual control again. Does NOT touch
-    budget_usd (it stays at whatever compounding last set), so the owner can set
-    it manually afterward.
+    Clearing the seed alone was not enough: recompute_and_apply() treats "no
+    seed" as "first run" and arms itself. So a disarm followed by any run with
+    the toggle on silently re-armed at whatever the budget happened to be —
+    disarm looked like an off switch and behaved like a reset button.
+
+    The sticky flag is what makes it terminal. arm() clears it, so re-arming is
+    still a single deliberate call; nothing else does.
+
+    Does NOT touch budget_usd (it stays at whatever compounding last set), so
+    the owner can set it manually afterward.
     """
-    db.update_state({_K_SEED: None, _K_BASE_REALIZED: None})
-    log.info("auto_budget disarmed — equity baseline reverts to live budget")
+    db.update_state({_K_SEED: None, _K_BASE_REALIZED: None, _K_DISARMED: True,
+                     _K_ENABLED: False})
+    log.info("auto_budget disarmed — sticky; equity baseline reverts to live budget")
+
+
+def is_disarmed() -> bool:
+    """True once disarm() ran and nobody has explicitly re-armed since."""
+    try:
+        return bool(db.get_state().get(_K_DISARMED))
+    except Exception:
+        return False
 
 
 # ── the daily job ────────────────────────────────────────────────────────────
@@ -212,6 +230,11 @@ def recompute_and_apply() -> dict:
     from . import runtime_config
     if runtime_config.frozen():
         return {"applied": False, "reason": "params frozen (PARAMS_FROZEN)"}
+
+    # A sticky disarm outranks the toggle. Without this the auto-arm below reads
+    # "no seed" as "first run" and re-arms, so disarm behaved as a reset.
+    if is_disarmed():
+        return {"applied": False, "reason": "disarmed by owner (sticky)"}
 
     if not enabled():
         return {"applied": False, "reason": "disabled"}

@@ -288,6 +288,45 @@ _RUNTIME_KEY_MAP = {
 # runtime-style names map to themselves
 _RUNTIME_KEY_MAP.update({v: v for v in set(_RUNTIME_KEY_MAP.values())})
 
+# Keys an AI agent may NEVER write to .env, whatever it proposes.
+#
+# apply_params used to send every non-tunable key straight into .env with no
+# whitelist at all. That made the param freeze decorative: a proposal of
+# PARAMS_FROZEN=false unfreezes the bot, and MOO_TRADE_ENV=REAL moves it to live
+# money — both from an LLM suggestion, both without an approval step, because
+# the .env branch was the "boring leftovers" path nobody threatened-modelled.
+#
+# Matched case-insensitively by exact name or prefix. Denylist rather than
+# allowlist deliberately: a new feature flag showing up here should still be
+# writable, but a new SECRET/RISK/ENV key must fail closed. Anything not listed
+# and not a known tunable still requires the key to already exist in .env, so a
+# typo cannot invent a setting.
+_ENV_DENY_EXACT = {
+    "PARAMS_FROZEN",            # would unfreeze everything below
+    "AUTO_APPLY_PARAMS",
+    "AUTO_BUDGET_ENABLED",
+    "MAX_POSITIONS_AUTOSCALE",
+    "MOO_TRADE_ENV",            # SIMULATE -> REAL is real money
+    "MOO_TRADE_PWD",
+    "MOO_HOST", "MOO_PORT",
+    "ACCOUNT_USD",              # capital; goes through risk_manager.set_budget
+    "RISK_PER_TRADE", "MAX_POSITION_PCT", "MAX_POSITIONS",
+    "DAILY_DRAWDOWN_STOP", "DD_HALT_PCT", "DD_SIZE_CUT_PCT",
+    "MAX_STACKS_PER_SYMBOL", "MAX_NEW_NAMES_PER_SCAN",
+    "WEB_PASSWORD", "WEB_SECRET",
+}
+_ENV_DENY_SUBSTRING = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "PWD")
+
+
+def env_write_denied(key: str) -> str:
+    """Reason this key may not be written to .env by an agent, or "" if allowed."""
+    k = (key or "").strip().upper()
+    if k in _ENV_DENY_EXACT:
+        return "risk/safety setting — owner-only"
+    if any(s in k for s in _ENV_DENY_SUBSTRING):
+        return "credential — never agent-writable"
+    return ""
+
 
 def snapshot_before() -> Path:
     """Save current .env (REDACTED) and account.json for rollback.
@@ -335,7 +374,11 @@ def apply_params(changes: dict, reason: str, pnl_estimate: str) -> dict:
             except (ValueError, TypeError) as e:
                 rejected[key] = f"out of ALLOWED_PARAMS bounds / not numeric: {e}"
         else:
-            env_changes[key] = new_val
+            denied = env_write_denied(key)
+            if denied:
+                rejected[key] = f"refused .env write: {denied}"
+            else:
+                env_changes[key] = new_val
 
     # Non-tunable keys (feature flags, etc.) — legacy .env edit, loudly flagged.
     if env_changes:

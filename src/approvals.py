@@ -126,9 +126,26 @@ def _claim_for_execution(item_id: str) -> bool:
     return won["v"]
 
 
-def _finish_execution(item_id: str, success: bool) -> None:
-    """Mark the claimed item executed (success) or release the claim so the
-    next cycle retries (failure)."""
+class ExecutionRefused(Exception):
+    """A permanent refusal — the action is not allowed, so retrying is pointless.
+
+    Distinct from a transient failure (market shut, broker timeout), which
+    releases the claim so the next cycle tries again. A refusal must not be
+    retried forever, and — the reason this exists — must not be reported to the
+    owner as applied. Before this, a param_change blocked by the freeze was
+    caught, logged at WARNING, and then marked executed=True: the owner got
+    "✅ 已执行你批准的建议" for a change that never happened.
+    """
+
+
+def _finish_execution(item_id: str, success: bool,
+                      refused_reason: str | None = None) -> None:
+    """Close out a claimed item.
+
+    success=True         → executed, reported to the owner as applied.
+    refused_reason set   → terminal, NOT retried, NOT reported as applied.
+    otherwise            → release the claim so the next cycle retries.
+    """
     def _apply(state: dict) -> dict:
         q = list(state.get(QUEUE_KEY, []))
         for x in q:
@@ -137,6 +154,13 @@ def _finish_execution(item_id: str, success: bool) -> None:
                 if success:
                     x["executed"] = True
                     x["executed_at"] = _now()
+                elif refused_reason:
+                    # Terminal: leave executed falsy so nothing claims it worked,
+                    # but stamp it so apply_approved stops picking it up.
+                    x["refused"] = True
+                    x["refused_at"] = _now()
+                    x["refused_reason"] = refused_reason
+                    x["status"] = "refused"
         return {QUEUE_KEY: q}
 
     db.atomic_state(_apply)
@@ -149,12 +173,29 @@ def apply_approved() -> list[dict]:
     Returns the items that were applied (for a Telegram confirmation)."""
     applied: list[dict] = []
     todo = [a for a in list_all()
-            if a.get("status") == "approved" and not a.get("executed")]
+            if a.get("status") == "approved"
+            and not a.get("executed") and not a.get("refused")]
     for a in todo:
         if not _claim_for_execution(a["id"]):
             continue   # another process owns it (or it just got executed)
         try:
             _execute(a)
+        except ExecutionRefused as e:
+            # Permanent: don't retry, don't count as applied, and say so out
+            # loud — an approved item quietly going nowhere is the worst of the
+            # three outcomes for the owner.
+            log.warning("approved item %s REFUSED: %s", a.get("id"), e)
+            _finish_execution(a["id"], success=False, refused_reason=str(e))
+            try:
+                from . import notifier
+                notifier.send(
+                    f"🚫 你批准的建议未能执行\n"
+                    f"  {a.get('detail', a.get('action', a['id']))}\n"
+                    f"  原因: {e}"
+                )
+            except Exception as ne:
+                log.debug("refusal notify failed: %s", ne)
+            continue
         except Exception as e:
             log.warning("apply approved %s failed: %s", a.get("id"), e)
             _finish_execution(a["id"], success=False)   # release → retry next cycle
@@ -187,8 +228,15 @@ def _execute(item: dict) -> None:
             try:
                 runtime_config.set_param(key, value, source="owner-approved")
                 log.info("approval applied: param %s = %s", key, value)
+            except runtime_config.ParamsFrozen as e:
+                # Terminal while the freeze is on. Retrying every scan would
+                # never succeed, and swallowing it told the owner it worked.
+                raise ExecutionRefused(str(e)) from e
             except ValueError as e:
-                log.warning("approved param_change rejected at execution: %s", e)
+                # Out of ALLOWED_PARAMS bounds — also permanent for this
+                # payload; the value itself is the problem.
+                raise ExecutionRefused(
+                    f"param {key}={value} rejected: {e}") from e
     elif kind == "manual_takeover_sell":
         # Owner approved the bot taking over a HIGH-risk MANUAL position: market-
         # sell it now to cut the loss. Opens its own broker client (apply_approved

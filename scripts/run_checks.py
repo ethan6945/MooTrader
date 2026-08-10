@@ -14,11 +14,17 @@ WHY THIS EXISTS
   at a temporary directory, so running them can never write to data/trader.db.
 
 WHAT IT COVERS
-  test_param_freeze   — all seven param writers plus auto_budget stay shut
-  test_env_redaction  — no credential reaches a snapshot or a log line
-  test_auto_budget    — compounding math, and the freeze over it
-  config_baseline     — .env / .env.example / db / README agree; DD peak is sane
-  check_no_secrets    — nothing publishable contains a live credential
+  test_param_freeze      — the guards themselves refuse writes
+  test_freeze_callchains — the REAL entry points (approvals, hermes, auto_budget,
+                           record_trade_close, the Flask endpoints) actually go
+                           through those guards. Unit-testing one function with
+                           five different `source` strings did not catch three
+                           holes that this found.
+  test_env_redaction     — no credential reaches a snapshot or a log line
+  test_auto_budget       — compounding math, and the freeze over it
+  config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
+                           agree; risk switches ship safe; DD peak is sane
+  check_no_secrets       — nothing publishable contains a live credential
 
   config_baseline and check_no_secrets read the REAL repo state on purpose:
   they are about this machine's configuration, not about code behaviour, and a
@@ -39,6 +45,7 @@ PY = sys.executable
 # name → (script, needs_sandboxed_home)
 CHECKS = {
     "freeze":     ("scripts/test_param_freeze.py", True),
+    "callchains": ("scripts/test_freeze_callchains.py", True),
     "redaction":  ("scripts/test_env_redaction.py", True),
     "budget":     ("scripts/test_auto_budget.py", True),
     "baseline":   ("scripts/config_baseline.py", False),

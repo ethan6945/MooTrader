@@ -132,6 +132,27 @@ def budget_usd() -> float:
     return settings.account_usd
 
 
+def compute_peak_equity(base: float, realized: float,
+                        prior_peak: float = 0.0) -> float:
+    """The ONE definition of the drawdown high-water mark.
+
+        peak = max(prior_peak, base, base + realized)
+
+    `base` (deployable capital) is a floor because an account that has only ever
+    lost money is still in drawdown from where it started — without it, a fresh
+    account with realized -$625 would report 0% drawdown instead of 6.25%.
+
+    Two callers used to compute this differently and fight each other:
+    record_trade_close() used the expression above, while set_budget() used a
+    bare `base + realized`, which erased exactly that real drawdown — and was
+    then silently overwritten by the `base` floor on the very next close. Pass
+    prior_peak=0 to re-anchor on a capital change (deliberately forgetting a
+    peak recorded under a different capital base), or the stored peak to advance
+    it monotonically.
+    """
+    return max(float(prior_peak or 0.0), float(base), float(base) + float(realized), 1.0)
+
+
 def set_budget(value: float, source: str) -> dict:
     """The ONLY way to change deployable capital. Re-anchors the DD breaker.
 
@@ -164,8 +185,11 @@ def set_budget(value: float, source: str) -> dict:
         # the peak must be re-anchored to that same base — not to the new
         # deployable budget, which would double-count realized PnL.
         base = float(s.get("auto_budget_seed") or value)
+        # prior_peak=0: a peak recorded under the OLD capital base is exactly
+        # what we are here to forget. The `base` floor inside the helper keeps
+        # a real drawdown visible rather than resetting it to zero.
         return {"budget_usd": value,
-                "peak_equity": max(base + realized, 1.0),
+                "peak_equity": compute_peak_equity(base, realized, prior_peak=0.0),
                 "halt_started_at": None}
 
     merged = db.atomic_state(_apply)
@@ -617,10 +641,11 @@ def record_trade_close(realized_pnl: float, account_usd: float | None = None) ->
         # (frozen seed when compounding is armed) so growing the deployable
         # budget never double-counts realized PnL into equity / peak.
         base = account_usd if account_usd is not None else equity_baseline()
-        current_equity = base + new_total
-        peak = max(current.get("peak_equity", 0.0) or 0.0,
-                   base,        # never report a peak below starting capital
-                   current_equity)
+        # Same expression set_budget uses — see compute_peak_equity. Keeping the
+        # two in one place is the point: they used to disagree, and the
+        # disagreement only showed up one trade after a budget change.
+        peak = compute_peak_equity(base, new_total,
+                                   prior_peak=current.get("peak_equity", 0.0))
         return {
             "realized_pnl_today": new_today,
             "realized_pnl_total": new_total,

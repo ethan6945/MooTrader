@@ -132,6 +132,84 @@ EXAMPLE_MUST_MATCH = [
 ]
 
 
+# Risk / safety switches that are NOT runtime-tunable, so nothing above tracks
+# them — yet each one changes how much the bot can lose. For these we check the
+# CODE DEFAULT too: the value a packaged install runs when .env is absent, which
+# is the case the .env-vs-.env.example comparison cannot see at all.
+# (env var, settings attribute, expected-safe default)
+RISK_SWITCHES = [
+    ("PARAMS_FROZEN",            "params_frozen",            True),
+    ("AUTO_APPLY_PARAMS",        "auto_apply_params",        False),
+    ("AUTO_BUDGET_ENABLED",      "auto_budget_enabled",      False),
+    ("MAX_POSITIONS_AUTOSCALE",  "max_positions_autoscale",  False),
+    ("MR_ENABLED",               "mr_enabled",               False),
+    ("PATTERN_ENABLED",          "pattern_enabled",          False),
+    ("SMART_EXIT_ENABLED",       "smart_exit_enabled",       False),
+    ("STALL_OUT_ENABLED",        "stall_out_enabled",        False),
+    ("INVERSE_SLEEVE_ENABLED",   "inverse_sleeve_enabled",   False),
+    ("CASH_YIELD_ENABLED",       "cash_yield_enabled",       False),
+    ("OPTIONS_FLOW_ENABLED",     "options_flow_enabled",     False),
+    ("SENTIMENT_SIZING",         "sentiment_sizing",         False),
+    ("OPTIONS_STATS_SIZING",     "options_stats_sizing",     False),
+    ("USE_SCALE_OUT",            "use_scale_out",            False),
+]
+
+
+def code_default(attr: str):
+    """The value settings.<attr> takes with the env var absent — i.e. what a
+    fresh packaged install actually runs. Re-imports config with that one
+    variable stripped, so it reads the real dataclass default rather than a
+    hand-maintained copy of it that could itself drift."""
+    import importlib
+    import os as _os
+    env_name = next((e for e, a, _ in RISK_SWITCHES if a == attr), None)
+    saved = _os.environ.pop(env_name, None) if env_name else None
+    try:
+        import src.config as _cfg
+        reloaded = importlib.reload(_cfg)
+        return getattr(reloaded.settings, attr, None)
+    finally:
+        if saved is not None:
+            _os.environ[env_name] = saved
+        import src.config as _cfg2
+        importlib.reload(_cfg2)
+
+
+def check_risk_switches(env: dict, example: dict) -> list[dict]:
+    """Every risk switch: is the CODE DEFAULT safe, and do the two env files
+    agree? A switch missing from .env runs its code default silently."""
+    out = []
+    for env_name, attr, safe_default in RISK_SWITCHES:
+        try:
+            actual_default = code_default(attr)
+        except Exception as e:
+            out.append({"severity": "low", "key": env_name,
+                        "what": f"could not read the code default ({e})",
+                        "why": "cannot confirm what a fresh install runs",
+                        "action": f"check settings.{attr} in src/config.py"})
+            continue
+        if actual_default is not None and bool(actual_default) != bool(safe_default):
+            out.append({
+                "severity": "high", "key": env_name,
+                "what": f"CODE DEFAULT for {env_name} is {actual_default}, "
+                        f"expected {safe_default}",
+                "why": "This is what a packaged install with no .env runs. A "
+                       "risk switch defaulting on ships enabled to people who "
+                       "never chose it.",
+                "action": f"change the default of settings.{attr} in src/config.py "
+                          f"to {safe_default}",
+            })
+        have, want = env.get(env_name), example.get(env_name)
+        if have is not None and want is not None and not _same(have, want):
+            out.append({
+                "severity": "medium", "key": env_name,
+                "what": f"{env_name}: .env has {have}, .env.example has {want}",
+                "why": "A fresh install would run with a different risk switch.",
+                "action": f"set {env_name}={have} in .env.example",
+            })
+    return out
+
+
 def check_budget_baseline(state: dict, env: dict) -> list[dict]:
     """The drawdown breaker measures equity against `peak_equity`. If the budget
     moves and the peak does not, the breaker silently stops working — upward it
@@ -195,6 +273,7 @@ def collect() -> dict:
     rows, findings = [], []
 
     findings += check_budget_baseline(state, env)
+    findings += check_risk_switches(env, example)
 
     for key in EXAMPLE_MUST_MATCH:
         have, want = env.get(key), example.get(key)

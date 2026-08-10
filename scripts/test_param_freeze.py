@@ -180,15 +180,19 @@ db.atomic_state = _atomic
 
 res = risk_manager.set_budget(10000.0, source="test")
 check("set_budget writes the budget", _STATE["budget_usd"] == 10000.0)
-check("set_budget re-anchors peak to budget+realized",
-      abs(_STATE["peak_equity"] - (10000.0 - 625.47)) < 0.01)
+# peak = max(base, base + realized) — the `base` floor matters. An earlier
+# version used a bare base+realized, which set peak to $9,374 and reported 0%
+# drawdown for an account that had genuinely lost $625 of its $10,000. It was
+# then clobbered on the next close anyway, because record_trade_close applies
+# the floor. One formula now: risk_manager.compute_peak_equity.
+check("set_budget anchors peak at the capital base, not below it",
+      abs(_STATE["peak_equity"] - 10000.0) < 0.01)
 check("set_budget clears a stale halt", _STATE["halt_started_at"] is None)
-check("drawdown is 0 right after re-anchor, not negative or stale",
-      abs(risk_manager.current_drawdown_pct()) < 1e-6)
+check("a real drawdown stays visible after re-anchor (not zeroed)",
+      abs(risk_manager.current_drawdown_pct() - 6.2547) < 0.01)
 
-# The breaker must now be reachable: an 18% fall from the NEW peak, not from a
-# forgotten smaller one.
-_STATE["realized_pnl_total"] = -625.47 - 1700.0     # ~18% below the new peak
+# The breaker must be reachable from the NEW base, not a forgotten smaller one.
+_STATE["realized_pnl_total"] = -1900.0              # 19% below the $10,000 base
 check("DD breaker fires again after re-anchoring",
       risk_manager.current_drawdown_pct() > 18.0)
 
