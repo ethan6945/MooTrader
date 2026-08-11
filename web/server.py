@@ -627,8 +627,15 @@ def api_approvals():
 
 @app.route("/api/closed")
 def api_closed():
+    """The History tab — the RAW ledger, including quality-marked rows.
+
+    This view is the record of what was written, so it must show everything;
+    hiding a duplicated close here is how nobody notices there was one. Rows
+    carry their ledger_quality marking in `extra` so the UI can label them.
+    Anything that reasons about performance takes the default instead.
+    """
     n = int(request.args.get("n", 100))
-    rows = db.closed_trades(limit=10_000)
+    rows = db.closed_trades(limit=10_000, include_excluded=True)
     return jsonify(rows[-n:])
 
 

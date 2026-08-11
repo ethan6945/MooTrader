@@ -18,16 +18,23 @@ WHY THIS IS NOT A ONE-LINER
   So months are fetched with pacing and cached to disk. Re-running is cheap and
   the picture only gets more complete.
 
-WHAT IT CAN AND CANNOT SETTLE
-  It can confirm the CURRENT position against `position_list_query`, which is
-  authoritative and needs no history.
+DEDUPLICATION IS NOT OPTIONAL
+  moomoo treats the `end` of a query window as INCLUSIVE. Paging by calendar
+  month with [1st, next 1st] therefore returns anything filled on the boundary
+  day in BOTH months. A first version of this script did exactly that and
+  reported six naked short positions and a contradiction between the broker's
+  position list and its own order history. There was no contradiction: every
+  one of those shorts was precisely the double-counted sell quantity — AMAT -5
+  against a duplicated sell of 5, SWKS -10 against 10, and so on down the list.
 
-  It cannot, on its own, settle cumulative realized PnL. The broker's position
-  list and its order history disagree here: the list holds JNJ alone, while the
-  order arithmetic over the fetched window nets -30 shares across ten symbols.
-  One of those is wrong, or the account was reset at some point and only the
-  orders survived. Until that is explained, treat our ledger's PnL as our
-  ledger's, not as verified.
+  So fills are keyed by order_id and merged into a set. Windows still overlap by
+  design (a boundary fill must land in at least one), and the dedup is what
+  makes the arithmetic true rather than the window arithmetic.
+
+PARTIAL FILLS
+  FILLED_PART carries a real `dealt_qty` and is a real position change. Counting
+  only FILLED_ALL silently drops it, which shows up later as a position the
+  broker holds and we do not.
 """
 from __future__ import annotations
 
@@ -111,13 +118,19 @@ def fetch(refresh: bool) -> dict:
                 ret, od = ctx.history_order_list_query(
                     trd_env=TrdEnv.SIMULATE, acc_id=acc_id, start=a, end=z)
                 if ret == RET_OK:
-                    f = od[od["order_status"].astype(str)
-                           .str.contains("FILLED_ALL", na=False)]
-                    got = [{"t": str(r["create_time"]),
+                    st = od["order_status"].astype(str)
+                    # FILLED_PART moves the position too; excluding it loses
+                    # real quantity and shows up later as a broker-only holding.
+                    f = od[st.str.contains("FILLED_ALL", na=False)
+                           | st.str.contains("FILLED_PART", na=False)]
+                    f = f[f["dealt_qty"].astype(float) > 0]
+                    got = [{"order_id": str(r["order_id"]),
+                            "t": str(r["create_time"]),
                             "sym": str(r["code"]).split(".")[-1],
                             "side": str(r["trd_side"]),
-                            "qty": int(r["dealt_qty"]),
-                            "px": float(r.get("dealt_avg_price") or 0)}
+                            "qty": int(float(r["dealt_qty"])),
+                            "px": float(r.get("dealt_avg_price") or 0),
+                            "status": str(r["order_status"])}
                            for _, r in f.iterrows()]
                     break
                 time.sleep(PACE_SECONDS * (attempt + 2))   # backoff, then retry
@@ -137,15 +150,37 @@ def fetch(refresh: bool) -> dict:
         ctx.close()
 
 
+def dedupe(data: dict) -> tuple[dict, int]:
+    """One entry per order_id. Windows overlap on boundary days by design."""
+    uniq: dict[str, dict] = {}
+    raw = 0
+    for month in sorted(data["fills"]):
+        for f in data["fills"][month]:
+            raw += 1
+            oid = f.get("order_id")
+            if not oid:
+                # Cache predating order_id capture — fall back to a natural key
+                # so an old cache still reconciles rather than silently
+                # double-counting the way it used to.
+                oid = f"legacy:{f['t']}|{f['sym']}|{f['side']}|{f['qty']}|{f['px']}"
+            uniq[oid] = f
+    return uniq, raw
+
+
 def report(data: dict) -> int:
-    all_fills = [f for month in data["fills"].values() for f in month]
+    uniq, raw_count = dedupe(data)
+    all_fills = list(uniq.values())
     buys, sells = Counter(), Counter()
     for f in all_fills:
         (buys if f["side"] == "BUY" else sells)[f["sym"]] += f["qty"]
 
     months = sorted(data["fills"])
-    print(f"broker fills cached: {len(all_fills)} across {len(months)} month(s) "
+    print(f"broker fills: {len(all_fills)} unique across {len(months)} month(s) "
           f"({months[0] if months else '—'} … {months[-1] if months else '—'})")
+    if raw_count != len(all_fills):
+        print(f"  {raw_count - len(all_fills)} duplicate row(s) collapsed — "
+              f"moomoo's query `end` is inclusive, so a fill on a month boundary "
+              f"is returned by both months")
     if data["missing_months"]:
         print(f"  INCOMPLETE — {len(data['missing_months'])} month(s) could not "
               f"be fetched: {', '.join(data['missing_months'][:6])}"

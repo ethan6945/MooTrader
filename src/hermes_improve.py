@@ -129,8 +129,11 @@ def diagnose() -> dict:
         import sqlite3
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute(
+            # ts, not id — see db.closed_trades(). After the ledger merge these
+            # disagree, and "the last 30 trades" ordered by id is actually the
+            # oldest 30. This payload goes to the LLM as recent performance.
             "SELECT symbol, pnl, pnl_pct, r_multiple, exit_reason, strategy, ts "
-            "FROM closed_trades ORDER BY id DESC LIMIT 30"
+            "FROM closed_trades ORDER BY ts DESC, id DESC LIMIT 30"
         ).fetchall()
         conn.close()
         trades = [dict(zip(["symbol","pnl","pnl_pct","r_multiple","exit_reason","strategy","ts"], r)) for r in rows]

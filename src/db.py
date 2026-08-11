@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -266,7 +267,29 @@ def _ensure_initialised() -> None:
             if user_v < 3:
                 _migrate_v3(c)
             if user_v < 4:
-                _migrate_v4(c)
+                # v4 restructures kv_state, and a backend built before it reads
+                # the result as duplicate keys. So unlike the earlier additive
+                # migrations, this one is gated: it must be asked for.
+                #
+                # It was not, once. Pointing MMT_HOME at the packaged app's
+                # directory and merely READING state was enough — importing db
+                # and calling get_state() runs this function, and the production
+                # database was upgraded out from under a binary that cannot read
+                # it. Nothing announced it; it surfaced as one kv_state key
+                # holding two different values.
+                #
+                # Set MMT_ALLOW_SCHEMA_UPGRADE=1 to run it deliberately, from a
+                # migration tool, on a database you intend to upgrade.
+                if os.getenv("MMT_ALLOW_SCHEMA_UPGRADE", "").strip() in ("1", "true", "yes"):
+                    _migrate_v4(c)
+                else:
+                    log.warning(
+                        "DB at %s is schema v%d; v%d is available but NOT applied "
+                        "— set MMT_ALLOW_SCHEMA_UPGRADE=1 to upgrade deliberately. "
+                        "Continuing on v%d.", DB_FILE, user_v, SCHEMA_VERSION, user_v)
+                    c.commit()
+                    _initialised = True
+                    return
             if user_v < SCHEMA_VERSION:
                 c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             c.commit()
@@ -687,9 +710,29 @@ def _scope_for(key: str, account_id: str) -> str:
     return account_id if key in ACCOUNT_SCOPED_KEYS else GLOBAL_SCOPE
 
 
+def _kv_is_scoped(c) -> bool:
+    """Does this database's kv_state carry an account scope (v4) or not (v3)?
+
+    Both must work. The authoritative production database is still v3 and must
+    stay that way until a rebuilt app can read v4, while this code has to be
+    able to read it — for the migration rehearsal, for reconciliation, for any
+    inspection. Assuming v4 turned a read into a crash the moment the schema
+    guard started doing its job.
+    """
+    return any(r[1] == "account_id"
+               for r in c.execute("PRAGMA table_info(kv_state)"))
+
+
 def _read_scoped(c, account_id: str) -> dict:
-    """Global rows overlaid with this account's rows."""
+    """Global rows overlaid with this account's rows (v4), or every row (v3)."""
     out = {}
+    if not _kv_is_scoped(c):
+        for r in c.execute("SELECT key, value FROM kv_state").fetchall():
+            try:
+                out[r["key"]] = json.loads(r["value"])
+            except json.JSONDecodeError:
+                out[r["key"]] = r["value"]
+        return out
     for scope in (GLOBAL_SCOPE, account_id) if account_id else (GLOBAL_SCOPE,):
         for r in c.execute("SELECT key, value FROM kv_state WHERE account_id = ?",
                            (scope,)).fetchall():
@@ -701,12 +744,19 @@ def _read_scoped(c, account_id: str) -> dict:
 
 
 def _write_scoped(c, updates: dict, account_id: str) -> None:
+    scoped = _kv_is_scoped(c)
     for k, v in updates.items():
-        c.execute(
-            "INSERT OR REPLACE INTO kv_state (account_id, key, value) "
-            "VALUES (?, ?, ?)",
-            (_scope_for(k, account_id), k, json.dumps(v, default=str)),
-        )
+        if scoped:
+            c.execute(
+                "INSERT OR REPLACE INTO kv_state (account_id, key, value) "
+                "VALUES (?, ?, ?)",
+                (_scope_for(k, account_id), k, json.dumps(v, default=str)),
+            )
+        else:
+            c.execute(
+                "INSERT OR REPLACE INTO kv_state (key, value) VALUES (?, ?)",
+                (k, json.dumps(v, default=str)),
+            )
 
 
 def get_state() -> dict:
@@ -857,8 +907,41 @@ def closed_trade_insert(row: dict) -> None:
         ))
 
 
-def closed_trades(limit: int = 200) -> list[dict]:
+def is_excluded(row: dict) -> bool:
+    """Is this row marked as not representing real trading performance?
+
+    Set by the ledger-quality migration on records that are in the ledger but
+    are not trades: a synthetic TST test row, and the second copy of an MRK
+    close that was booked twice. They stay in the table — deleting evidence to
+    make a number look better is how a ledger stops being one — but they must
+    not reach anything that reasons about performance.
+    """
+    extra = row.get("extra")
+    if not extra:
+        return False
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except (json.JSONDecodeError, TypeError):
+            return False
+    if not isinstance(extra, dict):
+        return False
+    return bool((extra.get("ledger_quality") or {}).get("excluded_from_performance"))
+
+
+def closed_trades(limit: int = 200, include_excluded: bool = False) -> list[dict]:
     """MOST RECENT `limit` closed trades, in chronological (oldest→newest) order.
+
+    Returns the EFFECTIVE ledger by default — quality-marked rows are filtered
+    out. Pass include_excluded=True for the raw ledger, which is what a history
+    view or an audit wants; every consumer that reasons about performance or
+    risk (trade_stats, self_review, autopilot, adaptive_sizing, blacklist,
+    strategy_gate, relative_strength) wants the default.
+
+    The filter lives here rather than at the eleven call sites for the same
+    reason the account scoping does: one of eleven will eventually be added
+    without it, and a duplicate MRK close inside the sizing window is a
+    real-money decision made on a trade that never happened.
 
     P1 fix 2026-07-07: was `ORDER BY id ASC LIMIT ?` — the OLDEST N rows.
     Every caller (trade_stats(50), autopilot rollback window, AI param check,
@@ -866,16 +949,30 @@ def closed_trades(limit: int = 200) -> list[dict]:
     past `limit` the stats/autopilot would have been frozen on the earliest
     trades forever. Inner DESC picks the newest N; outer ASC restores the
     chronological order callers iterate in."""
+    # Ordered by ts, not id. id is insertion order, and those stopped agreeing
+    # the moment the repo-era ledger was merged in: the app's own six trades
+    # hold ids 1-6 (August) while the thirty imported ones hold 7-36 (June and
+    # July). "ORDER BY id DESC LIMIT 50" then returns the OLDEST trades under
+    # the name of the newest, which silently feeds the wrong window to
+    # trade_stats, self_review, the autopilot's learning window and the equity
+    # curve. Ties break on id so the order is still total.
+    # Over-fetch, then filter, then trim: applying LIMIT before the exclusion
+    # would return fewer than `limit` usable rows and quietly shrink every
+    # analysis window by however many marked rows happened to fall inside it.
+    fetch = limit if include_excluded else limit + 64
     with conn() as c:
         rows = c.execute(
             """
             SELECT * FROM (
-                SELECT * FROM closed_trades ORDER BY id DESC LIMIT ?
-            ) ORDER BY id ASC
+                SELECT * FROM closed_trades ORDER BY ts DESC, id DESC LIMIT ?
+            ) ORDER BY ts ASC, id ASC
             """,
-            (limit,),
+            (fetch,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    if not include_excluded:
+        out = [r for r in out if not is_excluded(r)]
+    return out[-limit:]
 
 
 def last_sl_close_for_symbol(symbol: str) -> dict | None:

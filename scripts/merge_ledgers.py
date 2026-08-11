@@ -187,19 +187,31 @@ def apply_merge():
     now = datetime.now(timezone.utc).isoformat()
     src = sqlite3.connect(f"file:{REPO_DB}?mode=ro", uri=True)
     src.row_factory = sqlite3.Row
-    dst = sqlite3.connect(str(APP_DB))
+    dst = sqlite3.connect(str(APP_DB), timeout=30)
     dst.row_factory = sqlite3.Row
+    # Wait for a competing writer rather than failing on "database is locked".
+    # Without this the loser of a race gets an OperationalError — safe, since it
+    # never imports, but it reports a lock problem when the truth is "somebody
+    # else already did this". Waiting lets it read the winner's receipt and say so.
+    dst.execute("PRAGMA busy_timeout = 30000")
     moved = {}
 
     try:
-        # Re-check inside the write path, not just in plan(): two operators, or
-        # a retry after a partial failure, must not both get past the check.
+        # BEGIN IMMEDIATE first, THEN check. Checking before taking the write
+        # lock leaves a window where two processes both read "not applied", both
+        # proceed, and the ledger ends up with the archive in it twice. Taking
+        # the lock first makes the loser block until the winner commits, so its
+        # check then sees the receipt the winner just wrote.
+        dst.execute("BEGIN IMMEDIATE")
         st = batch_state(dst)
         if st["applied"]:
+            # Raise only — the except below owns the rollback. Rolling back here
+            # too made the second ROLLBACK fail with "no transaction is active",
+            # and that OperationalError then replaced the real reason: the loser
+            # of a race reported a lock problem instead of "already applied".
             raise RuntimeError(
                 f"batch {MERGE_TAG!r} already applied "
                 f"({st['tagged_rows']} tagged rows) — refusing to double-import")
-        dst.execute("BEGIN IMMEDIATE")
         for table in ("closed_trades", "audit", "history"):
             s_cols = set(_cols(src, table))
             d_cols = _cols(dst, table)
