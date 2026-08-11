@@ -244,6 +244,18 @@ def transaction():
         c.close()
 
 
+def _upgrade_allowed() -> bool:
+    """Is this process permitted to change a database's schema?
+
+    Off by default. A schema upgrade is a decision about a file another program
+    may depend on — the packaged app runs a frozen backend that predates v4 and
+    reads its kv_state as duplicate keys — and it must never be a side effect of
+    reading state.
+    """
+    return os.getenv("MMT_ALLOW_SCHEMA_UPGRADE", "").strip().lower() in (
+        "1", "true", "yes")
+
+
 def _ensure_initialised() -> None:
     """Run schema + migration exactly once per process."""
     global _initialised
@@ -257,41 +269,63 @@ def _ensure_initialised() -> None:
         try:
             c.execute("PRAGMA journal_mode=WAL")
             user_v = c.execute("PRAGMA user_version").fetchone()[0]
-            # Run SCHEMA (idempotent CREATE IF NOT EXISTS) — works for fresh DBs
-            # and is a no-op for already-migrated DBs.
-            c.executescript(SCHEMA)
-            if user_v == 0:
+            existing = {r[0] for r in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'")}
+
+            # The version decision happens BEFORE any schema statement runs.
+            #
+            # It used to run executescript(SCHEMA) first and decide afterwards.
+            # SCHEMA carries the v4 tables, so refusing to upgrade a v3 database
+            # still created `accounts` and `execution_sessions` in it: a database
+            # left reporting user_version=3 while holding half of v4. The refusal
+            # logged correctly and was, on disk, not a refusal.
+            if not existing:
+                # Fresh database — nothing to preserve, so build it current.
+                c.executescript(SCHEMA)
                 _migrate_from_json(c)
-            if user_v < 2:
-                _migrate_v2(c)
-            if user_v < 3:
-                _migrate_v3(c)
-            if user_v < 4:
-                # v4 restructures kv_state, and a backend built before it reads
-                # the result as duplicate keys. So unlike the earlier additive
-                # migrations, this one is gated: it must be asked for.
-                #
-                # It was not, once. Pointing MMT_HOME at the packaged app's
-                # directory and merely READING state was enough — importing db
-                # and calling get_state() runs this function, and the production
-                # database was upgraded out from under a binary that cannot read
-                # it. Nothing announced it; it surfaced as one kv_state key
-                # holding two different values.
-                #
-                # Set MMT_ALLOW_SCHEMA_UPGRADE=1 to run it deliberately, from a
-                # migration tool, on a database you intend to upgrade.
-                if os.getenv("MMT_ALLOW_SCHEMA_UPGRADE", "").strip() in ("1", "true", "yes"):
-                    _migrate_v4(c)
-                else:
+                c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                log.info("SQLite created at v%d: %s", SCHEMA_VERSION, DB_FILE)
+
+            elif user_v > SCHEMA_VERSION:
+                # Written by a newer build. Touching it could destroy structure
+                # this code does not know about.
+                log.warning("DB at %s is schema v%d but this build knows v%d — "
+                            "opening read-only-ish, no schema changes applied.",
+                            DB_FILE, user_v, SCHEMA_VERSION)
+                _initialised = True
+                return
+
+            elif user_v < SCHEMA_VERSION:
+                if not _upgrade_allowed():
+                    # ZERO schema writes. Not one CREATE TABLE IF NOT EXISTS,
+                    # not one index: an upgrade nobody asked for is exactly how
+                    # the production database ended up half-migrated under a
+                    # frozen backend that cannot read the result.
                     log.warning(
                         "DB at %s is schema v%d; v%d is available but NOT applied "
                         "— set MMT_ALLOW_SCHEMA_UPGRADE=1 to upgrade deliberately. "
-                        "Continuing on v%d.", DB_FILE, user_v, SCHEMA_VERSION, user_v)
-                    c.commit()
+                        "Continuing on v%d, no schema changes made.",
+                        DB_FILE, user_v, SCHEMA_VERSION, user_v)
                     _initialised = True
                     return
-            if user_v < SCHEMA_VERSION:
+                c.executescript(SCHEMA)
+                if user_v == 0:
+                    _migrate_from_json(c)
+                if user_v < 2:
+                    _migrate_v2(c)
+                if user_v < 3:
+                    _migrate_v3(c)
+                if user_v < 4:
+                    _migrate_v4(c)
                 c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                log.info("SQLite upgraded v%d -> v%d: %s",
+                         user_v, SCHEMA_VERSION, DB_FILE)
+
+            else:
+                # Already current. SCHEMA is idempotent here and heals an index
+                # dropped by hand; it adds nothing this version does not define.
+                c.executescript(SCHEMA)
             c.commit()
         finally:
             c.close()
@@ -854,7 +888,8 @@ def audit_recent(limit: int = 100, action: str | None = None) -> list[dict]:
     if action:
         q += " WHERE action = ?"
         args = (action,)
-    q += " ORDER BY id DESC LIMIT ?"
+    # ts, not id — insertion order stopped tracking time at the ledger merge.
+    q += " ORDER BY ts DESC, id DESC LIMIT ?"
     args = args + (limit,)
     with conn() as c:
         rows = c.execute(q, args).fetchall()
@@ -875,7 +910,8 @@ def audit_gate_summary(limit: int = 200) -> dict[str, int]:
     with conn() as c:
         rows = c.execute("""
             SELECT gate, COUNT(*) AS n FROM (
-              SELECT gate FROM audit WHERE action='skip' ORDER BY id DESC LIMIT ?
+              SELECT gate FROM audit WHERE action='skip'
+              ORDER BY ts DESC, id DESC LIMIT ?
             ) GROUP BY gate ORDER BY n DESC
         """, (limit,)).fetchall()
     return {r["gate"] or "?": r["n"] for r in rows}
@@ -989,17 +1025,25 @@ def last_sl_close_for_symbol(symbol: str) -> dict | None:
     scratch losses.
     """
     with conn() as c:
-        row = c.execute(
+        rows = c.execute(
             """
             SELECT * FROM closed_trades
             WHERE symbol = ?
               AND (exit_reason IN ('SL', 'SL_BRACKET')
                    OR (exit_reason = 'BREAKEVEN' AND pnl < 0))
-            ORDER BY id DESC LIMIT 1
+            ORDER BY ts DESC, id DESC LIMIT 5
             """,
             (symbol,),
-        ).fetchone()
-    return dict(row) if row else None
+        ).fetchall()
+    # Effective ledger only. This drives the stop-loss re-entry cooldown, so a
+    # quality-marked row here blocks a real entry on the strength of a trade
+    # that did not happen — the synthetic TST record is itself an SL close.
+    # Take a few and pick the newest that counts, rather than one that might not.
+    for row in rows:
+        d = dict(row)
+        if not is_excluded(d):
+            return d
+    return None
 
 
 # ---------- history ----------
@@ -1027,7 +1071,9 @@ def history_insert(row: dict) -> None:
 def history_rows(limit: int = 500) -> list[dict]:
     with conn() as c:
         rows = c.execute(
-            "SELECT * FROM history ORDER BY id DESC LIMIT ?", (limit,)
+            # ts, not id: the equity curve is drawn from these rows and the
+            # merge interleaved 582 imported ones among the app's own.
+            "SELECT * FROM history ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
     out = []
     for r in rows:

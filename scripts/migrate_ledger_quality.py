@@ -109,14 +109,59 @@ def _effective_total(c) -> float:
     return round(tot, 2)
 
 
+ACCOUNT_SCOPED = {"realized_pnl_total", "peak_equity", "budget_usd",
+                  "auto_budget_seed"}
+
+
+def _kv_scoped(c) -> bool:
+    return any(r[1] == "account_id" for r in c.execute("PRAGMA table_info(kv_state)"))
+
+
+def _scope_of(c, key: str) -> str | None:
+    """Which account scope this key lives under on a v4 database.
+
+    Writing realized_pnl_total to the global scope on a v4 database leaves the
+    account-scoped row untouched — and that is the one the reader overlays last,
+    so the migration would appear to succeed and change nothing. This looks up
+    where the key actually is rather than assuming.
+    """
+    if not _kv_scoped(c):
+        return None
+    r = c.execute("SELECT account_id FROM kv_state WHERE key = ? "
+                  "ORDER BY account_id <> '' DESC LIMIT 1", (key,)).fetchone()
+    if r:
+        return r["account_id"]
+    if key in ACCOUNT_SCOPED:
+        a = c.execute("SELECT account_id FROM accounts ORDER BY created_at "
+                      "LIMIT 1").fetchone()
+        if a:
+            return a["account_id"]
+    return ""
+
+
 def _kv(c, key, default=None):
-    r = c.execute("SELECT value FROM kv_state WHERE key = ?", (key,)).fetchone()
+    if _kv_scoped(c):
+        r = c.execute("SELECT value FROM kv_state WHERE key = ? "
+                      "ORDER BY account_id <> '' DESC LIMIT 1", (key,)).fetchone()
+    else:
+        r = c.execute("SELECT value FROM kv_state WHERE key = ?", (key,)).fetchone()
     if not r:
         return default
     try:
         return json.loads(r["value"])
     except (json.JSONDecodeError, TypeError):
         return r["value"]
+
+
+def _kv_set(c, key, value) -> None:
+    """Write a key back to the scope it already occupies."""
+    payload = json.dumps(value, default=str)
+    if _kv_scoped(c):
+        c.execute("INSERT OR REPLACE INTO kv_state (account_id, key, value) "
+                  "VALUES (?, ?, ?)", (_scope_of(c, key), key, payload))
+    else:
+        c.execute("INSERT OR REPLACE INTO kv_state (key, value) VALUES (?, ?)",
+                  (key, payload))
 
 
 def run(db_path: Path, apply: bool) -> int:
@@ -126,10 +171,13 @@ def run(db_path: Path, apply: bool) -> int:
     now = datetime.now(timezone.utc).isoformat()
 
     prior = _kv(c, RECEIPT_KEY)
-    if prior and prior.get("version") == VERSION:
-        print(f"  migration v{VERSION} already applied at {prior.get('at')}")
-        print(f"    marked {prior.get('marked')} row(s), "
-              f"realized_pnl_total -> {prior.get('realized_pnl_total')}")
+    entries = prior if isinstance(prior, list) else ([prior] if prior else [])
+    done = [e for e in entries if isinstance(e, dict) and e.get("version") == VERSION]
+    if done:
+        print(f"  migration v{VERSION} already applied — {len(done)} prior run(s):")
+        for e in done[-3:]:
+            print(f"    {e.get('at', '?')[:19]}  marked {e.get('marked')}  "
+                  f"realized_pnl_total -> {e.get('realized_pnl_total')}")
 
     targets = _find_targets(c)
     raw_total = round(c.execute(
@@ -165,11 +213,9 @@ def run(db_path: Path, apply: bool) -> int:
         base = float(_kv(c, "auto_budget_seed") or 0) or budget
         peak = compute_peak_equity(base, eff, prior_peak=0.0) if base else None
 
-        c.execute("INSERT OR REPLACE INTO kv_state (key,value) VALUES (?,?)",
-                  ("realized_pnl_total", json.dumps(eff)))
+        _kv_set(c, "realized_pnl_total", eff)
         if peak is not None:
-            c.execute("INSERT OR REPLACE INTO kv_state (key,value) VALUES (?,?)",
-                      ("peak_equity", json.dumps(peak)))
+            _kv_set(c, "peak_equity", peak)
 
         # Close param_history entries still flagged active whose override is gone.
         hist = _kv(c, "param_history", []) or []
@@ -182,15 +228,23 @@ def run(db_path: Path, apply: bool) -> int:
                 h["closed_by"] = "ledger-quality migration: override cleared"
                 h["closed_at"] = now
                 closed += 1
-        c.execute("INSERT OR REPLACE INTO kv_state (key,value) VALUES (?,?)",
-                  ("param_history", json.dumps(hist[-50:], default=str)))
+        _kv_set(c, "param_history", hist[-50:])
 
-        c.execute("INSERT OR REPLACE INTO kv_state (key,value) VALUES (?,?)",
-                  (RECEIPT_KEY, json.dumps({
-                      "version": VERSION, "at": now, "marked": marked,
-                      "raw_total": raw_total, "realized_pnl_total": eff,
-                      "peak_equity": peak, "param_history_closed": closed},
-                      default=str)))
+        # Append-only receipt. Overwriting it lost the record of every earlier
+        # run — including the one that reported what a previous version of this
+        # migration did, which is the only way to answer "when did
+        # realized_pnl_total change, and to what" after the fact.
+        log_entries = _kv(c, RECEIPT_KEY, None)
+        if isinstance(log_entries, dict):        # single-receipt format
+            log_entries = [log_entries]
+        elif not isinstance(log_entries, list):
+            log_entries = []
+        log_entries.append({
+            "version": VERSION, "at": now, "marked": marked,
+            "raw_total": raw_total, "realized_pnl_total": eff,
+            "peak_equity": peak, "param_history_closed": closed,
+            "kv_scoped": _kv_scoped(c)})
+        _kv_set(c, RECEIPT_KEY, log_entries)
         c.execute("COMMIT")
     except Exception:
         c.execute("ROLLBACK")

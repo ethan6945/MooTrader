@@ -57,8 +57,18 @@ _IDENTIFIER_KEYS = {
     "TELEGRAM_CHAT_ID",
     "MOO_ACC_ID", "MOOMOO_ACC_ID", "ACC_ID", "ACCOUNT_ID",
     "MOO_LOGIN", "MOOMOO_LOGIN", "OPEND_LOGIN", "MOO_USER", "MOOMOO_USER",
+    "OPEND_LOGIN_ACCOUNT", "OPEND_ACCOUNT", "MOO_LOGIN_ACCOUNT",
     "MOO_SECURITY_FIRM",
 }
+
+# Substring rules, so a key added later is covered without editing this file.
+_IDENTIFIER_MARKERS = ("LOGIN", "ACC_ID", "CHAT_ID")
+
+# …with an explicit exemption list, because the substring rules are blunt.
+# ACCOUNT_USD is the trading budget. Referencing it would replace a number the
+# config check compares across .env files with an opaque hash, and every
+# baseline comparison would start failing for no reason.
+_NOT_IDENTIFIERS = {"ACCOUNT_USD", "MAX_POSITION_PCT"}
 
 
 def is_secret_key(name: str) -> bool:
@@ -67,8 +77,16 @@ def is_secret_key(name: str) -> bool:
 
 
 def is_identifier_key(name: str) -> bool:
-    """True for keys that identify an account or person rather than authenticate."""
-    return name.strip().upper() in _IDENTIFIER_KEYS
+    """True for keys that identify an account or person rather than authenticate.
+
+    OPEND_LOGIN_ACCOUNT is the reason the substring rules exist: it sat in both
+    .env files and in every backup, matched none of the credential markers, and
+    was not in the exact-name list either. It names the brokerage login.
+    """
+    k = name.strip().upper()
+    if k in _NOT_IDENTIFIERS:
+        return False
+    return k in _IDENTIFIER_KEYS or any(m in k for m in _IDENTIFIER_MARKERS)
 
 
 def redacted_env_text(text: str) -> str:
@@ -122,22 +140,28 @@ def diagnose() -> dict:
                     continue
                 env[k.strip()] = v.split("#")[0].strip()
 
-    # Recent closed trades
-    db_path = DATA / "trader.db"
+    # Recent closed trades — via db.closed_trades(), not raw SQL.
+    #
+    # This payload is what the LLM is told is recent performance. Reading the
+    # table directly bypassed both corrections that live in that function: the
+    # ts ordering (id stopped tracking time at the ledger merge, so "the last
+    # 30" were the oldest 30) and the effective-ledger filter (a synthetic test
+    # row and a double-booked close were being presented as real trades).
     trades = []
+    db_path = DATA / "trader.db"
     if db_path.exists():
-        import sqlite3
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
-            # ts, not id — see db.closed_trades(). After the ledger merge these
-            # disagree, and "the last 30 trades" ordered by id is actually the
-            # oldest 30. This payload goes to the LLM as recent performance.
-            "SELECT symbol, pnl, pnl_pct, r_multiple, exit_reason, strategy, ts "
-            "FROM closed_trades ORDER BY ts DESC, id DESC LIMIT 30"
-        ).fetchall()
-        conn.close()
-        trades = [dict(zip(["symbol","pnl","pnl_pct","r_multiple","exit_reason","strategy","ts"], r)) for r in rows]
-
+        try:
+            sys.path.insert(0, str(ROOT))
+            from src import db as _db
+            trades = [
+                {"symbol": r.get("symbol"), "pnl": r.get("pnl"),
+                 "pnl_pct": r.get("pnl_pct"), "r_multiple": r.get("r_multiple"),
+                 "exit_reason": r.get("exit_reason"), "strategy": r.get("strategy"),
+                 "ts": r.get("ts")}
+                for r in _db.closed_trades(limit=30)
+            ]
+        except Exception as e:
+            print(f"diagnose: closed_trades unavailable ({e})", file=sys.stderr)
     # Self-review latest
     sr_dir = DATA / "self_review"
     latest_sr = None
