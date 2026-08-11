@@ -42,23 +42,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
 
-# name → (script, needs_sandboxed_home)
+# name → (script, needs_sandboxed_home, ci_safe, timeout_seconds)
+#
+# ci_safe=False means the check reads THIS MACHINE's real configuration — the
+# live .env, the values actually in use. Those are local checks by nature: on a
+# runner there is no .env to compare against, so they would either fail or, far
+# worse, pass vacuously and report "clean" about a file that was not there.
+#
+# Every suite carries a timeout. test_merge_concurrency spawns two processes
+# that race for a SQLite write lock; if the lock logic regresses into a deadlock
+# the suite does not fail, it hangs, and a hung CI job is an unattended one.
 CHECKS = {
-    "freeze":     ("scripts/test_param_freeze.py", True),
-    "callchains": ("scripts/test_freeze_callchains.py", True),
-    "identity":   ("scripts/test_identity.py", True),
-    "quadrants":  ("scripts/test_schema_quadrants.py", True),
-    "mergerace":  ("scripts/test_merge_concurrency.py", True),
-    "qualmig":    ("scripts/test_quality_migration.py", True),
-    "redaction":  ("scripts/test_env_redaction.py", True),
-    "budget":     ("scripts/test_auto_budget.py", True),
-    "baseline":   ("scripts/config_baseline.py", False),
-    "secrets":    ("scripts/check_no_secrets.py", False),
+    "freeze":     ("scripts/test_param_freeze.py",       True,  True,  120),
+    "callchains": ("scripts/test_freeze_callchains.py",  True,  True,  120),
+    "identity":   ("scripts/test_identity.py",           True,  True,  120),
+    "quadrants":  ("scripts/test_schema_quadrants.py",   True,  True,  300),
+    "mergerace":  ("scripts/test_merge_concurrency.py",  True,  True,  180),
+    "qualmig":    ("scripts/test_quality_migration.py",  True,  True,  180),
+    "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
+    "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
+    "baseline":   ("scripts/config_baseline.py",         False, False, 120),
+    "secrets":    ("scripts/check_no_secrets.py",        False, False, 180),
 }
 
 
 def run_one(name: str, script: str, sandboxed: bool, tmp: Path,
-            verbose: bool) -> tuple[bool, str]:
+            verbose: bool, timeout: int) -> tuple[bool, str]:
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     if sandboxed:
         # A throwaway MMT_HOME so a test can never touch the live database.
@@ -66,8 +75,11 @@ def run_one(name: str, script: str, sandboxed: bool, tmp: Path,
         (home / "data").mkdir(parents=True, exist_ok=True)
         (home / "logs").mkdir(parents=True, exist_ok=True)
         env["MMT_HOME"] = str(home)
-    proc = subprocess.run([PY, script], cwd=ROOT, env=env,
-                          capture_output=True, text=True)
+    try:
+        proc = subprocess.run([PY, script], cwd=ROOT, env=env,
+                              capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"TIMED OUT after {timeout}s — treat as a failure, not a flake"
     out = (proc.stdout + proc.stderr).strip()
     if verbose and out:
         print("\n".join("      " + ln for ln in out.splitlines()))
@@ -85,18 +97,24 @@ def main() -> int:
                     help="print each check's full output")
     ap.add_argument("--only", nargs="+", metavar="NAME", choices=list(CHECKS),
                     help=f"run a subset: {', '.join(CHECKS)}")
+    ap.add_argument("--ci", action="store_true",
+                    help="only the suites that need no real .env, no OpenD and "
+                         "no network")
     args = ap.parse_args()
 
-    selected = args.only or list(CHECKS)
+    selected = args.only or [n for n, c in CHECKS.items()
+                             if c[2] or not args.ci]
     results: list[tuple[str, bool, str]] = []
 
-    print(f"Phase-0 checks — {len(selected)} suite(s)\n")
+    mode = " (CI subset — isolated only)" if args.ci else ""
+    print(f"Phase-0 checks — {len(selected)} suite(s){mode}\n")
     with tempfile.TemporaryDirectory(prefix="mmt-checks-") as td:
         tmp = Path(td)
         for name in selected:
-            script, sandboxed = CHECKS[name]
+            script, sandboxed, _ci, timeout = CHECKS[name]
             print(f"  {name:<12} ", end="", flush=True)
-            ok, summary = run_one(name, script, sandboxed, tmp, args.verbose)
+            ok, summary = run_one(name, script, sandboxed, tmp, args.verbose,
+                                  timeout)
             print(("PASS  " if ok else "FAIL  ") + summary)
             results.append((name, ok, summary))
 
