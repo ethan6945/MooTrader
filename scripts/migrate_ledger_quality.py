@@ -117,34 +117,72 @@ def _kv_scoped(c) -> bool:
     return any(r[1] == "account_id" for r in c.execute("PRAGMA table_info(kv_state)"))
 
 
-def _scope_of(c, key: str) -> str | None:
-    """Which account scope this key lives under on a v4 database.
+class Ambiguous(Exception):
+    """The migration cannot tell which account it is supposed to act on."""
+
+
+def resolve_account(c, requested: str | None) -> str | None:
+    """The single account this run operates on, or None on a v3 database.
+
+    Fails closed rather than guessing. Picking "the first account" quietly does
+    the wrong thing the moment a REAL account exists beside the paper one, and
+    this migration rewrites realized_pnl_total — the number the drawdown breaker
+    sizes against.
+    """
+    if not _kv_scoped(c):
+        if requested:
+            raise Ambiguous(
+                "--account given but this database has no account scope (v3). "
+                "Upgrade it first, or drop the flag.")
+        return None
+    accounts = [r["account_id"] for r in
+                c.execute("SELECT account_id FROM accounts ORDER BY created_at")]
+    if not accounts:
+        raise Ambiguous("v4 database with no accounts row — cannot attribute "
+                        "this migration to anything.")
+    if requested:
+        if requested not in accounts:
+            raise Ambiguous(f"account {requested} not in this database "
+                            f"({len(accounts)} known)")
+        return requested
+    if len(accounts) > 1:
+        raise Ambiguous(
+            f"{len(accounts)} accounts in this database — pass --account "
+            f"explicitly. Choices: {', '.join(a[:8] for a in accounts)}")
+    return accounts[0]
+
+
+def _scope_of(c, key: str, account_id: str | None) -> str | None:
+    """Which scope to read/write this key under.
 
     Writing realized_pnl_total to the global scope on a v4 database leaves the
     account-scoped row untouched — and that is the one the reader overlays last,
-    so the migration would appear to succeed and change nothing. This looks up
-    where the key actually is rather than assuming.
+    so the migration would appear to succeed and change nothing.
+
+    A key present in BOTH scopes is a corruption (it is what the accidental v4
+    migration produced), and silently choosing one would hide it.
     """
     if not _kv_scoped(c):
         return None
-    r = c.execute("SELECT account_id FROM kv_state WHERE key = ? "
-                  "ORDER BY account_id <> '' DESC LIMIT 1", (key,)).fetchone()
-    if r:
-        return r["account_id"]
-    if key in ACCOUNT_SCOPED:
-        a = c.execute("SELECT account_id FROM accounts ORDER BY created_at "
-                      "LIMIT 1").fetchone()
-        if a:
-            return a["account_id"]
-    return ""
+    rows = [r["account_id"] for r in
+            c.execute("SELECT account_id FROM kv_state WHERE key = ?", (key,))]
+    if len(rows) > 1:
+        raise Ambiguous(
+            f"key {key!r} exists in {len(rows)} scopes at once "
+            f"({', '.join((s or 'GLOBAL')[:8] for s in rows)}) — resolve that "
+            f"before running a migration that rewrites it.")
+    if rows:
+        return rows[0]
+    return account_id if key in ACCOUNT_SCOPED else ""
 
 
-def _kv(c, key, default=None):
-    if _kv_scoped(c):
-        r = c.execute("SELECT value FROM kv_state WHERE key = ? "
-                      "ORDER BY account_id <> '' DESC LIMIT 1", (key,)).fetchone()
-    else:
+def _kv(c, key, default=None, account_id=None):
+    scope = _scope_of(c, key, account_id)
+    if scope is None:
         r = c.execute("SELECT value FROM kv_state WHERE key = ?", (key,)).fetchone()
+    else:
+        r = c.execute("SELECT value FROM kv_state WHERE key = ? AND account_id = ?",
+                      (key, scope)).fetchone()
     if not r:
         return default
     try:
@@ -153,24 +191,31 @@ def _kv(c, key, default=None):
         return r["value"]
 
 
-def _kv_set(c, key, value) -> None:
+def _kv_set(c, key, value, account_id=None) -> None:
     """Write a key back to the scope it already occupies."""
     payload = json.dumps(value, default=str)
-    if _kv_scoped(c):
-        c.execute("INSERT OR REPLACE INTO kv_state (account_id, key, value) "
-                  "VALUES (?, ?, ?)", (_scope_of(c, key), key, payload))
-    else:
+    scope = _scope_of(c, key, account_id)
+    if scope is None:
         c.execute("INSERT OR REPLACE INTO kv_state (key, value) VALUES (?, ?)",
                   (key, payload))
+    else:
+        c.execute("INSERT OR REPLACE INTO kv_state (account_id, key, value) "
+                  "VALUES (?, ?, ?)", (scope, key, payload))
 
 
-def run(db_path: Path, apply: bool) -> int:
+def run(db_path: Path, apply: bool, account: str | None = None) -> int:
     c = sqlite3.connect(str(db_path) if apply else f"file:{db_path}?mode=ro",
                         uri=not apply)
     c.row_factory = sqlite3.Row
     now = datetime.now(timezone.utc).isoformat()
+    try:
+        account = resolve_account(c, account)
+    except Ambiguous as e:
+        print(f"  REFUSED: {e}")
+        c.close()
+        return 2
 
-    prior = _kv(c, RECEIPT_KEY)
+    prior = _kv(c, RECEIPT_KEY, account_id=account)
     entries = prior if isinstance(prior, list) else ([prior] if prior else [])
     done = [e for e in entries if isinstance(e, dict) and e.get("version") == VERSION]
     if done:
@@ -184,6 +229,7 @@ def run(db_path: Path, apply: bool) -> int:
         "SELECT COALESCE(SUM(pnl),0) FROM closed_trades").fetchone()[0], 2)
 
     print(f"\n  db: {db_path}")
+    print(f"  account: {account or '(v3, unscoped)'}")
     print(f"  rows to mark: {len(targets)}")
     for tid, cls, why in targets:
         r = c.execute("SELECT symbol, ts, pnl FROM closed_trades WHERE id=?",
@@ -208,17 +254,28 @@ def run(db_path: Path, apply: bool) -> int:
         marked = sum(1 for tid, cls, why in targets if _mark(c, tid, cls, why, now))
 
         eff = _effective_total(c)
-        budget = float(_kv(c, "budget_usd") or 0) or None
+        budget = float(_kv(c, "budget_usd", account_id=account) or 0) or None
         from src.risk_manager import compute_peak_equity
-        base = float(_kv(c, "auto_budget_seed") or 0) or budget
-        peak = compute_peak_equity(base, eff, prior_peak=0.0) if base else None
+        base = float(_kv(c, "auto_budget_seed", account_id=account) or 0) or budget
+        stored_peak = float(_kv(c, "peak_equity", account_id=account) or 0)
+        # prior_peak is the STORED peak, not 0. Passing 0 re-anchors, which is
+        # right when the capital base changes — and wrong here. This migration
+        # only removes non-trades from the total, so it can raise the effective
+        # equity but must never lower a high-water mark the account genuinely
+        # reached. A peak that walks down is a drawdown the breaker stops seeing.
+        peak = (compute_peak_equity(base, eff, prior_peak=stored_peak)
+                if base else None)
 
-        _kv_set(c, "realized_pnl_total", eff)
-        if peak is not None:
-            _kv_set(c, "peak_equity", peak)
+        writes = 0
+        if float(_kv(c, "realized_pnl_total", account_id=account) or 0) != eff:
+            _kv_set(c, "realized_pnl_total", eff, account_id=account)
+            writes += 1
+        if peak is not None and peak != stored_peak:
+            _kv_set(c, "peak_equity", peak, account_id=account)
+            writes += 1
 
         # Close param_history entries still flagged active whose override is gone.
-        hist = _kv(c, "param_history", []) or []
+        hist = _kv(c, "param_history", [], account_id=account) or []
         live = {r["key"][len("param_"):] for r in c.execute(
             "SELECT key FROM kv_state WHERE key LIKE 'param%' AND key != 'param_history'")}
         closed = 0
@@ -228,24 +285,35 @@ def run(db_path: Path, apply: bool) -> int:
                 h["closed_by"] = "ledger-quality migration: override cleared"
                 h["closed_at"] = now
                 closed += 1
-        _kv_set(c, "param_history", hist[-50:])
+        if closed:
+            _kv_set(c, "param_history", hist[-50:], account_id=account)
+            writes += 1
 
-        # Append-only receipt. Overwriting it lost the record of every earlier
-        # run — including the one that reported what a previous version of this
-        # migration did, which is the only way to answer "when did
-        # realized_pnl_total change, and to what" after the fact.
-        log_entries = _kv(c, RECEIPT_KEY, None)
-        if isinstance(log_entries, dict):        # single-receipt format
+        # The receipt keeps the FIRST run's evidence and is appended to only
+        # when something actually changed. Appending on every invocation buries
+        # the one entry that matters — what the original cleanup did — under a
+        # pile of "changed nothing" rows, and makes a no-op run indistinguishable
+        # from a real one in the audit trail.
+        log_entries = _kv(c, RECEIPT_KEY, None, account_id=account)
+        if isinstance(log_entries, dict):        # single-receipt legacy format
             log_entries = [log_entries]
         elif not isinstance(log_entries, list):
             log_entries = []
-        log_entries.append({
-            "version": VERSION, "at": now, "marked": marked,
-            "raw_total": raw_total, "realized_pnl_total": eff,
-            "peak_equity": peak, "param_history_closed": closed,
-            "kv_scoped": _kv_scoped(c)})
-        _kv_set(c, RECEIPT_KEY, log_entries)
-        c.execute("COMMIT")
+        changed = bool(marked or closed or writes)
+        if changed:
+            log_entries.append({
+                "version": VERSION, "at": now, "marked": marked,
+                "raw_total": raw_total, "realized_pnl_total": eff,
+                "peak_equity": peak, "param_history_closed": closed,
+                "kv_writes": writes, "account_id": account,
+                "kv_scoped": _kv_scoped(c)})
+            _kv_set(c, RECEIPT_KEY, log_entries, account_id=account)
+            c.execute("COMMIT")
+        else:
+            # Nothing to do. Roll back rather than commit, so a re-run leaves
+            # the file byte-identical instead of rewriting rows to their own
+            # values and touching the WAL.
+            c.execute("ROLLBACK")
     except Exception:
         c.execute("ROLLBACK")
         raise
@@ -271,13 +339,23 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", required=True, type=Path)
+    ap.add_argument("--account", default=None,
+                    help="account_id to operate on; required when the database "
+                         "holds more than one")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true")
     g.add_argument("--apply", action="store_true")
     a = ap.parse_args()
     if not a.db.exists():
         sys.exit(f"no such db: {a.db}")
-    return run(a.db, apply=a.apply)
+    try:
+        return run(a.db, apply=a.apply, account=a.account)
+    except Ambiguous as e:
+        # Raised by resolve_account up front, and by _scope_of once reads begin.
+        # Either way it means "this database is not in a state I can safely
+        # rewrite", which is a refusal, not a crash.
+        print(f"  REFUSED: {e}")
+        return 2
 
 
 if __name__ == "__main__":

@@ -38,14 +38,16 @@ def check(name, cond):
     else: FAIL += 1
 
 
+SCHEMA_V = 4
 V3_TABLES = {"audit", "closed_trades", "history", "kv_state", "open_trades"}
 V4_ONLY = {"accounts", "execution_sessions"}
 
 
 def snapshot(db: Path) -> dict:
+    import hashlib
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
-        return {
+        out = {
             "version": c.execute("PRAGMA user_version").fetchone()[0],
             "tables": {r[0] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -53,9 +55,18 @@ def snapshot(db: Path) -> dict:
             "kv_cols": [r[1] for r in c.execute("PRAGMA table_info(kv_state)")],
             "closed": c.execute("SELECT COUNT(*) FROM closed_trades").fetchone()[0],
             "audit": c.execute("SELECT COUNT(*) FROM audit").fetchone()[0],
+            "journal": c.execute("PRAGMA journal_mode").fetchone()[0],
         }
     finally:
         c.close()
+    # Hash and sidecars, so "no schema changes" can be checked against the file
+    # rather than against the schema alone. journal_mode is persistent: forcing
+    # WAL on a rollback-journal database rewrites its header and creates
+    # -wal/-shm. A refused open used to do exactly that, on every read.
+    out["sha"] = hashlib.sha256(db.read_bytes()).hexdigest()
+    out["sidecars"] = sorted(p.name[len(db.name):] for p in
+                             db.parent.glob(db.name + "-*"))
+    return out
 
 
 def open_db(home: Path, allow: bool, code: str = "from src import db; db.get_state()"):
@@ -103,7 +114,14 @@ def make_v3(path: Path):
                   (f"2026-07-{i+1:02d}T10:00:00",))
     c.execute("INSERT INTO kv_state (key,value) VALUES ('budget_usd','10000')")
     c.execute("INSERT INTO kv_state (key,value) VALUES ('ai_provider','\"deepseek\"')")
+    # Leave it on a rollback journal with no sidecars. A WAL database already
+    # has -wal/-shm, so testing against one hides the conversion entirely: the
+    # hash does not move and neither does the mode. This is the shape that
+    # exposes it.
+    c.execute("PRAGMA journal_mode=DELETE")
     c.commit(); c.close()
+    for side in path.parent.glob(path.name + "-*"):
+        side.unlink()
 
 
 tmp = Path(tempfile.mkdtemp(prefix="mmt-quadrants-"))
@@ -135,6 +153,10 @@ check("NO v4 tables created", not (V4_ONLY & after["tables"]))
 check("table set completely unchanged", after["tables"] == before["tables"])
 check("kv_state shape unchanged", after["kv_cols"] == before["kv_cols"])
 check("data untouched", (after["closed"], after["audit"]) == (before["closed"], before["audit"]))
+check(f"journal mode unchanged ({before['journal']})", after["journal"] == before["journal"])
+check("file hash unchanged", after["sha"] == before["sha"])
+check(f"no -wal/-shm sidecars created (got {after['sidecars']})",
+      after["sidecars"] == before["sidecars"])
 # Reading and writing state must still work on v3.
 r2 = open_db(home, allow=False, code=(
     "from src import db;"
@@ -193,6 +215,81 @@ check("kv_state not duplicated", c.execute(
 check("no key exists in two scopes at once", c.execute(
     "SELECT COUNT(*) FROM (SELECT key FROM kv_state GROUP BY key HAVING COUNT(*) > 1)"
 ).fetchone()[0] == 0)
+c.close()
+
+# ── 5. fresh database with legacy JSON to import ────────────────────────────
+# _migrate_from_json runs on a fresh database and loads the pre-SQLite files.
+# On v4 those rows and keys have to land under the SIMULATE account, not in the
+# global scope — global state is visible to EVERY account, so a paper budget and
+# a paper realized PnL parked there would be read by a REAL account as its own.
+print("\n5  fresh database importing legacy JSON")
+home = tmp / "legacy"
+(home / "data").mkdir(parents=True); (home / "logs").mkdir()
+import json as _json
+(home / "data" / "state.json").write_text(_json.dumps({
+    "budget_usd": 4500.0, "realized_pnl_total": -625.47, "peak_equity": 4500.0,
+    "halted": False, "ai_provider": "deepseek",
+}))
+(home / "data" / "trades.jsonl").write_text("\n".join(_json.dumps({
+    "ts": f"2026-06-{i+1:02d}T10:00:00", "symbol": f"L{i}", "qty": 1,
+    "entry": 10.0, "stop": 9.0, "exit": 9.5, "pnl": -0.5,
+    "exit_reason": "SL", "opened_at": f"2026-06-{i+1:02d}T09:00:00",
+}) for i in range(4)))
+
+r = open_db(home, allow=False)
+db = home / "data" / "trader.db"
+check("fresh + legacy import succeeds", r.returncode == 0 and db.exists())
+s = snapshot(db)
+check(f"built at v{SCHEMA_V} directly", s["version"] == 4)
+
+c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+c.row_factory = sqlite3.Row
+accounts = [dict(x) for x in c.execute("SELECT * FROM accounts")]
+check(f"exactly one account exists (got {len(accounts)})", len(accounts) == 1)
+check("and it is the SIMULATE one",
+      bool(accounts) and accounts[0]["trade_env"] == "SIMULATE")
+sim = accounts[0]["account_id"] if accounts else None
+
+imported = c.execute("SELECT COUNT(*) FROM closed_trades").fetchone()[0]
+check(f"legacy trades imported (got {imported})", imported == 4)
+check("every imported trade belongs to the SIMULATE account", c.execute(
+    "SELECT COUNT(*) FROM closed_trades WHERE account_id IS NOT ?",
+    (sim,)).fetchone()[0] == 0)
+
+# The money keys must be account-scoped; only software-level keys may be global.
+scopes = {r["key"]: r["account_id"] for r in
+          c.execute("SELECT key, account_id FROM kv_state")}
+for k in ("budget_usd", "realized_pnl_total", "peak_equity"):
+    check(f"{k} is scoped to the account, not global", scopes.get(k) == sim)
+check("ai_provider stays global (it is not account state)",
+      scopes.get("ai_provider") == "")
+c.close()
+
+# The property that matters: a REAL account must see none of it.
+probe = (
+    "import os, json;"
+    "from src.config import settings;"
+    "object.__setattr__(settings, 'moo_trade_env', 'REAL');"
+    "from src import db, identity;"
+    "identity.reset_cache();"
+    "st = db.get_state();"
+    "print(json.dumps({k: st.get(k) for k in "
+    "['budget_usd','realized_pnl_total','peak_equity','ai_provider']}))"
+)
+r = open_db(home, allow=False, code=probe)
+seen = {}
+for line in r.stdout.splitlines():
+    if line.startswith("{"):
+        seen = _json.loads(line)
+check("REAL sees no paper budget", seen.get("budget_usd") is None)
+check("REAL sees no paper realized PnL", seen.get("realized_pnl_total") is None)
+check("REAL sees no paper drawdown peak", seen.get("peak_equity") is None)
+check("REAL still sees global software settings",
+      seen.get("ai_provider") == "deepseek")
+
+c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+check("the REAL read did not mint a second SIMULATE account", c.execute(
+    "SELECT COUNT(*) FROM accounts WHERE trade_env='SIMULATE'").fetchone()[0] == 1)
 c.close()
 
 shutil.rmtree(tmp, ignore_errors=True)

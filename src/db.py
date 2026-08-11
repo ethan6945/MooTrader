@@ -55,6 +55,10 @@ GLOBAL_SCOPE = ""
 _init_lock = threading.Lock()
 _initialised = False
 
+# Set when init found a database older than this build and was not permitted to
+# upgrade it. While true, nothing may change the file FORMAT — see conn().
+_schema_frozen = False
+
 
 SCHEMA = """
 -- ── Identity model (v4) ─────────────────────────────────────────────────────
@@ -214,7 +218,11 @@ def conn():
     _ensure_initialised()
     c = sqlite3.connect(str(DB_FILE), timeout=10, isolation_level=None)
     c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
+    # journal_mode is persistent, so it is a format change, not a session
+    # setting. On a database this build was told not to upgrade, forcing WAL
+    # rewrites the header and leaves -wal/-shm behind — on every read.
+    if not _schema_frozen:
+        c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     c.execute("PRAGMA busy_timeout=5000")
     try:
@@ -230,7 +238,8 @@ def transaction():
     _ensure_initialised()
     c = sqlite3.connect(str(DB_FILE), timeout=10)
     c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
+    if not _schema_frozen:      # see conn()
+        c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA foreign_keys=ON")
     c.execute("PRAGMA busy_timeout=5000")
     try:
@@ -258,7 +267,7 @@ def _upgrade_allowed() -> bool:
 
 def _ensure_initialised() -> None:
     """Run schema + migration exactly once per process."""
-    global _initialised
+    global _initialised, _schema_frozen
     if _initialised:
         return
     with _init_lock:
@@ -267,11 +276,25 @@ def _ensure_initialised() -> None:
         DB_FILE.parent.mkdir(parents=True, exist_ok=True)
         c = sqlite3.connect(str(DB_FILE), timeout=10)
         try:
-            c.execute("PRAGMA journal_mode=WAL")
+            # Read the version BEFORE touching journal_mode. Setting WAL is a
+            # persistent change: on a rollback-journal database it rewrites the
+            # header and leaves -wal/-shm sidecars behind. Doing that during an
+            # open we are about to refuse means "no schema changes applied" was
+            # false — the file's hash and format both moved.
             user_v = c.execute("PRAGMA user_version").fetchone()[0]
             existing = {r[0] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%'")}
+            if existing and user_v < SCHEMA_VERSION and not _upgrade_allowed():
+                log.warning(
+                    "DB at %s is schema v%d; v%d is available but NOT applied "
+                    "— set MMT_ALLOW_SCHEMA_UPGRADE=1 to upgrade deliberately. "
+                    "Continuing on v%d, no schema or journal changes made.",
+                    DB_FILE, user_v, SCHEMA_VERSION, user_v)
+                _schema_frozen = True
+                _initialised = True
+                return
+            c.execute("PRAGMA journal_mode=WAL")
 
             # The version decision happens BEFORE any schema statement runs.
             #
@@ -297,18 +320,8 @@ def _ensure_initialised() -> None:
                 return
 
             elif user_v < SCHEMA_VERSION:
-                if not _upgrade_allowed():
-                    # ZERO schema writes. Not one CREATE TABLE IF NOT EXISTS,
-                    # not one index: an upgrade nobody asked for is exactly how
-                    # the production database ended up half-migrated under a
-                    # frozen backend that cannot read the result.
-                    log.warning(
-                        "DB at %s is schema v%d; v%d is available but NOT applied "
-                        "— set MMT_ALLOW_SCHEMA_UPGRADE=1 to upgrade deliberately. "
-                        "Continuing on v%d, no schema changes made.",
-                        DB_FILE, user_v, SCHEMA_VERSION, user_v)
-                    _initialised = True
-                    return
+                # The refusal already returned above, before journal_mode was
+                # touched. Reaching here means the upgrade was permitted.
                 c.executescript(SCHEMA)
                 if user_v == 0:
                     _migrate_from_json(c)
@@ -476,10 +489,45 @@ def _migrate_v4(c: sqlite3.Connection) -> None:
 
 # ---------- one-time JSON → SQLite migration ----------
 
+def _ensure_local_account(c: sqlite3.Connection) -> str:
+    """The account everything on this install belongs to, created once.
+
+    Shared by the fresh-database path and the v3->v4 migration so both attribute
+    rows the same way. Uses the configured trade_env: whatever this install has
+    been trading is what its existing records are.
+    """
+    import uuid as _uuid
+    from datetime import timezone as _tz
+    env = (settings.moo_trade_env or "SIMULATE").upper()
+    if env not in ("SIMULATE", "REAL"):
+        env = "SIMULATE"
+    row = c.execute("SELECT account_id FROM accounts WHERE trade_env = ? "
+                    "ORDER BY created_at LIMIT 1", (env,)).fetchone()
+    if row:
+        return row[0]
+    account_id = str(_uuid.uuid4())
+    c.execute("INSERT INTO accounts (account_id, trade_env, broker_acc_id, label, "
+              "created_at) VALUES (?, ?, NULL, ?, ?)",
+              (account_id, env, f"{env} account",
+               datetime.now(_tz.utc).isoformat()))
+    log.info("minted %s account %s", env, account_id)
+    return account_id
+
+
 def _migrate_from_json(c: sqlite3.Connection) -> None:
     """Read pre-existing JSON files and load them into the freshly-created tables.
-    Idempotent because tables were just created empty."""
+    Idempotent because tables were just created empty.
+
+    Everything imported is attributed to this install's account. Legacy JSON has
+    no notion of accounts, and dropping its keys into the GLOBAL scope would put
+    a paper budget, a paper realized PnL and a paper drawdown peak where EVERY
+    account reads them — so switching to REAL would inherit the paper account's
+    losses as its own risk state.
+    """
     data_dir = settings.root / "data"
+    account_id = _ensure_local_account(c)
+    scoped = any(r[1] == "account_id"
+                 for r in c.execute("PRAGMA table_info(kv_state)"))
 
     # open_trades.json
     f = data_dir / "open_trades.json"
@@ -490,8 +538,8 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                     INSERT OR REPLACE INTO open_trades
                     (symbol, qty, entry_price, stop_loss, take_profit, atr,
                      half_closed, buy_order_id, stop_order_id, tp_order_id,
-                     opened_at, extra)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                     opened_at, extra, account_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     sym, int(t.get("qty", 0)),
                     float(t.get("entry_price", 0)),
@@ -504,6 +552,7 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                     t.get("tp_order_id"),
                     t.get("opened_at") or datetime.utcnow().isoformat(),
                     None,
+                    account_id,
                 ))
             log.info("migrated open_trades.json")
         except Exception as e:
@@ -514,6 +563,13 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
     if f.exists():
         try:
             for k, v in json.loads(f.read_text()).items():
+                if scoped:
+                    c.execute(
+                        "INSERT OR REPLACE INTO kv_state (account_id, key, value) "
+                        "VALUES (?, ?, ?)",
+                        (account_id if k in ACCOUNT_SCOPED_KEYS else GLOBAL_SCOPE,
+                         k, json.dumps(v, default=str)))
+                    continue
                 c.execute(
                     "INSERT OR REPLACE INTO kv_state (key, value) VALUES (?, ?)",
                     (k, json.dumps(v)),
@@ -537,12 +593,14 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                 extras = {k: r[k] for k in r if k not in
                           {"ts", "action", "symbol", "gate", "reason", "score"}}
                 c.execute("""
-                    INSERT INTO audit (ts, action, symbol, gate, reason, score, extra)
-                    VALUES (?,?,?,?,?,?,?)
+                    INSERT INTO audit (ts, action, symbol, gate, reason, score,
+                                       extra, account_id)
+                    VALUES (?,?,?,?,?,?,?,?)
                 """, (
                     r.get("ts", ""), r.get("action", ""), r.get("symbol"),
                     r.get("gate"), r.get("reason"), r.get("score"),
                     json.dumps(extras) if extras else None,
+                    account_id,
                 ))
                 n += 1
             log.info("migrated audit.jsonl (%d rows)", n)
@@ -564,8 +622,9 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                 c.execute("""
                     INSERT INTO closed_trades
                     (ts, symbol, qty, entry, stop, exit, exit_reason,
-                     pnl, pnl_pct, r_multiple, opened_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                     pnl, pnl_pct, r_multiple, opened_at, account_id,
+                     migrated_from)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     r.get("ts", ""), r.get("symbol", ""),
                     r.get("qty", 0),
@@ -574,6 +633,8 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                     r.get("pnl", 0), r.get("pnl_pct", 0),
                     r.get("r_multiple", 0),
                     r.get("opened_at", ""),
+                    account_id,
+                    "legacy trades.jsonl (pre-identity)",
                 ))
                 n += 1
             log.info("migrated trades.jsonl (%d rows)", n)
@@ -596,8 +657,8 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                     INSERT INTO history
                     (ts, week, day, invested, budget, unrealized_pnl,
                      realized_pnl_total, total_pnl, positions_count,
-                     symbols, timeframe)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                     symbols, timeframe, account_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     r.get("ts", ""), r.get("week", ""), r.get("day", ""),
                     r.get("invested", 0), r.get("budget", 0),
@@ -607,6 +668,7 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
                     r.get("positions_count", 0),
                     json.dumps(r.get("symbols", [])),
                     r.get("timeframe", ""),
+                    account_id,
                 ))
                 n += 1
             log.info("migrated history.jsonl (%d rows)", n)
