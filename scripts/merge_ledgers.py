@@ -76,6 +76,35 @@ def _stamp(extra_json, source_db, confidence, now):
     return json.dumps(extra, default=str)
 
 
+def batch_state(dst):
+    """Has this batch already been imported?
+
+    Without this the script is not safe to re-run. After a successful merge the
+    target's earliest row IS an imported one, so the handover cutoff derived
+    from MIN(ts) collapses to the start of the archive: every repo row then
+    looks "post-handover", the trading-row guard fires a false conflict, and the
+    PnL line adds the archive to a total that already contains it — reporting
+    -$1,399.93 for an account that is down $774.46.
+
+    Two independent signals, because either alone can be lost: the kv_state
+    receipt, and merge_tag stamped into the imported rows themselves.
+    """
+    receipt = None
+    try:
+        row = dst.execute("SELECT value FROM kv_state WHERE key='ledger_merge'").fetchone()
+        if row:
+            receipt = json.loads(row["value"])
+    except Exception:
+        pass
+    tagged = dst.execute(
+        "SELECT COUNT(*) FROM closed_trades WHERE extra LIKE ?",
+        (f"%{MERGE_TAG}%",)).fetchone()[0]
+    return {
+        "applied": bool((receipt or {}).get("tag") == MERGE_TAG) or tagged > 0,
+        "receipt": receipt, "tagged_rows": tagged,
+    }
+
+
 def plan():
     if not REPO_DB.exists():
         sys.exit(f"repo db missing: {REPO_DB}")
@@ -87,7 +116,18 @@ def plan():
     dst = sqlite3.connect(f"file:{APP_DB}?mode=ro", uri=True)
     dst.row_factory = sqlite3.Row
 
-    out = {"tables": {}, "conflicts": [], "excluded": {}}
+    out = {"tables": {}, "conflicts": [], "excluded": {},
+           "batch": batch_state(dst)}
+    if out["batch"]["applied"]:
+        # Nothing further to compute: every derived figure below assumes the
+        # target does not already contain the source.
+        out["pnl"] = {
+            "merged": round(dst.execute(
+                "SELECT COALESCE(SUM(pnl),0) FROM closed_trades").fetchone()[0], 2)}
+        out["rows"] = dst.execute("SELECT COUNT(*) FROM closed_trades").fetchone()[0]
+        src.close(); dst.close()
+        return out
+
     for table, tskey in (("closed_trades", "ts"), ("audit", "ts"),
                          ("history", "ts")):
         s_rows = _rows(src, table)
@@ -152,6 +192,13 @@ def apply_merge():
     moved = {}
 
     try:
+        # Re-check inside the write path, not just in plan(): two operators, or
+        # a retry after a partial failure, must not both get past the check.
+        st = batch_state(dst)
+        if st["applied"]:
+            raise RuntimeError(
+                f"batch {MERGE_TAG!r} already applied "
+                f"({st['tagged_rows']} tagged rows) — refusing to double-import")
         dst.execute("BEGIN IMMEDIATE")
         for table in ("closed_trades", "audit", "history"):
             s_cols = set(_cols(src, table))
@@ -237,6 +284,17 @@ def main() -> int:
     p = plan()
     print(f"source (repo) : {REPO_DB}")
     print(f"target (app)  : {APP_DB}\n")
+
+    if p["batch"]["applied"]:
+        r = p["batch"]["receipt"] or {}
+        print(f"  batch {MERGE_TAG!r} is ALREADY applied.")
+        print(f"    receipt   : merged_at {r.get('merged_at', '?')}")
+        print(f"    taggedrows: {p['batch']['tagged_rows']} carry merge_tag")
+        print(f"    ledger now: {p['rows']} trades, ${p['pnl']['merged']}")
+        print("\n  Nothing to do. Re-importing would double-count; the archive "
+              "is already inside this ledger.")
+        return 0
+
     for t, info in p["tables"].items():
         print(f"  {t:<15} repo {info['repo']:>5}  app {info['app']:>5}   "
               f"repo {str(info['repo_range'][0])[:10]}→{str(info['repo_range'][1])[:10]}  "

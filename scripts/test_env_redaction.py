@@ -77,7 +77,15 @@ check("ENTRY_SCORE_THRESHOLD survives", "ENTRY_SCORE_THRESHOLD=70   # tuned" in 
 check("MAX_POSITION_PCT survives", "MAX_POSITION_PCT=0.40" in out)
 check("MOO_TRADE_ENV survives (not a secret despite the module)",
       "MOO_TRADE_ENV=SIMULATE" in out)
-check("chat id survives (an id, not a credential)", "TELEGRAM_CHAT_ID=12345" in out)
+# TELEGRAM_CHAT_ID used to be asserted to pass through untouched, on the
+# reasoning that an id is not a credential. It survived three rounds of
+# "redaction" that way and sat in plaintext in every backup — and anyone holding
+# it plus a bot token can message the owner directly. It is not authentication,
+# but it identifies a person, so it becomes an irreversible per-install
+# reference: still comparable between two backups, no longer usable.
+check("chat id is referenced, not left in the clear",
+      "TELEGRAM_CHAT_ID=12345" not in out)
+check("chat id becomes a ref", "TELEGRAM_CHAT_ID=ref:" in out)
 
 # ── 4. shape is preserved — a snapshot is still a readable record ────────────
 check("line count preserved",

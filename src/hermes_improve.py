@@ -45,10 +45,30 @@ def _cmd(args: list, cwd=ROOT, timeout=300) -> subprocess.CompletedProcess:
 _SECRET_MARKERS = ("KEY", "SECRET", "PASSWORD", "TOKEN", "PWD")
 _REDACTED = "<redacted-by-snapshot>"
 
+# Values that are not credentials but DO identify a person or an account. A
+# secret gets blanked; these get an irreversible per-install reference instead,
+# so a backup still answers "is this the same account as the other backup?"
+# without carrying the identifier itself.
+#
+# TELEGRAM_CHAT_ID is the one that made this necessary: it survived three
+# rounds of "redaction" because it contains none of the secret markers, and
+# anyone holding it plus a bot token can message the owner directly.
+_IDENTIFIER_KEYS = {
+    "TELEGRAM_CHAT_ID",
+    "MOO_ACC_ID", "MOOMOO_ACC_ID", "ACC_ID", "ACCOUNT_ID",
+    "MOO_LOGIN", "MOOMOO_LOGIN", "OPEND_LOGIN", "MOO_USER", "MOOMOO_USER",
+    "MOO_SECURITY_FIRM",
+}
+
 
 def is_secret_key(name: str) -> bool:
     """True for .env keys whose VALUE must never be copied anywhere."""
     return any(s in name.upper() for s in _SECRET_MARKERS)
+
+
+def is_identifier_key(name: str) -> bool:
+    """True for keys that identify an account or person rather than authenticate."""
+    return name.strip().upper() in _IDENTIFIER_KEYS
 
 
 def redacted_env_text(text: str) -> str:
@@ -63,8 +83,22 @@ def redacted_env_text(text: str) -> str:
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
             k, _, v = line.partition("=")
-            if is_secret_key(k) and v.split("#")[0].strip():
+            val = v.split("#")[0].strip()
+            if val and is_secret_key(k):
                 out.append(f"{k}={_REDACTED}")
+                continue
+            if val and is_identifier_key(k):
+                # Reference, not blank: two snapshots of the same account still
+                # compare equal, which is what makes a backup diffable.
+                from . import account_ref
+                # Already a reference — re-hashing would produce a DIFFERENT
+                # one each pass, so a backup re-redacted twice would stop
+                # matching itself. Backups do get re-redacted (this file's own
+                # predicate has widened once already), so idempotency is load
+                # bearing, not tidiness.
+                if not account_ref.is_ref(val):
+                    val = account_ref.ref(val, kind=k.strip().lower())
+                out.append(f"{k}={val}")
                 continue
         out.append(line)
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
