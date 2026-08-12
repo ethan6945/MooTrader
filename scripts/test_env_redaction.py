@@ -174,5 +174,50 @@ check("installed filter keeps the rest of the message",
 
 log_redact.reset_cache()
 
+# ── 9. the publish check sees more than today's credential ──────────────────
+# Comparing only against the current .env catches one thing: today's value in
+# the wrong place. It cannot see a credential rotated last month that is still
+# live at the vendor, someone else's token pasted in while debugging, or a key
+# for a service this project does not use. All three publish just as badly.
+import importlib.util                                          # noqa: E402
+_spec = importlib.util.spec_from_file_location(
+    "cns", ROOT / "scripts" / "check_no_secrets.py")
+cns = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cns)
+
+def shapes_in(text):
+    out = [label for label, pat in cns.SHAPES if pat.search(text)]
+    for m in cns.ASSIGN.finditer(text):
+        v = m.group(2)
+        if not cns.PLACEHOLDER.match(v) and not cns.CODE_EXPR.search(v):
+            out.append(f"assign:{m.group(1)}")
+    return out
+
+check("a rotated OpenAI-style key is caught",
+      "OpenAI/DeepSeek key" in shapes_in('K = "sk-a1b2c3d4e5f6a7b8c9d0e1f2a3b4"'))
+check("a third-party bot token is caught",
+      "Telegram bot token" in shapes_in('T = "9988776655:AAG-notOursAtAll1234567890abcd"'))
+check("an AWS key id is caught",
+      "AWS access key id" in shapes_in('A = "AKIAIOSFODNN7EXAMPLE"'))
+check("a vendorless key assignment is caught",
+      any(s.startswith("assign:") for s in
+          shapes_in('SOME_API_KEY = "9f8e7d6c5b4a39281706f5e4d3c2b1a0"')))
+
+# …without firing on the things a codebase is full of.
+check("a git SHA is not a credential",
+      shapes_in("commit 89d078825abd4f969994f292b65121ad32fee276") == [])
+check("a config lookup is not a literal",
+      shapes_in("pwd = settings.moo_trade_pwd") == [])
+check("an md5 call is not a literal",
+      shapes_in("pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()") == [])
+check("an empty placeholder does not swallow the next line",
+      shapes_in("TELEGRAM_TOKEN=\nSOME_OTHER_LINE=abcdefghijklmnopqrst") == [])
+check("a documented placeholder is not a finding",
+      shapes_in('API_KEY = "your_api_key_here_please"') == [])
+check("a redacted value is the desired state, not a finding",
+      shapes_in("TELEGRAM_TOKEN=<redacted-by-snapshot>") == [])
+check("a reference is not a finding",
+      shapes_in("TELEGRAM_CHAT_ID=ref:telegram_chat_id:0123456789abcdef0123") == [])
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

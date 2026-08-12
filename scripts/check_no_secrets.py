@@ -47,6 +47,48 @@ MIN_LEN = 12
 MAX_FILE_BYTES = 5_000_000
 TELEGRAM_SHAPE = re.compile(r"\bbot\d{8,}:[A-Za-z0-9_-]{20,}")
 
+# Comparing against the CURRENT .env catches exactly one thing: today's
+# credential copied somewhere it should not be. It cannot see
+#   · a credential rotated last month that is still live at the vendor,
+#   · someone else's token pasted in while debugging,
+#   · a key for a service this project does not even use.
+# All three are as publishable as the current one. So values are matched by
+# SHAPE as well — using vendor prefixes rather than generic entropy, because a
+# codebase is full of git SHAs and hex constants and a detector that fires on
+# those gets muted within a week.
+SHAPES = [
+    ("Telegram bot token",  re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}")),
+    ("OpenAI/DeepSeek key", re.compile(r"\bsk-[A-Za-z0-9]{20,}")),
+    ("Tavily key",          re.compile(r"\btvly-[A-Za-z0-9]{16,}")),
+    ("GitHub token",        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}")),
+    ("AWS access key id",   re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
+    ("Google API key",      re.compile(r"\bAIza[A-Za-z0-9_-]{30,}")),
+    ("Slack token",         re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("private key block",   re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+]
+
+# A credential-shaped ASSIGNMENT whose value is neither empty nor a placeholder.
+# This is what catches a key for a vendor with no recognisable prefix.
+#
+# Whitespace classes here are HORIZONTAL only ([^\S\n]). Using \s* around the
+# separator lets the match run past the end of the line — `KEY=` with an empty
+# value then swallows the newline and matches whatever the next line starts
+# with, which is how the first version of this reported two empty placeholders
+# in .env.example as real credentials.
+ASSIGN = re.compile(
+    r"(?im)^[^\S\n]*(?:export[^\S\n]+)?"
+    r"([A-Z0-9_]*(?:API_KEY|SECRET|PASSWORD|TOKEN|PWD)[A-Z0-9_]*)"
+    r"[^\S\n]*[=:][^\S\n]*[\"']?([^\s\"'#]{16,})[\"']?[^\S\n]*(?:#.*)?$")
+
+# `pwd = settings.moo_trade_pwd` is a lookup, not a literal. Attribute access
+# and calls mean the value lives somewhere else — which is the correct pattern,
+# not a leak.
+CODE_EXPR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.|[(\[]")
+PLACEHOLDER = re.compile(
+    r"^(your|my|xxx|<|\{|\$\{|placeholder|changeme|change_me|todo|example|dummy|"
+    r"fake|sample|test|redacted|ref:|\.\.\.|abc123|123456|none|null|n/?a|"
+    r"0{8,}|1234567890)", re.I)
+
 # A file that legitimately needs credential-shaped fixtures (the redaction
 # tests) may declare this marker to opt out of the SHAPE heuristic. It does not
 # opt out of anything else: every comparison against a real value in .env still
@@ -102,8 +144,26 @@ def main() -> int:
                 findings.append((rel, name))
         if len(bot_id) >= 8 and bot_id in text:
             findings.append((rel, "TELEGRAM bot id"))
-        if TELEGRAM_SHAPE.search(text) and SYNTHETIC_MARKER not in text:
+
+        # Shape matching, skipped for files that declare their fixtures invented.
+        # The marker exempts only these heuristics — every comparison against a
+        # real value above still applies, so it cannot be used to smuggle one.
+        if SYNTHETIC_MARKER in text:
+            continue
+        if TELEGRAM_SHAPE.search(text):
             findings.append((rel, "a Telegram-token-shaped string"))
+        for label, pat in SHAPES:
+            if pat.search(text):
+                findings.append((rel, f"{label} (by shape — may be a rotated or "
+                                      f"third-party credential)"))
+        for m in ASSIGN.finditer(text):
+            key, value = m.group(1), m.group(2)
+            if PLACEHOLDER.match(value) or CODE_EXPR.search(value):
+                continue
+            # A reference or an already-redacted marker is the desired state.
+            if value.startswith(("ref:", "<redacted", "$(", "${")):
+                continue
+            findings.append((rel, f"{key} assigned a real-looking literal"))
 
     if not findings:
         print("clean — nothing sensitive in any file git would publish")
