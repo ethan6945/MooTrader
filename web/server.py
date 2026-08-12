@@ -1364,33 +1364,35 @@ def api_ai_models():
                         "error": msg, "fallback": True})
 
 
-def _spawn_scheduler() -> int:
-    """Launch the trading scheduler as a detached, caffeinated process and record
-    its pid. Shared by the start + restart actions so they stay byte-identical.
-    Ensures OpenD is running before launching the scheduler."""
-    # Ensure OpenD is up first
-    err = _start_opend()
-    if err:
-        raise RuntimeError(err)
-    log = (ROOT / "logs" / "scheduler.log").open("a")
-    proc = subprocess.Popen(
-        ["/usr/bin/caffeinate", "-is", *_worker_cmd("src.main", "run")],
-        cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
-    )
-    SCHED_PID.write_text(str(proc.pid))
-    return proc.pid
+# _spawn_scheduler() used to live here. It is gone rather than merely unused:
+# it called Popen with no `env=`, so the worker inherited this process's
+# environment, and that is the whole of the 2026-08-11 incident. A dead function
+# of exactly the right shape, sitting next to the route that used to call it, is
+# an invitation to wire it back. src/start_protocol.py:commit() replaces it and
+# builds the child environment instead of passing one along.
+#
+# _start_opend() above is kept — it starts OpenD, not a trader, and the protocol
+# needs it before a worker can connect.
 
 
 @app.route("/api/scheduler/<action>", methods=["POST"])
 def api_scheduler(action):
     if action == "start":
-        if _scheduler_running():
-            return jsonify({"ok": True, "note": "already running"})
-        # Ensure OpenD is up before spawning scheduler
-        opend_err = _start_opend()
-        if opend_err:
-            return jsonify({"ok": False, "error": opend_err}), 500
-        return jsonify({"ok": True, "pid": _spawn_scheduler()})
+        # The direct path is closed. It spawned with no `env=`, so the worker
+        # inherited whatever this process happened to hold — on 2026-08-11 that
+        # was a day-old copy of a configuration corrected hours earlier, and the
+        # worker traded on it for two hours. It also took no lease, waited for
+        # no confirmation from the worker, and wrote nothing down.
+        #
+        # Starts go through prepare -> commit -> READY (src/start_protocol.py),
+        # which rebuilds the child environment from the authoritative .env,
+        # compares a config hash with the worker before it trades, and refuses
+        # rather than guessing.
+        return jsonify({
+            "ok": False,
+            "error": "direct start is disabled — use the start protocol",
+            "code": "direct_start_disabled",
+        }), 409
     if action == "stop":
         had_sched = _stop_pid(SCHED_PID)
         had_opend = _stop_opend()
@@ -1399,11 +1401,17 @@ def api_scheduler(action):
                         "note": "not running" if not had_sched else (
                             "stopped (scheduler + OpenD)" if had_opend else "stopped (scheduler; OpenD was already off)")})
     if action == "restart":
-        # _stop_pid blocks until the old process group is gone (or ~3s), so a
-        # fresh spawn afterwards can't collide with it. Picks up the latest .env
-        # (e.g. a just-flipped MOO_TRADE_ENV).
-        _stop_pid(SCHED_PID)
-        return jsonify({"ok": True, "pid": _spawn_scheduler(), "note": "restarted"})
+        # Restart was start's twin and inherited the same environment. Its
+        # comment claimed it "picks up the latest .env" — it picked up the
+        # latest FILE for anything the worker read itself, and this process's
+        # stale copy for everything it did not. Stop, then start through the
+        # protocol, so the second half gets the same checks as any other start.
+        return jsonify({
+            "ok": False,
+            "error": "restart is disabled — stop, then start through the "
+                     "protocol so the new worker is validated like any other",
+            "code": "restart_disabled",
+        }), 409
     return jsonify({"ok": False, "error": "bad action"}), 400
 
 

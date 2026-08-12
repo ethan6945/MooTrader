@@ -936,7 +936,14 @@ $('#awake').onclick=async()=>{
 // Poll status a few times so the UI catches up with the real scheduler state
 // (stop is a graceful shutdown that can take a second or two).
 function pollStatus(times=6,gap=600){let i=0;const t=setInterval(()=>{refresh();if(++i>=times)clearInterval(t);},gap);refresh();}
-$('#btnStart').onclick=async()=>{const b=$('#btnStart');b.disabled=true;b.innerHTML='▶ Starting…';try{await api('/api/scheduler/start',{method:'POST'});}catch(e){}pollStatus();};
+// A refused start has to say so. This used to swallow the error and then poll,
+// so the button came back to '▶ Start' and the operator read "nothing happened"
+// as "it started". Everything the start protocol refuses arrives here as a
+// message; showing it is the only way the refusal reaches a person.
+$('#btnStart').onclick=async()=>{const b=$('#btnStart');b.disabled=true;b.innerHTML='▶ Starting…';
+  try{await api('/api/scheduler/start',{method:'POST'});}
+  catch(e){alert('未启动 — '+(e.message||e));}
+  pollStatus();};
 $('#btnStop').onclick=async()=>{if(!confirm('Stop the trading bot?'))return;const b=$('#btnStop');b.disabled=true;b.innerHTML='■ Stopping…';try{await api('/api/scheduler/stop',{method:'POST'});}catch(e){}pollStatus();};
 
 // ── i18n ──
@@ -1090,9 +1097,17 @@ $('#btnEnvToggle').onclick=async()=>{
   if(!r.ok){alert('失败: '+(r.error||''));return;}
   await loadTradeEnv();
   if(confirm((r.note||'已切换')+'\n\n现在重启交易循环使其生效?')){
-    try{await api('/api/scheduler/restart',{method:'POST'});}catch(e){}
+    // Don't announce a restart that did not happen. A trade-env switch that
+    // silently failed to restart is the worst version of this bug: the operator
+    // believes the new env is live while the old worker keeps trading the old one.
+    try{
+      await api('/api/scheduler/restart',{method:'POST'});
+      alert('已重启交易循环。');
+    }catch(e){
+      alert('环境已切换，但交易循环未重启 — '+(e.message||e)+
+            '\n\n旧的交易循环若仍在运行，用的仍是切换前的环境。请先 Stop 再 Start。');
+    }
     setTimeout(()=>{pollStatus();loadTradeEnv();},1500);
-    alert('已重启交易循环。');
   }
 };
 let WACC=null;

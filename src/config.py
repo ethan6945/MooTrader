@@ -42,7 +42,22 @@ if IS_FROZEN:
             if _tpl.is_file() and not _dst.exists():
                 shutil.copy2(_tpl, _dst)
 
-load_dotenv(ROOT / ".env")
+# Tolerant on purpose. This runs at import, so an unreadable .env used to take
+# the whole process down with a PermissionError from inside dotenv — before any
+# of our code could name the problem. The outcome was safe (nothing started) but
+# unattributable: no result code, no audit record, just a traceback.
+#
+# The start protocol checks the file explicitly and refuses with
+# `config_unreadable`, which is auditable. So here we note it and carry on;
+# settings fall back to their code defaults, and nothing may trade without
+# passing that check first.
+try:
+    load_dotenv(ROOT / ".env")
+except OSError as _e:      # unreadable, a directory, a broken symlink…
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "could not load %s (%s) — settings fall back to code defaults; the "
+        "start protocol will refuse with config_unreadable", ROOT / ".env", _e)
 
 
 def app_version() -> str:
