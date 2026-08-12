@@ -7,7 +7,6 @@ into each call) — callers can rely on the return values being valid.
 from __future__ import annotations
 
 import collections
-import hashlib
 import logging
 import math
 import threading
@@ -30,6 +29,7 @@ from moomoo import (
     RET_OK,
 )
 
+from . import broker_binding
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -53,16 +53,17 @@ _kline_call_log: "collections.deque[float]" = collections.deque(maxlen=_KLINE_MA
 _kline_lock = threading.Lock()
 
 
-# OpenD GUI mode disables programmatic unlock_trade — every trade-context open
-# triggers the same warning. Log it once per process instead of spamming.
-_OPEND_UNLOCK_WARNED = False
-
 # 2026-07-09: REAL-unlock proof. the broker's trade unlock only gates order ops
 # (place/modify/cancel) on REAL accounts — queries never need it and SIMULATE
 # has no unlock concept at all. So the ONLY hard evidence that the user really
 # clicked Unlock in the OpenD GUI is a gated operation succeeding in REAL env.
 # The account snapshot persists this for the web badge (which previously
 # inferred "已解锁" from a successful accinfo query — a wrong premise).
+#
+# This remains an OBSERVATION, never an authorization. The protocol has no way
+# to read the gateway's lock state — no field in any response reports it — so
+# "a gated op worked" can only ever be said afterwards, about an order that has
+# already been sent. Nothing may treat it as permission to send one.
 _REAL_GATED_OP_OK = False
 
 
@@ -74,7 +75,8 @@ def real_unlock_confirmed() -> bool:
 
 def _note_gated_op_ok() -> None:
     global _REAL_GATED_OP_OK
-    if not _REAL_GATED_OP_OK and settings.moo_trade_env == "REAL":
+    binding = broker_binding.current()
+    if not _REAL_GATED_OP_OK and binding is not None and binding.trade_env == "REAL":
         _REAL_GATED_OP_OK = True
         log.info("REAL trade unlock confirmed (a gated order op succeeded)")
 
@@ -108,7 +110,25 @@ def _market_enum() -> TrdMarket:
 
 
 def _env_enum() -> TrdEnv:
-    return TrdEnv.SIMULATE if settings.moo_trade_env == "SIMULATE" else TrdEnv.REAL
+    """The pinned environment — never re-derived from settings.
+
+    This used to be `SIMULATE if settings.moo_trade_env == "SIMULATE" else
+    REAL`, read fresh on every call. Two faults in one line: any unrecognised
+    value selected real money, and the answer could change mid-run because it
+    was read from mutable configuration rather than from the run's own decision.
+    """
+    return broker_binding.require("a broker call").trd_env
+
+
+def _acc_id() -> int:
+    """The pinned account. Passing this is what stops the SDK from choosing.
+
+    With acc_id unset the SDK calls _get_default_acc_id(), which returns the
+    first account whose environment matches, in broker-supplied order. That is
+    correct exactly when there is one account per environment and silent when
+    there is not.
+    """
+    return broker_binding.require("a broker call").acc_id
 
 
 class MooClient:
@@ -137,32 +157,58 @@ class MooClient:
                 port=settings.moo_port,
                 security_firm=firm,
             )
-            pwd = settings.moo_trade_pwd
-            pwd_md5 = hashlib.md5(pwd.encode()).hexdigest()
-            ret, data = self._trade.unlock_trade(password=pwd, password_md5=pwd_md5)
-            if ret != RET_OK:
-                msg = str(data)
-                if "GUI version" in msg or "Unlock button" in msg:
-                    # OpenD GUI version disables programmatic unlock BY DESIGN —
-                    # this error only proves "GUI build", NOT "unlocked". Queries
-                    # work either way; SIMULATE never needs unlock; REAL order ops
-                    # fail until the user clicks Unlock in the OpenD window. Log
-                    # once per process, env-appropriately.
-                    global _OPEND_UNLOCK_WARNED
-                    if not _OPEND_UNLOCK_WARNED:
-                        if settings.moo_trade_env == "REAL":
-                            log.warning(
-                                "OpenD connected (GUI version, API unlock disabled) "
-                                "— REAL unlock NOT confirmed: order ops will fail "
-                                "unless you clicked Unlock in the OpenD window")
-                        else:
-                            log.info(
-                                "OpenD connected (GUI version, API unlock disabled "
-                                "— SIMULATE needs no unlock, this is normal)")
-                        _OPEND_UNLOCK_WARNED = True
-                else:
-                    raise RuntimeError(f"unlock_trade failed: {data}")
+            # Resolve and pin the account before this context is usable.
+            #
+            # What used to be here was an unconditional unlock_trade() with the
+            # real password. On SIMULATE that is pure side effect — the broker's
+            # documentation is explicit that simulated trading has no unlock —
+            # and on REAL it arms order placement across everything sharing that
+            # OpenD gateway, from a property that merely opening a connection
+            # triggers. Arming real money is a per-start decision made by a
+            # person, not a consequence of reading a position list.
+            try:
+                binding = broker_binding.current()
+                if binding is None:
+                    binding = broker_binding.resolve(
+                        self._trade, trade_env=self._pinned_env(),
+                        expected_acc_id=self._expected_acc_id())
+                    broker_binding.verify_against_session(binding)
+                    broker_binding.bind(binding)
+            except Exception:
+                self._trade.close()
+                self._trade = None
+                raise
         return self._trade
+
+    @staticmethod
+    def _pinned_env() -> str:
+        """The run's environment, from the session when there is one.
+
+        Inside a worker the session decided this before OpenD was contacted and
+        it cannot move. Outside one (CLI tools, the web panel) it comes from
+        configuration — but through the fail-closed parser, so an unrecognised
+        value refuses instead of selecting REAL.
+        """
+        try:
+            from . import identity
+            session = identity.current_session()
+            if session:
+                return broker_binding.parse_trade_env(session["trade_env"],
+                                                      where="the session")
+        except Exception:
+            pass
+        return broker_binding.parse_trade_env(settings.moo_trade_env,
+                                              where="MOO_TRADE_ENV")
+
+    @staticmethod
+    def _expected_acc_id() -> str | None:
+        """The broker account these records were written against, if known."""
+        try:
+            from . import identity
+            info = identity.account_info() or {}
+            return info.get("broker_acc_id")
+        except Exception:
+            return None
 
     def close(self) -> None:
         if self._quote is not None:
@@ -303,7 +349,7 @@ class MooClient:
         """Return SDK OrderStatus string (e.g. 'FILLED_ALL', 'SUBMITTED'),
         or '' if the order can't be found."""
         try:
-            ret, data = self.trade.order_list_query(trd_env=_env_enum())
+            ret, data = self.trade.order_list_query(trd_env=_env_enum(), acc_id=_acc_id())
             if ret != RET_OK or data is None or data.empty:
                 return ""
             row = data[data["order_id"].astype(str) == str(order_id)]
@@ -336,7 +382,7 @@ class MooClient:
         so the whole self-improvement loop was reading slippage-free numbers.
         Partial fills return the partial qty — the caller decides what to do."""
         try:
-            ret, data = self.trade.order_list_query(trd_env=_env_enum())
+            ret, data = self.trade.order_list_query(trd_env=_env_enum(), acc_id=_acc_id())
             if ret != RET_OK or data is None or data.empty:
                 return None
             row = data[data["order_id"].astype(str) == str(order_id)]
@@ -361,7 +407,7 @@ class MooClient:
                 order_id=order_id,
                 qty=0,
                 price=0,
-                trd_env=_env_enum(),
+                trd_env=_env_enum(), acc_id=_acc_id(),
             )
             if ret == RET_OK:
                 _note_gated_op_ok()
@@ -372,7 +418,7 @@ class MooClient:
 
     def list_pending_buys(self) -> "pd.DataFrame":
         """Pending BUY orders (with create_time for staleness check)."""
-        ret, data = self.trade.order_list_query(trd_env=_env_enum())
+        ret, data = self.trade.order_list_query(trd_env=_env_enum(), acc_id=_acc_id())
         if ret != RET_OK or data is None or data.empty:
             return pd.DataFrame()
         return data[
@@ -386,13 +432,13 @@ class MooClient:
 
     # ---------- trading ----------
     def get_account_cash(self) -> float:
-        ret, data = self.trade.accinfo_query(trd_env=_env_enum())
+        ret, data = self.trade.accinfo_query(trd_env=_env_enum(), acc_id=_acc_id())
         if ret != RET_OK:
             raise RuntimeError(f"accinfo_query failed: {data}")
         return float(data.iloc[0]["cash"])
 
     def get_positions(self) -> pd.DataFrame:
-        ret, data = self.trade.position_list_query(trd_env=_env_enum())
+        ret, data = self.trade.position_list_query(trd_env=_env_enum(), acc_id=_acc_id())
         if ret != RET_OK:
             raise RuntimeError(f"position_list_query failed: {data}")
         return data
@@ -441,7 +487,7 @@ class MooClient:
 
         # 1) today's deals
         try:
-            ret, data = self.trade.deal_list_query(code=code, trd_env=_env_enum())
+            ret, data = self.trade.deal_list_query(code=code, trd_env=_env_enum(), acc_id=_acc_id())
             if ret == RET_OK:
                 hit = _latest_sell(data)
                 if hit and hit["price"] > 0:
@@ -455,7 +501,7 @@ class MooClient:
             start = (date.today() - timedelta(days=lookback_days)).isoformat()
             end = date.today().isoformat()
             ret, data = self.trade.history_deal_list_query(
-                code=code, start=start, end=end, trd_env=_env_enum())
+                code=code, start=start, end=end, trd_env=_env_enum(), acc_id=_acc_id())
             if ret == RET_OK:
                 hit = _latest_sell(data)
                 if hit and hit["price"] > 0:
@@ -507,7 +553,7 @@ class MooClient:
                 })
 
         try:
-            ret, data = self.trade.order_list_query(code=code, trd_env=_env_enum())
+            ret, data = self.trade.order_list_query(code=code, trd_env=_env_enum(), acc_id=_acc_id())
             if ret == RET_OK:
                 _collect(data)
         except Exception as e:
@@ -519,7 +565,7 @@ class MooClient:
                 code=code,
                 start=(date.today() - timedelta(days=lookback_days)).isoformat(),
                 end=date.today().isoformat(),
-                trd_env=_env_enum())
+                trd_env=_env_enum(), acc_id=_acc_id())
             if ret == RET_OK:
                 _collect(data)
         except Exception as e:
@@ -537,7 +583,7 @@ class MooClient:
     def get_pending_buy_value(self) -> float:
         """Sum of (price × qty) for BUY orders awaiting fill — counted as
         committed capital so we don't double-spend the budget."""
-        ret, data = self.trade.order_list_query(trd_env=_env_enum())
+        ret, data = self.trade.order_list_query(trd_env=_env_enum(), acc_id=_acc_id())
         if ret != RET_OK:
             return 0.0
         if data is None or data.empty:
@@ -552,7 +598,7 @@ class MooClient:
 
     def get_pending_symbols(self) -> set[str]:
         """Symbols of BUY orders awaiting fill — used to skip duplicates."""
-        ret, data = self.trade.order_list_query(trd_env=_env_enum())
+        ret, data = self.trade.order_list_query(trd_env=_env_enum(), acc_id=_acc_id())
         if ret != RET_OK or data is None or data.empty:
             return set()
         pending = data[
@@ -572,7 +618,7 @@ class MooClient:
             code=self._format_code(symbol),
             trd_side=side,
             order_type=OrderType.NORMAL,
-            trd_env=_env_enum(),
+            trd_env=_env_enum(), acc_id=_acc_id(),
         )
         if ret != RET_OK:
             raise RuntimeError(f"place_order failed for {symbol}: {data}")
@@ -601,7 +647,7 @@ class MooClient:
             trd_side=TrdSide.SELL,
             order_type=OrderType.STOP,
             aux_price=rounded,
-            trd_env=_env_enum(),
+            trd_env=_env_enum(), acc_id=_acc_id(),
         )
         if ret != RET_OK:
             raise RuntimeError(f"stop-loss failed for {symbol}: {data}")
