@@ -16,14 +16,12 @@ WHAT WENT WRONG
      so it rewrote entry_threshold, tp_atr_mult and sl_atr_mult from its own
      logic. .env is supposed to be the only source of truth.
 
-  2. A phantom position. open_trades holds HPE 64 @ 54.23, but the broker order
-     (3160708) was SUBMITTED with dealt_qty 0 and never filled — it has since
-     been cancelled. This is executor.py writing the position the moment
+  2. A phantom position. open_trades held a position whose broker order was
+     SUBMITTED with dealt_qty 0 and never filled — since cancelled. This is executor.py writing the position the moment
      place_limit_order returns an id, without waiting for a fill.
 
-  3. JNJ was booked at LIMIT prices, not fill prices. Entry recorded 259.76
-     against an actual 259.66; exit recorded 263.91 against an actual average of
-     263.985. Both ends wrong, PnL understated by $2.625.
+  3. A close was booked at LIMIT prices rather than fill prices — both ends
+     wrong, PnL understated.
 
   4. realized_pnl_today stayed 0.0 through a +$62 close.
 
@@ -48,17 +46,39 @@ if str(ROOT) not in sys.path:
 RECEIPT_KEY = "poststop_reconcile"
 VERSION = 1
 
-# Ground truth, from the broker, captured at stop. Values are order-level facts:
-# order_id, dealt quantity, dealt average price.
-BROKER_FILLS = {
-    "JNJ": {"buy": {"order_id": "3158566", "qty": 15, "px": 259.66,
-                    "t": "2026-08-10 10:31:12"},
-            "sell": {"order_id": "3160432", "qty": 15, "px": 263.985,
-                     "t": "2026-08-11 09:46:04"}},
-}
-# Orders that were submitted and never filled. The position must not exist.
-UNFILLED = {"HPE": {"order_id": "3160708", "qty": 64, "limit": 54.23,
-                    "status": "CANCELLED_ALL", "dealt": 0}}
+# Broker evidence is NOT embedded here. Order ids, fill prices and timestamps
+# are facts about a real brokerage account, and this file is tracked and
+# publishable; the reconciliation is generic, the evidence is local.
+#
+# The file is written by whoever captured the fills (0600, gitignored) and has
+# the shape produced by scripts/reconcile_broker_ledger.py:
+#
+#   {"fills":    {"SYM": {"buy":  {"order_id","qty","px","t"},
+#                         "sell": {"order_id","qty","px","t"}}},
+#    "unfilled": {"SYM": {"order_id","qty","limit","status","dealt"}}}
+EVIDENCE = ROOT / "data" / "broker_evidence.json"
+
+
+def load_evidence(path: Path) -> tuple[dict, dict]:
+    """Fills and never-filled orders, from the local evidence file."""
+    if not path.exists():
+        sys.exit(
+            f"REFUSED: no broker evidence at {path}.\n"
+            f"  This migration corrects records against what the broker actually\n"
+            f"  did, so it will not run on assumptions. Capture the fills first\n"
+            f"  (scripts/reconcile_broker_ledger.py) and write them there, 0600.")
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        sys.exit(f"REFUSED: cannot read {path}: {e}")
+    fills = data.get("fills") or {}
+    unfilled = data.get("unfilled") or {}
+    for sym, f in fills.items():
+        for side in ("buy", "sell"):
+            if side not in f or "px" not in f[side] or "order_id" not in f[side]:
+                sys.exit(f"REFUSED: evidence for {sym} is missing {side} "
+                         f"order_id/px")
+    return fills, unfilled
 
 
 def _kv_scoped(c) -> bool:
@@ -97,7 +117,7 @@ def _kv_set(c, key, value) -> None:
                   (key, payload))
 
 
-def plan(c) -> dict:
+def plan(c, BROKER_FILLS: dict, UNFILLED: dict) -> dict:
     """Everything this run would change, decided before anything is written."""
     out = {"params": [], "phantom": [], "fills": [], "today": None, "notes": []}
 
@@ -161,7 +181,7 @@ def plan(c) -> dict:
     return out
 
 
-def run(db: Path, apply: bool) -> int:
+def run(db: Path, apply: bool, evidence: Path) -> int:
     c = sqlite3.connect(str(db) if apply else f"file:{db}?mode=ro", uri=not apply)
     c.row_factory = sqlite3.Row
     now = datetime.now(timezone.utc).isoformat()
@@ -172,7 +192,8 @@ def run(db: Path, apply: bool) -> int:
         print(f"  migration v{VERSION} already applied "
               f"({len(entries)} receipt(s)); re-checking for drift\n")
 
-    p = plan(c)
+    BROKER_FILLS, UNFILLED = load_evidence(evidence)
+    p = plan(c, BROKER_FILLS, UNFILLED)
     print(f"  db: {db}\n")
     print(f"  param_* overrides to clear: {len(p['params'])}")
     for k, v in p["params"]:
@@ -286,13 +307,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", required=True, type=Path)
+    ap.add_argument("--evidence", type=Path, default=None,
+                    help="broker fill evidence (default: data/broker_evidence.json)")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true")
     g.add_argument("--apply", action="store_true")
     a = ap.parse_args()
     if not a.db.exists():
         sys.exit(f"no such db: {a.db}")
-    return run(a.db, apply=a.apply)
+    return run(a.db, apply=a.apply, evidence=a.evidence or EVIDENCE)
 
 
 if __name__ == "__main__":

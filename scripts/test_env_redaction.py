@@ -50,7 +50,7 @@ TELEGRAM_TOKEN=1234567890:AAHsyntheticvalue
 TELEGRAM_CHAT_ID=12345
 
 # Web
-WEB_PASSWORD=5566
+WEB_PASSWORD=4321
 WEB_SECRET=s3cr3t
 
 # Strategy — these MUST survive, rollback() reads them back
@@ -60,7 +60,7 @@ EMPTY_KEY=
 """
 
 SECRET_VALUES = ["hunter2secret", "sk-deadbeefcafe", "aaa,bbb,ccc", "tvly-1234",
-                 "1234567890:AAHsyntheticvalue", "5566", "s3cr3t"]
+                 "1234567890:AAHsyntheticvalue", "4321", "s3cr3t"]
 
 out = redacted_env_text(SAMPLE)
 
@@ -127,7 +127,9 @@ from src import log_redact                                      # noqa: E402
 # first written with the live DeepSeek key and the real Telegram bot id copied
 # out of terminal output; every test passed, .gitignore was irrelevant, and only
 # check_no_secrets.py caught it.
+# SYNTHETIC-CREDENTIALS-OK — invented fixture, not a real credential
 FAKE_TOKEN = "1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+# SYNTHETIC-CREDENTIALS-OK — invented fixture, not a real credential
 FAKE_KEY = "sk-00000000000000000000000000000000"
 log_redact._cache = [FAKE_TOKEN, FAKE_KEY]      # don't touch the real .env
 
@@ -142,15 +144,16 @@ check("scrub leaves ordinary text alone",
 # — e.g. after a rotation, when the log still carries the previous one.
 log_redact._cache = []
 url_line = ("HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries "
+            # SYNTHETIC-CREDENTIALS-OK — invented fixture, not a real credential
             "exceeded with url: /bot9999999999:ZZunknownrotatedtoken/sendMessage")
 check("scrub catches /bot<token>/ by shape, not just by value",
       "ZZunknownrotatedtoken" not in log_redact.scrub(url_line))
 
-# Short values must NOT be blanket-replaced: WEB_PASSWORD=5566 is real, and
-# replacing "5566" everywhere would corrupt prices and quantities in the log.
-log_redact._cache = [s for s in ["5566"] if len(s) >= log_redact._MIN_SECRET_LEN]
+# Short values must NOT be blanket-replaced: WEB_PASSWORD=4321 is real, and
+# replacing "4321" everywhere would corrupt prices and quantities in the log.
+log_redact._cache = [s for s in ["4321"] if len(s) >= log_redact._MIN_SECRET_LEN]
 check("short values are not treated as secrets",
-      log_redact.scrub("filled 5566 shares") == "filled 5566 shares")
+      log_redact.scrub("filled 4321 shares") == "filled 4321 shares")
 
 # End to end: a third-party logger this codebase never calls directly.
 log_redact._cache = [FAKE_TOKEN]
@@ -194,10 +197,13 @@ def shapes_in(text):
     return out
 
 check("a rotated OpenAI-style key is caught",
+      # SYNTHETIC-CREDENTIALS-OK — invented fixture, not a real credential
       "OpenAI/DeepSeek key" in shapes_in('K = "sk-a1b2c3d4e5f6a7b8c9d0e1f2a3b4"'))
 check("a third-party bot token is caught",
+      # SYNTHETIC-CREDENTIALS-OK — invented fixture, not a real credential
       "Telegram bot token" in shapes_in('T = "9988776655:AAG-notOursAtAll1234567890abcd"'))
 check("an AWS key id is caught",
+      # SYNTHETIC-CREDENTIALS-OK — invented fixture, not a real credential
       "AWS access key id" in shapes_in('A = "AKIAIOSFODNN7EXAMPLE"'))
 check("a vendorless key assignment is caught",
       any(s.startswith("assign:") for s in

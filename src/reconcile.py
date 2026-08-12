@@ -197,12 +197,21 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
     """
     try:
         our_trades = db.load_open_trades()
-    except Exception:
-        # Fall back to legacy JSON mirror if SQLite is unavailable
-        try:
-            our_trades = json.loads(OPEN_TRADES_FILE.read_text()) if OPEN_TRADES_FILE.exists() else {}
-        except json.JSONDecodeError:
-            our_trades = {}
+    except Exception as e:
+        # No fallback to the JSON mirror. This function decides which positions
+        # are real, and the mirror is a copy that goes stale the moment anything
+        # writes the database without refreshing it. On 2026-08-11 it held a
+        # phantom HPE 64 for hours after the database had been corrected — a
+        # transient SQLite lock here would have had reconcile compare the broker
+        # against a position that never existed, and "fix" the difference.
+        #
+        # Refusing is safe: the caller skips reconciliation this scan and the
+        # kill switch keeps new entries blocked until it succeeds.
+        raise RuntimeError(
+            f"reconcile: cannot read positions from the database ({e}). "
+            f"Refusing to fall back to the JSON mirror — it is a copy, not a "
+            f"source of truth."
+        ) from e
 
     broker_holdings: dict[str, dict] = {}    # symbol → {qty, cost_price} (LONG only)
     broker_shorts: dict[str, dict] = {}      # symbol → {qty, cost_price} (NET SHORT)

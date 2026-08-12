@@ -41,8 +41,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 SECRET_MARKERS = ("KEY", "SECRET", "PASSWORD", "TOKEN", "PWD")
 # Below this length a value is not a credential, and blanket-matching it would
-# fire on prices, quantities and timestamps. WEB_PASSWORD=5566 is the reason
-# this bound exists — such a password is a problem, but not one grep can fix.
+# fire on prices, quantities and timestamps. A four-digit WEB_PASSWORD is the
+# reason this bound exists — such a password is a problem, but not one grep
+# can fix, and quoting it here would publish it.
 MIN_LEN = 12
 MAX_FILE_BYTES = 5_000_000
 TELEGRAM_SHAPE = re.compile(r"\bbot\d{8,}:[A-Za-z0-9_-]{20,}")
@@ -89,12 +90,25 @@ PLACEHOLDER = re.compile(
     r"fake|sample|test|redacted|ref:|\.\.\.|abc123|123456|none|null|n/?a|"
     r"0{8,}|1234567890)", re.I)
 
-# A file that legitimately needs credential-shaped fixtures (the redaction
-# tests) may declare this marker to opt out of the SHAPE heuristic. It does not
-# opt out of anything else: every comparison against a real value in .env still
-# runs, so the marker cannot be used to smuggle a live credential past this
-# check — only to silence a pattern match on a value known to be invented.
+# Per-LINE exemption. A file-level marker exempted the whole file from the shape
+# heuristics, so one comment at the top let any number of real, rotated or
+# third-party credentials ride along underneath it. Now the marker must sit on
+# the same line as the value, or on the line immediately above it, and it
+# exempts only that line.
+#
+# It never exempts a comparison against a real value from .env — that check runs
+# on every line of every file regardless.
 SYNTHETIC_MARKER = "SYNTHETIC-CREDENTIALS-OK"
+
+
+def _exempt_lines(text: str) -> set[int]:
+    """1-indexed lines the marker covers: its own, and the one after it."""
+    out: set[int] = set()
+    for i, line in enumerate(text.splitlines(), start=1):
+        if SYNTHETIC_MARKER in line:
+            out.add(i)
+            out.add(i + 1)
+    return out
 
 
 def live_secrets() -> dict[str, str]:
@@ -145,25 +159,27 @@ def main() -> int:
         if len(bot_id) >= 8 and bot_id in text:
             findings.append((rel, "TELEGRAM bot id"))
 
-        # Shape matching, skipped for files that declare their fixtures invented.
-        # The marker exempts only these heuristics — every comparison against a
-        # real value above still applies, so it cannot be used to smuggle one.
-        if SYNTHETIC_MARKER in text:
-            continue
-        if TELEGRAM_SHAPE.search(text):
-            findings.append((rel, "a Telegram-token-shaped string"))
-        for label, pat in SHAPES:
-            if pat.search(text):
-                findings.append((rel, f"{label} (by shape — may be a rotated or "
-                                      f"third-party credential)"))
-        for m in ASSIGN.finditer(text):
-            key, value = m.group(1), m.group(2)
-            if PLACEHOLDER.match(value) or CODE_EXPR.search(value):
+        # Shape matching, line by line, so an exemption covers one fixture and
+        # not everything that happens to share the file with it.
+        exempt = _exempt_lines(text)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if lineno in exempt:
                 continue
-            # A reference or an already-redacted marker is the desired state.
-            if value.startswith(("ref:", "<redacted", "$(", "${")):
-                continue
-            findings.append((rel, f"{key} assigned a real-looking literal"))
+            if TELEGRAM_SHAPE.search(line):
+                findings.append((rel, f"line {lineno}: a Telegram-token-shaped string"))
+            for label, pat in SHAPES:
+                if pat.search(line):
+                    findings.append((rel, f"line {lineno}: {label} (by shape — may "
+                                          f"be a rotated or third-party credential)"))
+            for m in ASSIGN.finditer(line):
+                key, value = m.group(1), m.group(2)
+                if PLACEHOLDER.match(value) or CODE_EXPR.search(value):
+                    continue
+                # A reference or an already-redacted marker is the desired state.
+                if value.startswith(("ref:", "<redacted", "$(", "${")):
+                    continue
+                findings.append((rel, f"line {lineno}: {key} assigned a "
+                                      f"real-looking literal"))
 
     if not findings:
         print("clean — nothing sensitive in any file git would publish")

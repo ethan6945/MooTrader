@@ -23,7 +23,7 @@ import re
 REDACTED = "«redacted»"
 
 # Anything shorter is not a credential and would cause collateral damage —
-# WEB_PASSWORD=5566 is a real value in the wild, and blanket-replacing "5566"
+# A short WEB_PASSWORD is a real value in the wild, and blanket-replacing it
 # would corrupt prices, quantities and timestamps across the whole log.
 _MIN_SECRET_LEN = 12
 

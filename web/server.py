@@ -578,7 +578,13 @@ def api_status():
     # web positions table mirrors the desktop GUI exactly. account.per_position only
     # carries live price/PnL; the static trade params live in open_trades.json.
     try:
-        trades = _read_json(OPEN_TRADES_FILE, {})
+        # From the database, not the JSON mirror. The mirror is written after
+        # the fact and goes stale whenever anything corrects the database
+        # without refreshing it — on 2026-08-11 it showed a phantom HPE 64 for
+        # hours after that position had been removed as never-filled. A panel
+        # that displays a holding the account does not have is worse than one
+        # that displays nothing.
+        trades = db.load_open_trades()
         pp = acct.get("per_position") or {}
         for sym, tr in trades.items():
             cell = pp.setdefault(sym, {})
