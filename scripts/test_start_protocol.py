@@ -29,6 +29,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.db import SCHEMA, SCHEMA_VERSION as SCHEMA_V
+
 PASS = 0
 FAIL = 0
 def check(name, cond):
@@ -72,7 +74,7 @@ time.sleep(int(os.environ.get("FAKE_WORKER_LINGER", "30")))
 
 
 def make_home(tmp: Path, name: str, env_text: str = BASE_ENV,
-              *, db_version: int = 4, positions=(), mirror=None,
+              *, db_version: int | None = None, positions=(), mirror=None,
               accounts=(("SIMULATE",),)) -> Path:
     home = tmp / name
     (home / "data").mkdir(parents=True, exist_ok=True)
@@ -81,44 +83,27 @@ def make_home(tmp: Path, name: str, env_text: str = BASE_ENV,
 
     db = home / "data" / "trader.db"
     c = sqlite3.connect(str(db))
-    c.executescript("""
-        CREATE TABLE open_trades (symbol TEXT PRIMARY KEY, qty INTEGER,
-          entry_price REAL, stop_loss REAL, take_profit REAL, atr REAL,
-          half_closed INTEGER DEFAULT 0, buy_order_id TEXT, stop_order_id TEXT,
-          tp_order_id TEXT, opened_at TEXT, extra TEXT, account_id TEXT,
-          opened_session_id TEXT);
-        CREATE TABLE kv_state (account_id TEXT NOT NULL DEFAULT '',
-          key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (account_id, key));
-        CREATE TABLE accounts (account_id TEXT PRIMARY KEY, trade_env TEXT,
-          broker_acc_id TEXT, label TEXT, created_at TEXT);
-        CREATE TABLE execution_sessions (session_id TEXT PRIMARY KEY,
-          account_id TEXT NOT NULL, trade_env TEXT NOT NULL, pid INTEGER,
-          host TEXT, started_at TEXT, ended_at TEXT, end_reason TEXT,
-          auth_mode TEXT, authorized_at TEXT, authorized_by TEXT);
-        CREATE TABLE closed_trades (id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts TEXT, symbol TEXT, qty INTEGER, entry REAL, stop REAL, exit REAL,
-          exit_reason TEXT, pnl REAL, pnl_pct REAL, r_multiple REAL,
-          opened_at TEXT, extra TEXT, account_id TEXT, session_id TEXT,
-          migrated_from TEXT);
-        CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT,
-          action TEXT, symbol TEXT, gate TEXT, reason TEXT, score REAL,
-          extra TEXT, account_id TEXT, session_id TEXT);
-        -- Full shape, not a convenient subset: db._ensure_initialised runs the
-        -- real SCHEMA against this, and SCHEMA builds indexes on columns a
-        -- trimmed fixture would not have. A fixture that is nearly right fails
-        -- inside the worker and reads as a protocol bug.
-        CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,
-          week TEXT, day TEXT, invested REAL, budget REAL, unrealized_pnl REAL,
-          realized_pnl_total REAL, total_pnl REAL, positions_count INTEGER,
-          symbols TEXT, timeframe TEXT, account_id TEXT);
-    """)
+    # Built from the real SCHEMA, not a hand-copied one.
+    #
+    # This fixture used to restate the tables inline, and it went stale twice:
+    # first missing history.week, which SCHEMA indexes, and then missing the
+    # (account_id, symbol) key that v5 introduced. Both failed inside the
+    # worker, and a fixture bug that surfaces there reads as a protocol bug —
+    # you go looking at the handshake for a defect that is in the test's idea of
+    # what a database looks like. Copying the schema by hand cannot be done
+    # carefully enough to be worth doing.
+    c.executescript(SCHEMA)
     for i, (envname, *_rest) in enumerate(accounts):
-        c.execute("INSERT INTO accounts VALUES (?,?,NULL,?,?)",
+        c.execute("INSERT INTO accounts (account_id, trade_env, broker_acc_id, "
+                  "label, created_at) VALUES (?,?,NULL,?,?)",
                   (f"acct-{i}-{envname}", envname, envname, f"2026-01-0{i+1}"))
+    first_account = f"acct-0-{accounts[0][0]}" if accounts else ""
     for sym in positions:
         c.execute("INSERT INTO open_trades (symbol,qty,entry_price,stop_loss,"
-                  "take_profit,opened_at) VALUES (?,1,10,9,11,'x')", (sym,))
-    c.execute(f"PRAGMA user_version = {db_version}")
+                  "take_profit,opened_at,account_id) VALUES (?,1,10,9,11,'x',?)",
+                  (sym, first_account))
+    c.execute(f"PRAGMA user_version = "
+              f"{SCHEMA_V if db_version is None else db_version}")
     c.commit(); c.close()
 
     if mirror is not None:
@@ -246,6 +231,22 @@ r = in_home(h, PREPARE.format(src="web"))
 got = [l for l in r.stdout.splitlines() if l.startswith("REFUSED")]
 check("database/mirror position conflict -> position_conflict",
       bool(got) and got[0].split()[1] == "position_conflict")
+
+# The conflict check reads THIS account's positions, not the table's.
+# Unscoped, it compared a two-account union against a one-account mirror, so
+# the refusal would have been permanent and would have appeared only once a
+# second account existed — i.e. on the first REAL start, and never in any test
+# written before then.
+h = make_home(tmp, "otheracct", positions=("AAPL",), mirror=["AAPL"],
+              accounts=(("SIMULATE",), ("REAL",)))
+_c = sqlite3.connect(str(h / "data" / "trader.db"))
+_c.execute("INSERT INTO open_trades (symbol,qty,entry_price,stop_loss,"
+           "take_profit,opened_at,account_id) VALUES ('NVDA',9,10,9,11,'t',?)",
+           ("acct-1-REAL",))
+_c.commit(); _c.close()
+r = in_home(h, PREPARE.format(src="web"))
+check("another account's positions do not trip the conflict check",
+      any(l.startswith("OK ") for l in r.stdout.splitlines()))
 
 h = make_home(tmp, "noacct", accounts=())
 r = in_home(h, PREPARE.format(src="web"))

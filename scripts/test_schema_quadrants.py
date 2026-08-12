@@ -38,7 +38,12 @@ def check(name, cond):
     else: FAIL += 1
 
 
-SCHEMA_V = 4
+# Read from the code under test rather than restated here. Every bump used to
+# mean four hand-edits, and a stale literal in a schema test does not fail
+# loudly — it asserts that the migration produced the version it produced last
+# release, which is the one thing this suite is supposed to notice.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.db import SCHEMA_VERSION as SCHEMA_V
 V3_TABLES = {"audit", "closed_trades", "history", "kv_state", "open_trades"}
 V4_ONLY = {"accounts", "execution_sessions"}
 
@@ -133,7 +138,7 @@ r = open_db(home, allow=False)
 db = home / "data" / "trader.db"
 check("created without needing the upgrade flag", db.exists() and r.returncode == 0)
 s = snapshot(db)
-check(f"at the current version (v{s['version']})", s["version"] == 4)
+check(f"at the current version (v{s['version']})", s["version"] == SCHEMA_V)
 check("has the v3 tables", V3_TABLES <= s["tables"])
 check("has the v4 tables", V4_ONLY <= s["tables"])
 check("kv_state is account-scoped", "account_id" in s["kv_cols"])
@@ -176,7 +181,7 @@ before = snapshot(db)
 r = open_db(home, allow=True)
 after = snapshot(db)
 check("upgrade succeeds", r.returncode == 0)
-check(f"now v4 (got v{after['version']})", after["version"] == 4)
+check(f"now v{SCHEMA_V} (got v{after['version']})", after["version"] == SCHEMA_V)
 check("v4 tables present", V4_ONLY <= after["tables"])
 check("kv_state gained the account scope", "account_id" in after["kv_cols"])
 check("closed_trades preserved", after["closed"] == before["closed"])
@@ -203,7 +208,7 @@ for i in (1, 2):
     check(f"reopen #{i} succeeds", r.returncode == 0)
 again = snapshot(db)
 c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-check("version unchanged", again["version"] == first["version"] == 4)
+check("version unchanged", again["version"] == first["version"] == SCHEMA_V)
 check("no rows duplicated", (again["closed"], again["audit"]) ==
       (first["closed"], first["audit"]))
 check("no second account minted", c.execute(
@@ -240,7 +245,7 @@ r = open_db(home, allow=False)
 db = home / "data" / "trader.db"
 check("fresh + legacy import succeeds", r.returncode == 0 and db.exists())
 s = snapshot(db)
-check(f"built at v{SCHEMA_V} directly", s["version"] == 4)
+check(f"built at v{SCHEMA_V} directly", s["version"] == SCHEMA_V)
 
 c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 c.row_factory = sqlite3.Row
@@ -291,6 +296,131 @@ c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 check("the REAL read did not mint a second SIMULATE account", c.execute(
     "SELECT COUNT(*) FROM accounts WHERE trade_env='SIMULATE'").fetchone()[0] == 1)
 c.close()
+
+
+# ── 6. v4 -> v5: the open_trades rebuild ────────────────────────────────────
+#
+# This is a table rebuild (SQLite cannot ALTER a primary key), so it is the one
+# migration in this file that can lose rows. The authoritative database is v3
+# and will arrive here through v4, carrying live positions.
+print("\n6  v4 -> v5 rebuild of open_trades")
+
+
+def make_v4_open_trades(path: Path, rows):
+    """A v4-shaped open_trades: account_id present, symbol the only key."""
+    c = sqlite3.connect(str(path))
+    c.executescript("""
+        CREATE TABLE open_trades (symbol TEXT PRIMARY KEY, qty INTEGER NOT NULL,
+          entry_price REAL NOT NULL, stop_loss REAL NOT NULL,
+          take_profit REAL NOT NULL, atr REAL,
+          half_closed INTEGER NOT NULL DEFAULT 0, buy_order_id TEXT,
+          stop_order_id TEXT, tp_order_id TEXT, opened_at TEXT NOT NULL,
+          high_water REAL, low_water REAL, ml_proba_entry REAL, strategy TEXT,
+          extra TEXT, account_id TEXT, opened_session_id TEXT);
+        CREATE TABLE kv_state (account_id TEXT NOT NULL DEFAULT '',
+          key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (account_id, key));
+        CREATE TABLE accounts (account_id TEXT PRIMARY KEY,
+          trade_env TEXT NOT NULL CHECK (trade_env IN ('SIMULATE','REAL')),
+          broker_acc_id TEXT, label TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE execution_sessions (session_id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL, trade_env TEXT NOT NULL, pid INTEGER,
+          host TEXT, started_at TEXT, ended_at TEXT, end_reason TEXT,
+          auth_mode TEXT, authorized_at TEXT, authorized_by TEXT);
+        CREATE TABLE closed_trades (id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL, symbol TEXT NOT NULL, qty INTEGER NOT NULL,
+          entry REAL NOT NULL, stop REAL NOT NULL, exit REAL NOT NULL,
+          exit_reason TEXT, pnl REAL, pnl_pct REAL, r_multiple REAL,
+          opened_at TEXT, mfe_pct REAL, mae_pct REAL, ml_proba_entry REAL,
+          strategy TEXT, extra TEXT, account_id TEXT, session_id TEXT,
+          migrated_from TEXT);
+        CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL, action TEXT NOT NULL, symbol TEXT, gate TEXT,
+          reason TEXT, score REAL, extra TEXT, account_id TEXT, session_id TEXT);
+        CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL, week TEXT, day TEXT, invested REAL, budget REAL,
+          unrealized_pnl REAL, realized_pnl_total REAL, total_pnl REAL,
+          positions_count INTEGER, symbols TEXT, timeframe TEXT,
+          account_id TEXT);
+    """)
+    c.execute("INSERT INTO accounts VALUES ('acct-sim','SIMULATE',NULL,'p',"
+              "'2026-01-01')")
+    for sym, qty, acct in rows:
+        c.execute("INSERT INTO open_trades (symbol,qty,entry_price,stop_loss,"
+                  "take_profit,opened_at,account_id) VALUES (?,?,10,9,11,'t',?)",
+                  (sym, qty, acct))
+    c.execute("PRAGMA user_version = 4")
+    c.commit(); c.close()
+
+
+home = tmp / "v4tov5"; (home / "data").mkdir(parents=True); (home / "logs").mkdir()
+db = home / "data" / "trader.db"
+# One normally-stamped position and one that a post-v4 writer left unattributed.
+make_v4_open_trades(db, [("AAPL", 100, "acct-sim"), ("MSFT", 7, None)])
+open_db(home, allow=True)
+after = snapshot(db)
+check(f"now v{SCHEMA_V} (got v{after['version']})", after["version"] == SCHEMA_V)
+
+c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+c.row_factory = sqlite3.Row
+kept = {r["symbol"]: r for r in c.execute("SELECT * FROM open_trades")}
+pk = {r[1] for r in c.execute("PRAGMA table_info(open_trades)") if r[5]}
+leftover = {r[0] for r in c.execute(
+    "SELECT name FROM sqlite_master WHERE name LIKE 'open_trades_v%'")}
+c.close()
+check("both positions survived the rebuild", set(kept) == {"AAPL", "MSFT"})
+check("quantities are unchanged", kept["AAPL"]["qty"] == 100
+      and kept["MSFT"]["qty"] == 7)
+# A NULL account_id here can only come from code that wrote between the two
+# migrations. Dropping the row would be dropping a position that is real at the
+# broker, so it is adopted by the local account instead.
+check("the unattributed position was adopted, not dropped",
+      kept["MSFT"]["account_id"] == "acct-sim")
+check("the key is now (account_id, symbol)", pk == {"account_id", "symbol"})
+check("the rebuild left no scratch table behind", not leftover)
+
+# The one case where guessing would be worse than stopping: the same symbol
+# twice under one account cannot be keyed, and picking a winner automatically
+# would discard a real position.
+#
+# A v4 database cannot produce this on its own — symbol is its primary key, so
+# (account, symbol) is unique for free. The guard is for a database that arrived
+# some other way: hand-repaired, reassembled from a backup, or written by a tool
+# that built the table itself. That is not hypothetical here; this ledger was
+# reassembled from two sources three weeks ago. So the fixture drops the key
+# rather than pretending v4 could have made the row.
+home = tmp / "v5dupe"; (home / "data").mkdir(parents=True); (home / "logs").mkdir()
+db2 = home / "data" / "trader.db"
+make_v4_open_trades(db2, [("AAPL", 100, "acct-sim")])
+c = sqlite3.connect(str(db2))
+c.executescript("""
+    ALTER TABLE open_trades RENAME TO ot_keyed;
+    CREATE TABLE open_trades (symbol TEXT NOT NULL, qty INTEGER NOT NULL,
+      entry_price REAL NOT NULL, stop_loss REAL NOT NULL,
+      take_profit REAL NOT NULL, atr REAL,
+      half_closed INTEGER NOT NULL DEFAULT 0, buy_order_id TEXT,
+      stop_order_id TEXT, tp_order_id TEXT, opened_at TEXT NOT NULL,
+      high_water REAL, low_water REAL, ml_proba_entry REAL, strategy TEXT,
+      extra TEXT, account_id TEXT, opened_session_id TEXT);
+    INSERT INTO open_trades SELECT * FROM ot_keyed;
+    DROP TABLE ot_keyed;
+    INSERT INTO open_trades (symbol,qty,entry_price,stop_loss,take_profit,
+      opened_at,account_id) VALUES ('AAPL',55,12,9,11,'t','acct-sim');
+    PRAGMA user_version = 4;
+""")
+c.commit(); c.close()
+def open_count(path: Path) -> int:
+    c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return c.execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
+    finally:
+        c.close()
+
+
+before_dupe = open_count(db2)
+r = open_db(home, allow=True)
+check("a duplicate (account, symbol) refuses the migration",
+      snapshot(db2)["version"] == 4)
+check("...and leaves both positions in place", open_count(db2) == before_dupe == 2)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\n{PASS} passed, {FAIL} failed")

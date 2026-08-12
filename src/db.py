@@ -32,7 +32,7 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 DB_FILE = settings.root / "data" / "trader.db"
-SCHEMA_VERSION = 4          # v4: account/session identity model
+SCHEMA_VERSION = 5          # v5: open_trades keyed by (account_id, symbol)
 
 # kv_state keys that belong to a brokerage ACCOUNT rather than to the software.
 # Everything not listed here stays global (account_id=''): strategy params, AI
@@ -106,8 +106,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_account ON execution_sessions(account_id
 CREATE INDEX IF NOT EXISTS idx_sessions_open
     ON execution_sessions(ended_at) WHERE ended_at IS NULL;
 
+-- The primary key is (account_id, symbol), not symbol.
+--
+-- v4 gave this table an account_id but left symbol as the sole key, which made
+-- the column decorative: SIMULATE and REAL cannot both hold AAPL, and the
+-- second one to write does not fail — ON CONFLICT(symbol) UPDATEs the other
+-- account's row in place, quantity, stops and all, and stamps its own
+-- account_id over the top. Adding an account filter to the reads on top of that
+-- would have been worse than no filter at all, because the row the filter hides
+-- is the row that was just silently overwritten.
 CREATE TABLE IF NOT EXISTS open_trades (
-    symbol          TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
     qty             INTEGER NOT NULL,
     entry_price     REAL NOT NULL,
     stop_loss       REAL NOT NULL,
@@ -127,8 +136,9 @@ CREATE TABLE IF NOT EXISTS open_trades (
     -- session here is the one that OPENED it and is never required — a restart
     -- must not orphan or duplicate a live position. The account is required:
     -- a position always belongs to exactly one account.
-    account_id         TEXT,
-    opened_session_id  TEXT
+    account_id         TEXT NOT NULL,
+    opened_session_id  TEXT,
+    PRIMARY KEY (account_id, symbol)
 );
 
 -- Scoped key-value state. account_id='' is the GLOBAL scope (strategy params,
@@ -331,6 +341,8 @@ def _ensure_initialised() -> None:
                     _migrate_v3(c)
                 if user_v < 4:
                     _migrate_v4(c)
+                if user_v < 5:
+                    _migrate_v5(c)
                 c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 log.info("SQLite upgraded v%d -> v%d: %s",
                          user_v, SCHEMA_VERSION, DB_FILE)
@@ -485,6 +497,63 @@ def _migrate_v4(c: sqlite3.Connection) -> None:
         c.execute(stmt)
 
     log.info("schema migrated to v4 (account/session identity, env=%s)", env)
+
+
+def _migrate_v5(c: sqlite3.Connection) -> None:
+    """v4 → v5: open_trades keyed by (account_id, symbol).
+
+    v4 added the column but left `symbol TEXT PRIMARY KEY`, so the isolation it
+    describes did not exist. Two accounts holding the same ticker was not a
+    conflict the database rejected — upsert_open_trade's ON CONFLICT(symbol)
+    quietly rewrote the other account's position and relabelled it.
+
+    SQLite cannot ALTER a primary key, so this is a table rebuild. Two things
+    are worth stating about it:
+
+    - Any row still carrying a NULL account_id is adopted by the local account
+      rather than dropped. A NULL here can only come from code that wrote
+      between the v4 migration and this one; the position is real either way,
+      and losing a live position to a migration is not a trade-off worth making.
+    - If the same symbol somehow exists twice under one account, the rebuild
+      would fail on the new key. That is checked FIRST and raised, so the
+      migration refuses rather than letting INSERT OR REPLACE silently pick a
+      winner between two real positions.
+    """
+    cols = [r[1] for r in c.execute("PRAGMA table_info(open_trades)").fetchall()]
+    if not cols:
+        return
+    # Already rebuilt? pk>0 on account_id is the marker.
+    pk_cols = [r[1] for r in c.execute("PRAGMA table_info(open_trades)").fetchall()
+               if r[5]]
+    if set(pk_cols) == {"account_id", "symbol"}:
+        return
+
+    account_id = _ensure_local_account(c)
+    c.execute("UPDATE open_trades SET account_id = ? WHERE account_id IS NULL "
+              "OR account_id = ''", (account_id,))
+
+    dupes = c.execute(
+        "SELECT account_id, symbol, COUNT(*) n FROM open_trades "
+        "GROUP BY account_id, symbol HAVING n > 1").fetchall()
+    if dupes:
+        raise RuntimeError(
+            "cannot key open_trades by (account_id, symbol): duplicate "
+            f"positions exist — {[(d[1], d[2]) for d in dupes]}. Resolve them "
+            "by hand; picking a winner automatically would discard a real "
+            "position.")
+
+    shared = [x for x in cols]
+    collist = ", ".join(shared)
+    c.execute("ALTER TABLE open_trades RENAME TO open_trades_v4")
+    c.executescript(SCHEMA)          # recreates open_trades with the new key
+    c.execute(f"INSERT INTO open_trades ({collist}) "
+              f"SELECT {collist} FROM open_trades_v4")
+    moved = c.execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
+    c.execute("DROP TABLE open_trades_v4")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_open_account "
+              "ON open_trades(account_id)")
+    log.info("schema migrated to v5: open_trades rebuilt on (account_id, "
+             "symbol), %d position(s) carried over", moved)
 
 
 # ---------- one-time JSON → SQLite migration ----------
@@ -679,15 +748,19 @@ def _migrate_from_json(c: sqlite3.Connection) -> None:
 # ---------- open_trades operations ----------
 
 def load_open_trades() -> dict[str, dict]:
-    """Return the same dict shape we used to read from open_trades.json."""
+    """This account's open positions, in the dict shape open_trades.json had."""
+    acc = _require_account_id("load_open_trades")
     with conn() as c:
-        rows = c.execute("SELECT * FROM open_trades").fetchall()
+        rows = c.execute("SELECT * FROM open_trades WHERE account_id = ?",
+                         (acc,)).fetchall()
     return {r["symbol"]: _row_to_trade_dict(r) for r in rows}
 
 
 def get_open_trade(symbol: str) -> dict | None:
+    acc = _require_account_id("get_open_trade")
     with conn() as c:
-        r = c.execute("SELECT * FROM open_trades WHERE symbol = ?", (symbol,)).fetchone()
+        r = c.execute("SELECT * FROM open_trades WHERE account_id = ? AND "
+                      "symbol = ?", (acc, symbol)).fetchone()
     return _row_to_trade_dict(r) if r else None
 
 
@@ -696,6 +769,10 @@ _OPEN_TRADE_COLUMNS = {
     "half_closed", "buy_order_id", "stop_order_id", "tp_order_id",
     "opened_at", "high_water", "low_water", "ml_proba_entry", "strategy",
     "extra",
+    # Listed so that a caller round-tripping a row does not get them swept into
+    # the `extra` blob as a stale second copy. Identity is stamped from the
+    # session below, never taken from the caller's dict.
+    "account_id", "opened_session_id",
 }
 
 
@@ -706,14 +783,27 @@ def upsert_open_trade(trade: dict) -> None:
     for k, v in trade.items():
         if k not in _OPEN_TRADE_COLUMNS:
             extra[k] = v
+    acc = _require_account_id("upsert_open_trade")
+    # The session that OPENED the position, recorded once. It is deliberately
+    # absent from the UPDATE clause below: a position outlives the run that
+    # opened it, and letting each restart restamp it would turn "which run
+    # opened this?" into "which run last touched this?" — the second question is
+    # already answerable from the audit trail, and the first would be gone.
+    sid = None
+    try:
+        from . import identity
+        sid = identity.current_session_id()
+    except Exception:
+        pass
     with transaction() as c:
         c.execute("""
             INSERT INTO open_trades
             (symbol, qty, entry_price, stop_loss, take_profit, atr,
              half_closed, buy_order_id, stop_order_id, tp_order_id,
-             opened_at, high_water, low_water, ml_proba_entry, strategy, extra)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(symbol) DO UPDATE SET
+             opened_at, high_water, low_water, ml_proba_entry, strategy, extra,
+             account_id, opened_session_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, symbol) DO UPDATE SET
               qty=excluded.qty, entry_price=excluded.entry_price,
               stop_loss=excluded.stop_loss, take_profit=excluded.take_profit,
               atr=excluded.atr, half_closed=excluded.half_closed,
@@ -740,12 +830,15 @@ def upsert_open_trade(trade: dict) -> None:
             trade.get("ml_proba_entry"),
             trade.get("strategy") or "trend",
             json.dumps(extra, default=str) if extra else None,
+            acc, sid,
         ))
 
 
 def delete_open_trade(symbol: str) -> None:
+    acc = _require_account_id("delete_open_trade")
     with transaction() as c:
-        c.execute("DELETE FROM open_trades WHERE symbol = ?", (symbol,))
+        c.execute("DELETE FROM open_trades WHERE account_id = ? AND symbol = ?",
+                  (acc, symbol))
 
 
 def _row_to_trade_dict(r: sqlite3.Row) -> dict:
@@ -800,6 +893,28 @@ def _active_account_id() -> str:
         return identity.active_account_id() or GLOBAL_SCOPE
     except Exception:
         return GLOBAL_SCOPE
+
+
+def _require_account_id(what: str) -> str:
+    """The account for a trade-data read or write, or raise.
+
+    Deliberately NOT _active_account_id(), which falls back to the global scope
+    so that kv_state keeps working during initialisation. Trade data cannot take
+    that fallback, because the fallback's failure mode is silence: a positions
+    query scoped to an account that does not exist returns [] rather than an
+    error, "no open positions" is a perfectly ordinary answer, and the bot acts
+    on it by buying everything it already holds.
+
+    Raising is recoverable — the scan fails, nothing trades, someone reads a log.
+    An empty result is not.
+    """
+    acc = _active_account_id()
+    if not acc:
+        raise RuntimeError(
+            f"cannot resolve the active account for {what} — refusing rather "
+            f"than returning a result scoped to nothing. This usually means "
+            f"the database has no accounts row for the configured trade_env.")
+    return acc
 
 
 def _scope_for(key: str, account_id: str) -> str:
@@ -933,23 +1048,37 @@ def _mirror_state_json(state: dict) -> None:
 def audit_insert(action: str, symbol: str = "", gate: str = "", reason: str = "",
                  score: float = 0.0, extra: dict | None = None,
                  ts: str | None = None) -> None:
+    acc = _require_account_id("audit_insert")
+    # NULL session is legitimate here, unlike on a fill: the web panel, the CLI
+    # and the reconciler all write audit rows outside any run, and forcing a
+    # session on them would mean either refusing to record what happened or
+    # inventing a run that did not exist.
+    sid = None
+    try:
+        from . import identity
+        sid = identity.current_session_id()
+    except Exception:
+        pass
     with conn() as c:
         c.execute("""
-            INSERT INTO audit (ts, action, symbol, gate, reason, score, extra)
-            VALUES (?,?,?,?,?,?,?)
+            INSERT INTO audit (ts, action, symbol, gate, reason, score, extra,
+                               account_id, session_id)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (
             ts or datetime.utcnow().isoformat(),
             action, symbol, gate, reason, score,
             json.dumps(extra, default=str) if extra else None,
+            acc, sid,
         ))
 
 
 def audit_recent(limit: int = 100, action: str | None = None) -> list[dict]:
-    q = "SELECT * FROM audit"
-    args: tuple = ()
+    acc = _require_account_id("audit_recent")
+    q = "SELECT * FROM audit WHERE account_id = ?"
+    args: tuple = (acc,)
     if action:
-        q += " WHERE action = ?"
-        args = (action,)
+        q += " AND action = ?"
+        args = (acc, action)
     # ts, not id — insertion order stopped tracking time at the ledger merge.
     q += " ORDER BY ts DESC, id DESC LIMIT ?"
     args = args + (limit,)
@@ -969,26 +1098,55 @@ def audit_recent(limit: int = 100, action: str | None = None) -> list[dict]:
 
 
 def audit_gate_summary(limit: int = 200) -> dict[str, int]:
+    acc = _require_account_id("audit_gate_summary")
     with conn() as c:
         rows = c.execute("""
             SELECT gate, COUNT(*) AS n FROM (
-              SELECT gate FROM audit WHERE action='skip'
+              SELECT gate FROM audit WHERE action='skip' AND account_id = ?
               ORDER BY ts DESC, id DESC LIMIT ?
             ) GROUP BY gate ORDER BY n DESC
-        """, (limit,)).fetchall()
+        """, (acc, limit)).fetchall()
     return {r["gate"] or "?": r["n"] for r in rows}
 
 
 # ---------- closed_trades ----------
 
 def closed_trade_insert(row: dict) -> None:
+    """Record a close. Always attributable, never refused.
+
+    A close is a fill, and identity.py says a fill must belong to exactly one
+    run. The obvious implementation — require_session_id() and raise otherwise —
+    is wrong here, because portfolio.record_trade_close wraps this call in
+    `except Exception: log.warning(...)`. Raising would not stop a bad write; it
+    would delete a real trade from the ledger and leave a log line.
+
+    So nothing is refused, and nothing is left ambiguous either. Outside a
+    session the row is stamped with an explicit provenance string rather than a
+    bare NULL, because a NULL meaning "written by a script" and a NULL meaning
+    "a bug dropped the session" are indistinguishable later, and one of them is
+    a duplicate order nobody can attribute. `migrated_from` already carries that
+    meaning for pre-identity rows; this reuses it rather than inventing a
+    second convention.
+    """
+    acc = _require_account_id("closed_trade_insert")
+    sid, provenance = None, row.get("migrated_from")
+    try:
+        from . import identity
+        sid = identity.current_session_id()
+    except Exception:
+        pass
+    if not sid and not provenance:
+        provenance = f"unattributed:no-session (pid {os.getpid()})"
+        log.warning("closed trade for %s recorded outside any execution "
+                    "session — stamped %r", row.get("symbol"), provenance)
     with conn() as c:
         c.execute("""
             INSERT INTO closed_trades
             (ts, symbol, qty, entry, stop, exit, exit_reason,
              pnl, pnl_pct, r_multiple, opened_at,
-             mfe_pct, mae_pct, ml_proba_entry, strategy, extra)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             mfe_pct, mae_pct, ml_proba_entry, strategy, extra,
+             account_id, session_id, migrated_from)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             row.get("ts") or datetime.utcnow().isoformat(),
             row["symbol"], int(row["qty"]),
@@ -1002,6 +1160,7 @@ def closed_trade_insert(row: dict) -> None:
             row.get("ml_proba_entry"),
             row.get("strategy"),
             row.get("extra"),
+            acc, sid, provenance,
         ))
 
 
@@ -1058,14 +1217,16 @@ def closed_trades(limit: int = 200, include_excluded: bool = False) -> list[dict
     # would return fewer than `limit` usable rows and quietly shrink every
     # analysis window by however many marked rows happened to fall inside it.
     fetch = limit if include_excluded else limit + 64
+    acc = _require_account_id("closed_trades")
     with conn() as c:
         rows = c.execute(
             """
             SELECT * FROM (
-                SELECT * FROM closed_trades ORDER BY ts DESC, id DESC LIMIT ?
+                SELECT * FROM closed_trades WHERE account_id = ?
+                ORDER BY ts DESC, id DESC LIMIT ?
             ) ORDER BY ts ASC, id ASC
             """,
-            (fetch,),
+            (acc, fetch),
         ).fetchall()
     out = [dict(r) for r in rows]
     if not include_excluded:
@@ -1086,16 +1247,17 @@ def last_sl_close_for_symbol(symbol: str) -> dict | None:
     the bad ones SL at write time, this clause covers legacy rows and small
     scratch losses.
     """
+    acc = _require_account_id("last_sl_close_for_symbol")
     with conn() as c:
         rows = c.execute(
             """
             SELECT * FROM closed_trades
-            WHERE symbol = ?
+            WHERE account_id = ? AND symbol = ?
               AND (exit_reason IN ('SL', 'SL_BRACKET')
                    OR (exit_reason = 'BREAKEVEN' AND pnl < 0))
             ORDER BY ts DESC, id DESC LIMIT 5
             """,
-            (symbol,),
+            (acc, symbol),
         ).fetchall()
     # Effective ledger only. This drives the stop-loss re-entry cooldown, so a
     # quality-marked row here blocks a real entry on the strength of a trade
@@ -1111,12 +1273,17 @@ def last_sl_close_for_symbol(symbol: str) -> dict | None:
 # ---------- history ----------
 
 def history_insert(row: dict) -> None:
+    # No session: an equity curve is a property of the account and spans every
+    # run that ever traded it. Stamping the session would invite someone to
+    # slice the curve by run and find gaps wherever the bot was restarted.
+    acc = _require_account_id("history_insert")
     with conn() as c:
         c.execute("""
             INSERT INTO history
             (ts, week, day, invested, budget, unrealized_pnl,
-             realized_pnl_total, total_pnl, positions_count, symbols, timeframe)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             realized_pnl_total, total_pnl, positions_count, symbols, timeframe,
+             account_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             row.get("ts") or datetime.utcnow().isoformat(),
             row.get("week", ""), row.get("day", ""),
@@ -1127,15 +1294,18 @@ def history_insert(row: dict) -> None:
             row.get("positions_count", 0),
             json.dumps(row.get("symbols", [])),
             row.get("timeframe", ""),
+            acc,
         ))
 
 
 def history_rows(limit: int = 500) -> list[dict]:
+    acc = _require_account_id("history_rows")
     with conn() as c:
         rows = c.execute(
             # ts, not id: the equity curve is drawn from these rows and the
             # merge interleaved 582 imported ones among the app's own.
-            "SELECT * FROM history ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
+            "SELECT * FROM history WHERE account_id = ? "
+            "ORDER BY ts DESC, id DESC LIMIT ?", (acc, limit)
         ).fetchall()
     out = []
     for r in rows:

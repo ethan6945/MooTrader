@@ -296,10 +296,17 @@ def prepare(source: str, *, requested_env: str | None = None,
         refuse("account_unknown",
                f"expected exactly one {effective} account, found {len(rows)}")
     from . import account_ref as _aref
-    account_ref = _aref.ref(rows[0]["account_id"], kind="account")
+    account_id = rows[0]["account_id"]
+    account_ref = _aref.ref(account_id, kind="account")
 
     # ── positions: database vs mirror ──
-    db_positions = {r["symbol"] for r in c.execute("SELECT symbol FROM open_trades")}
+    # Scoped to the account we are about to start, not the whole table. Reading
+    # every account's positions here would compare a two-account union against a
+    # one-account mirror, so the first REAL start would refuse with
+    # position_conflict every single time — a check that fires only once a
+    # second account exists, which is the moment it is hardest to read.
+    db_positions = {r["symbol"] for r in c.execute(
+        "SELECT symbol FROM open_trades WHERE account_id = ?", (account_id,))}
     c.close()
     mirror = home / "data" / "open_trades.json"
     if mirror.exists():
