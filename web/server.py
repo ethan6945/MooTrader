@@ -266,7 +266,29 @@ def _pid_running(pid_file: Path) -> int | None:
 
 
 def _scheduler_running() -> bool:
-    return _pid_running(SCHED_PID) is not None
+    """Is a worker running? Answered by the lease, not by a pid file.
+
+    logs/scheduler.pid was written by the spawn path that no longer exists, so
+    reading it now would report "not running" while a worker was trading — the
+    exact wrong direction for a dashboard, and the same class of mistake as the
+    incident: a control surface confidently describing a process it had lost
+    track of. The lease is the record of which process holds the right to
+    trade, so it is also the honest answer to whether one does.
+    """
+    try:
+        from src import start_lease
+        rec = start_lease.read()
+        if not rec:
+            return False
+        pid = rec.get("pid")
+        if not isinstance(pid, int):
+            return False
+        os.kill(pid, 0)
+        out = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3)
+        return not out.stdout.strip().startswith("Z")
+    except Exception:
+        return False
 
 
 def _opend_running() -> bool:
@@ -1378,40 +1400,58 @@ def api_ai_models():
 @app.route("/api/scheduler/<action>", methods=["POST"])
 def api_scheduler(action):
     if action == "start":
-        # The direct path is closed. It spawned with no `env=`, so the worker
-        # inherited whatever this process happened to hold — on 2026-08-11 that
-        # was a day-old copy of a configuration corrected hours earlier, and the
-        # worker traded on it for two hours. It also took no lease, waited for
-        # no confirmation from the worker, and wrote nothing down.
-        #
-        # Starts go through prepare -> commit -> READY (src/start_protocol.py),
-        # which rebuilds the child environment from the authoritative .env,
-        # compares a config hash with the worker before it trades, and refuses
-        # rather than guessing.
-        return jsonify({
-            "ok": False,
-            "error": "direct start is disabled — use the start protocol",
-            "code": "direct_start_disabled",
-        }), 409
+        # One entry point, shared with the macOS shell and the CLI. This route
+        # used to spawn the worker itself, with no `env=`, so it inherited
+        # whatever this process happened to hold — on 2026-08-11 a day-old copy
+        # of a configuration corrected hours earlier, which the worker then
+        # traded on for two hours. Nothing here decides anything now; every
+        # rule, refusal and audit record lives in start_protocol, so the web
+        # panel cannot start a worker under different rules than the CLI.
+        from src import start_protocol
+        opend_err = _start_opend()
+        if opend_err:
+            return jsonify({"ok": False, "error": opend_err,
+                            "code": "opend_unavailable"}), 503
+        try:
+            result = start_protocol.start("web")
+        except start_protocol.StartRefused as e:
+            # 409: the request was understood and refused on its merits. The
+            # code is the machine-readable half; detail says what to fix.
+            return jsonify({"ok": False, "error": e.detail,
+                            "code": e.code}), 409
+        return jsonify({"ok": True, **result})
     if action == "stop":
-        had_sched = _stop_pid(SCHED_PID)
+        # Stop closes the process, the session and the lease together. Killing
+        # the process alone left a session with no ended_at — so open_sessions()
+        # reported a worker that was not there — and a lease naming a dead pid,
+        # which the next start had to break before it could proceed.
+        from src import start_protocol
+        result = start_protocol.stop("web")
         had_opend = _stop_opend()
-        return jsonify({"ok": True,
-                        "running": _scheduler_running(),
-                        "note": "not running" if not had_sched else (
-                            "stopped (scheduler + OpenD)" if had_opend else "stopped (scheduler; OpenD was already off)")})
-    if action == "restart":
-        # Restart was start's twin and inherited the same environment. Its
-        # comment claimed it "picks up the latest .env" — it picked up the
-        # latest FILE for anything the worker read itself, and this process's
-        # stale copy for everything it did not. Stop, then start through the
-        # protocol, so the second half gets the same checks as any other start.
         return jsonify({
-            "ok": False,
-            "error": "restart is disabled — stop, then start through the "
-                     "protocol so the new worker is validated like any other",
-            "code": "restart_disabled",
-        }), 409
+            "ok": True, "running": False, **result,
+            "note": ("not running" if not result["stopped"] else
+                     "stopped (worker + OpenD)" if had_opend else
+                     "stopped (worker; OpenD was already off)")})
+    if action == "restart":
+        # Stop, then start, both through the protocol — rather than the old
+        # twin of start that re-spawned with this process's environment. Its
+        # comment claimed it "picks up the latest .env"; it picked up the latest
+        # FILE for whatever the worker read itself, and this process's stale
+        # copy for everything else.
+        from src import start_protocol
+        start_protocol.stop("web")
+        try:
+            result = start_protocol.start("web")
+        except start_protocol.StartRefused as e:
+            # The stop already happened. Say so plainly: reporting a failed
+            # restart without mentioning that nothing is running now is how an
+            # operator walks away believing the old worker is still trading.
+            return jsonify({
+                "ok": False, "code": e.code,
+                "error": f"stopped, but did not start again — {e.detail}",
+                "stopped": True, "running": False}), 409
+        return jsonify({"ok": True, "note": "restarted", **result})
     return jsonify({"ok": False, "error": "bad action"}), 400
 
 

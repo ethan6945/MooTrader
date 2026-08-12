@@ -148,13 +148,21 @@ def reset_cache() -> None:
 
 def start_session(trade_env: str, broker_acc_id: str | None = None,
                   auth_mode: str = "unknown",
-                  authorized_by: str | None = None) -> dict:
+                  authorized_by: str | None = None,
+                  account_id: str | None = None) -> dict:
     """Open a session for this process and pin its account + trade_env.
 
     `auth_mode` records HOW the environment was decided — the OpenD startup
     check (Phase 0B-2) is what will pass something other than "unknown". It is
     stored rather than recomputed so that "why was this run allowed to touch
     real money?" is answerable afterwards from the row itself.
+
+    `account_id` pins the session to an account that already exists and has
+    already been validated, instead of resolving one here. The start protocol
+    passes the account the parent checked; without it a worker whose lookup
+    misses — a changed broker id, a half-applied migration — would happily
+    CREATE an account and write the whole run into a record nothing verified.
+    An id that does not exist is an error, never an invitation to make one.
     """
     global _session
     env = (trade_env or "").upper()
@@ -167,7 +175,20 @@ def start_session(trade_env: str, broker_acc_id: str | None = None,
                 f"session {_session['session_id']} is already open in this "
                 f"process — a worker runs exactly one session")
 
-        account_id = get_or_create_account(env, broker_acc_id)
+        if account_id:
+            with db.conn() as c:
+                row = c.execute("SELECT trade_env FROM accounts WHERE "
+                                "account_id = ?", (account_id,)).fetchone()
+            if not row:
+                raise ValueError(
+                    f"account {account_id} does not exist — refusing to create "
+                    f"it. A pinned account is one that was already validated.")
+            if row["trade_env"] != env:
+                raise ValueError(
+                    f"account {account_id} is a {row['trade_env']} account, "
+                    f"but this session is starting as {env}")
+        else:
+            account_id = get_or_create_account(env, broker_acc_id)
         session_id = str(uuid.uuid4())
         rec = {
             "session_id": session_id, "account_id": account_id,

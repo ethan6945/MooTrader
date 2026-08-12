@@ -144,6 +144,74 @@ def _remember_high(lease_path: Path, fence: int) -> None:
         log.warning("could not persist the fence high-water mark: %s", e)
 
 
+def take_over(fence: int, *, purpose: str = "worker") -> Lease:
+    """Move an existing lease to THIS process, keeping its token.
+
+    The parent takes the lease so that twenty concurrent Start requests produce
+    one winner. But the parent is a web server, and the lease has to outlive it:
+    if it stays in the parent's name, a parent that dies leaves a record whose
+    pid is gone, the next Start finds it stale, breaks it, and spawns a second
+    worker while the first is still holding positions and placing orders. The
+    lease has to name the process that is actually trading.
+
+    The token does not change. It identifies the START, and both sides have
+    already agreed on it; re-issuing here would invalidate the fence the parent
+    is about to check in the READY payload.
+    """
+    p = _lease_path()
+    cur = read()
+    if not cur:
+        raise LeaseUnavailable("no lease to take over — it was released or "
+                               "broken between the parent taking it and this "
+                               "process starting")
+    if int(cur.get("fence", -1)) != int(fence):
+        raise LeaseUnavailable(
+            f"lease now carries fence {cur.get('fence')}, this worker was "
+            f"started under {fence} — another start overtook this one")
+
+    rec = dict(cur)
+    rec.update({
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "purpose": purpose,
+        "started_at_str": _proc_start_time(os.getpid()),
+        "taken_over_at": time.time(),
+        "handed_over_from": cur.get("pid"),
+    })
+    # Replace in place rather than unlink-then-create: for the moment between
+    # the two there would be no lease at all, and a concurrent starter would
+    # find nothing and win one.
+    tmp = p.with_suffix(".handover")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(rec).encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(str(tmp), str(p))
+    log.info("worker %s took over the lease from %s (fence %s)",
+             rec["pid"], rec["handed_over_from"], fence)
+    return Lease(path=p, holder_pid=rec["pid"], holder_host=rec["host"],
+                 fence=int(fence), acquired_at=rec.get("acquired_at", time.time()))
+
+
+def assert_ours(fence: int, *, what: str = "this operation") -> None:
+    """Raise unless this process still holds the lease with `fence`.
+
+    Called before every order, modification and cancellation. A pid check
+    cannot answer this: our own process is alive and well in exactly the case
+    that matters — we were slow, someone found us stale, and a second worker
+    took the lease. We are healthy, we are wrong, and the only evidence is the
+    token.
+    """
+    cur = read() or {}
+    if cur.get("pid") != os.getpid() or int(cur.get("fence", -1)) != int(fence):
+        raise LeaseUnavailable(
+            f"{what} refused: this process no longer holds the worker lease "
+            f"(lease is pid {cur.get('pid')} fence {cur.get('fence')}, we are "
+            f"pid {os.getpid()} fence {fence}). Another worker has taken over.")
+
+
 def acquire(*, purpose: str = "worker", break_stale: bool = True) -> Lease:
     """Take the lease, or raise LeaseUnavailable.
 

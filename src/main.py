@@ -2018,11 +2018,103 @@ def run_loop() -> None:
     sched.start()
 
 
+# Commands that reach the broker. Everything else here reads the database or
+# prints, and needs no session, no lease and no OpenD.
+_TRADING_COMMANDS = ("run", "scan")
+
+
+def _enter_trading_command(cmd: str) -> None:
+    """Join the start protocol, or refuse — before anything touches the broker.
+
+    This is the gate the 2026-08-11 incident went around. `python -m src.main
+    run` typed by hand, a leftover launchd job, or a parent that still spawns
+    the old way all landed directly in run_loop(), whose very first act is
+    _startup_protect_stops(): broker orders, placed and cancelled, before any
+    of this was checked.
+
+    So it goes here rather than inside run_loop(). By the time run_loop() has
+    begun, the process has already imported its configuration and is one line
+    away from an order; a refusal has to happen before that, and has to be
+    impossible to reach the trading path without.
+
+    The two phases are separate on purpose. verify_and_report says "I have
+    checked myself"; wait_for_go says "the parent agrees". Between them sit
+    four comparisons the worker cannot make about itself, and a worker that
+    trades in that window trades before anyone has accepted it.
+    """
+    from . import start_protocol
+    try:
+        ready = start_protocol.worker_verify_and_report()
+        start_protocol.wait_for_go()
+    except start_protocol.StartRefused as e:
+        log.error("refusing to %s: [%s] %s", cmd, e.code, e.detail)
+        print(f"refused ({e.code}): {e.detail}", file=sys.stderr)
+        sys.exit(3)
+    log.info("start protocol: cleared to %s — session %s, fence %s",
+             cmd, str(ready.get("session_id"))[:8], ready.get("fence"))
+
+
+def _leave_trading_command(cmd: str, reason: str = "stopped") -> None:
+    """Close the session and give up the lease. Never raises."""
+    from . import start_lease, start_protocol
+    try:
+        from . import identity
+        identity.end_session(reason)
+    except Exception as e:
+        log.warning("could not close the execution session: %s", e)
+    try:
+        fence = start_protocol.current_fence()
+        cur = start_lease.read() or {}
+        if cur.get("pid") == os.getpid() and int(cur.get("fence", -1)) == fence:
+            start_lease.Lease(path=start_lease._lease_path(),
+                              holder_pid=os.getpid(),
+                              holder_host=cur.get("host", ""),
+                              fence=fence,
+                              acquired_at=cur.get("acquired_at", 0.0)).release()
+    except Exception as e:
+        log.warning("could not release the worker lease: %s", e)
+    try:
+        from . import broker_binding
+        broker_binding.reset()
+    except Exception:
+        pass
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
     cmd = sys.argv[1]
+    # `start`/`stop` are the PARENT role: they ask the protocol to launch or
+    # end a worker. `run`/`scan` are the WORKER role, and only the protocol may
+    # invoke them. Keeping both in one CLI is deliberate — the operator, the web
+    # panel and the macOS app then have one implementation between them, and
+    # there is no second place for the rules to be almost right.
+    if cmd in ("start", "stop"):
+        from . import start_protocol
+        try:
+            result = (start_protocol.start("cli") if cmd == "start"
+                      else start_protocol.stop("cli"))
+        except start_protocol.StartRefused as e:
+            print(f"refused ({e.code}): {e.detail}", file=sys.stderr)
+            sys.exit(3)
+        for k, v in result.items():
+            print(f"{k}: {v}")
+        return
+
+    if cmd in _TRADING_COMMANDS:
+        _enter_trading_command(cmd)
+        try:
+            scan_once() if cmd == "scan" else run_loop()
+        finally:
+            # Whatever happened — clean exit, crash, or signal — the session is
+            # closed and the lease released here. A lease left behind by a dead
+            # worker is breakable, so it is not a safety hole; but until someone
+            # breaks it every later Start refuses, and an operator staring at
+            # "lease_unavailable" with nothing running is how a stale file
+            # becomes a habit of deleting lease files by hand.
+            _leave_trading_command(cmd)
+        return
     if cmd == "scan":
         scan_once()
     elif cmd == "run":
@@ -2045,7 +2137,9 @@ def main() -> None:
               f"{cmd} {sys.argv[2]}: {'rejected' if ok else 'not found / already resolved'}")
     else:
         print(f"unknown command: {cmd}")
-        print("commands: scan | run | review | approvals | approve <id> | reject <id>")
+        print("commands: start | stop | review | approvals | approve <id> "
+              "| reject <id>")
+        print("(run/scan are the worker role — the protocol invokes them)")
         sys.exit(2)
 
 

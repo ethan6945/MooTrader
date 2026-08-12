@@ -120,6 +120,20 @@ def _env_enum() -> TrdEnv:
     return broker_binding.require("a broker call").trd_env
 
 
+def _assert_may_trade(what: str) -> None:
+    """Refuse a broker mutation unless this process still holds its lease.
+
+    Placed on the three methods that change broker state — place_limit_order,
+    place_stop_loss and cancel_order — rather than at the eighteen call sites in
+    executor, inverse_sleeve and cash_yield. One of eighteen would eventually be
+    added without it, and the failure that check exists for is invisible from
+    the call site: this process is healthy, its connection is fine, and it
+    simply is not the current worker any more.
+    """
+    from . import start_protocol
+    start_protocol.assert_may_trade(what)
+
+
 def _acc_id() -> int:
     """The pinned account. Passing this is what stops the SDK from choosing.
 
@@ -401,6 +415,7 @@ class MooClient:
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a pending order. Returns True on success."""
+        _assert_may_trade(f"cancelling order {order_id}")
         try:
             ret, data = self.trade.modify_order(
                 modify_order_op=ModifyOrderOp.CANCEL,
@@ -610,6 +625,7 @@ class MooClient:
     def place_limit_order(
         self, symbol: str, qty: int, price: float, side: TrdSide
     ) -> str:
+        _assert_may_trade(f"placing a {side} order for {symbol}")
         # US stocks require 2-decimal precision for price >= $1.
         rounded = round(price, 2) if price >= 1 else round(price, 4)
         ret, data = self.trade.place_order(
@@ -639,6 +655,7 @@ class MooClient:
 
     def place_stop_loss(self, symbol: str, qty: int, stop_price: float) -> str:
         """Sell-stop to close a long position."""
+        _assert_may_trade(f"placing a stop for {symbol}")
         rounded = round(stop_price, 2) if stop_price >= 1 else round(stop_price, 4)
         ret, data = self.trade.place_order(
             price=rounded,

@@ -58,8 +58,10 @@ TP_ATR_MULT=10.0
 MAX_HOLD_DAYS=4
 """
 
-# A stand-in worker: verifies its world through the protocol, writes READY,
-# then idles until killed. Small enough that a failure here is the protocol's.
+# A stand-in worker. It runs BOTH phases, like src.main does: report, then wait
+# to be accepted. It writes a marker file the moment it is cleared, which is how
+# the tests below can tell "the worker was allowed to trade" from "the worker
+# started" — under one phase those were the same event, which is the bug.
 FAKE_WORKER = '''\
 import os, sys, time
 sys.path.insert(0, {root!r})
@@ -69,6 +71,18 @@ try:
 except Exception as e:
     print("worker refused:", e, file=sys.stderr)
     sys.exit(3)
+if os.environ.get("FAKE_WORKER_SKIP_GO") != "1":
+    try:
+        start_protocol.wait_for_go()
+    except Exception as e:
+        print("worker not cleared:", e, file=sys.stderr)
+        sys.exit(4)
+# Derived from MMT_HOME, not passed as its own variable: build_child_env
+# strips everything off its keep-list, so a FAKE_WORKER_* variable never
+# reaches the worker. That is the environment rebuild doing its job, and a
+# test that routed around it would be testing a channel production has not got.
+open(os.path.join(os.environ["MMT_HOME"], "logs", "traded.marker"), "w").write(
+    str(os.getpid()))
 time.sleep(int(os.environ.get("FAKE_WORKER_LINGER", "30")))
 '''
 
@@ -344,6 +358,120 @@ check("the lease was released after reclamation",
 audit = [json.loads(l) for l in
          (h2 / "logs" / "start_audit.jsonl").read_text().splitlines()]
 check("the reclamation is audited", any(a["result"] == "reclaimed" for a in audit))
+
+# ── 7b. the worker may not trade until the parent says so ──────────────────
+#
+# READY means "I checked myself and I am consistent". It does not mean the
+# parent agrees: four comparisons happen only on the parent side, and any of
+# them can fail. Before the GO gate the worker simply carried on after writing
+# READY, and its first real act — _startup_protect_stops() — places and cancels
+# broker orders. So a worker the parent was about to reject would have traded
+# first, and the kill that follows cannot recall a sent order.
+print("\n7b  READY is not permission")
+
+h = make_home(tmp, "gogate")
+traded = h / "logs" / "traded.marker"
+r = in_home(h, COMMIT.format(worker=str(worker_py), to=45))
+line = [l for l in r.stdout.splitlines() if l.startswith("READY ")]
+check("a worker that waits for GO still starts normally", bool(line))
+for _ in range(100):
+    if traded.exists():
+        break
+    time.sleep(0.1)
+check("...and only acts after being cleared", traded.exists())
+if line:
+    res = json.loads(line[0][6:])
+    lease_now = json.loads((h / "logs" / "worker.lease").read_text())
+    # Criterion 4/6: the lease must name the trader, not the web server that
+    # asked for one. A lease in the parent's name dies with the parent, and the
+    # next Start reads it as stale and spawns a second worker beside this one.
+    check("the lease names the worker, not the parent",
+          lease_now.get("pid") == res["pid"])
+    check("the fencing token survived the handover",
+          lease_now.get("fence") == res["fence"])
+    check("the handover recorded who it came from",
+          lease_now.get("handed_over_from") not in (None, res["pid"]))
+
+    # With the worker holding a live lease, a second Start must lose — this is
+    # the "parent died, worker lives" case. The parent is gone (in_home exited)
+    # and the worker is still running.
+    r2 = in_home(h, COMMIT.format(worker=str(worker_py), to=20), timeout=90)
+    got2 = [l for l in r2.stdout.splitlines() if l.startswith("REFUSED")]
+    check("a second start refuses while the worker still holds the lease",
+          bool(got2) and got2[0].split()[1] == "lease_unavailable")
+    try:
+        _os.killpg(_os.getpgid(res["pid"]), 15)
+    except OSError:
+        pass
+    time.sleep(0.5)
+(h / "logs" / "worker.lease").unlink(missing_ok=True)
+
+# A worker that reports and is never cleared must exit rather than trade.
+h = make_home(tmp, "nogo")
+traded2 = h / "logs" / "traded.marker"
+NOGO = '''
+import json, subprocess, sys, time
+from pathlib import Path
+from src import start_protocol as sp
+req = sp.prepare("web")
+# Take the lease and spawn exactly as commit() would, then never issue the GO.
+from src import start_lease
+lease = start_lease.acquire(purpose="worker")
+env = sp.build_child_env(Path(r"{home}"), req.config_sha256)
+env["MMT_START_REQUEST_ID"] = req.request_id
+env["MMT_START_FENCE"] = str(lease.fence)
+env["MMT_READY_FILE"] = str(Path(r"{home}") / "logs" / "ready.json")
+env["MMT_GO_FILE"] = str(Path(r"{home}") / "logs" / "go.json")
+env["MMT_ACCOUNT_ID"] = req.account_id or ""
+p = subprocess.Popen([sys.executable, r"{worker}"], env=env,
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+out, err = p.communicate(timeout=120)
+print("EXIT " + str(p.returncode))
+print("ERR " + err.replace(chr(10), " "))
+'''
+r = in_home(h, NOGO.format(home=str(h), worker=str(worker_py)), timeout=180)
+check("a worker that is never cleared exits", "EXIT 4" in r.stdout)
+check("...with go_timeout", "go_timeout" in r.stdout)
+check("...and never traded", not traded2.exists())
+(h / "logs" / "worker.lease").unlink(missing_ok=True)
+
+
+# ── 7c. a stale fence stops trading, even in a healthy process ─────────────
+print("\n7c  the fencing token gates every order")
+h = make_home(tmp, "fence")
+FENCE_CHECK = '''
+import json, os
+from src import start_protocol as sp, start_lease
+os.environ["MMT_START_FENCE"] = "5"
+(sp.settings.root / "logs").mkdir(parents=True, exist_ok=True)
+lease = sp.settings.root / "logs" / "worker.lease"
+lease.write_text(json.dumps({"pid": os.getpid(), "fence": 5, "host": "h"}))
+try:
+    sp.assert_may_trade("placing an order")
+    print("ALLOWED-1")
+except Exception as e:
+    print("BLOCKED-1 " + type(e).__name__)
+# Someone else took the lease while this process stayed perfectly healthy.
+lease.write_text(json.dumps({"pid": os.getpid() + 1, "fence": 6, "host": "h"}))
+try:
+    sp.assert_may_trade("placing an order")
+    print("ALLOWED-2")
+except start_lease.LeaseUnavailable:
+    print("BLOCKED-2")
+# No token at all: not started through the protocol.
+del os.environ["MMT_START_FENCE"]
+try:
+    sp.assert_may_trade("placing an order")
+    print("ALLOWED-3")
+except start_lease.LeaseUnavailable:
+    print("BLOCKED-3")
+'''
+r = in_home(h, FENCE_CHECK)
+check("the holder may trade", "ALLOWED-1" in r.stdout)
+check("a process that lost the lease may not, though it is healthy",
+      "BLOCKED-2" in r.stdout)
+check("a process with no token may not trade", "BLOCKED-3" in r.stdout)
+
 
 # ── 8. a direct launch is refused ──────────────────────────────────────────
 print("\n8  bypassing the protocol")

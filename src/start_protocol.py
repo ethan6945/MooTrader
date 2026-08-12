@@ -40,20 +40,27 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import start_audit, start_lease
+from . import db, start_audit, start_lease
 from .config import settings
 
 log = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 60.0
+# How long a worker waits to be accepted after reporting READY. Short: the
+# parent's checks are four comparisons against values it already holds, so
+# anything slower than this means the parent is gone or wedged, and a worker
+# waiting on a parent that will never answer must not sit there holding a lease.
+GO_TIMEOUT_S = 30.0
 PHASE_ALLOWS_REAL = False        # flipped only when OpenD authorization lands
 
 # Application variables the child must NOT inherit. It reads them from the
@@ -100,6 +107,12 @@ class StartRequest:
     build_id: str
     executable: str
     executable_sha256: str
+    # The internal account this start was validated against. Handed to the
+    # worker so it binds to this one rather than resolving its own — otherwise
+    # it can create a second account row and file the run under a record the
+    # parent never saw. account_ref above is the HMAC, safe to log; this is the
+    # raw id, and it goes to the child environment, never to the audit.
+    account_id: str | None = None
     prepared_at: float = field(default_factory=time.time)
 
 
@@ -325,6 +338,7 @@ def prepare(source: str, *, requested_env: str | None = None,
         request_id=request_id, source=source, effective_env=effective,
         config_sha256=config_sha, safety=safety,
         db_version=db_version, db_integrity=integrity, account_ref=account_ref,
+        account_id=account_id,
         build_id=build_id(), executable=str(exe),
         executable_sha256=_file_sha256(exe),
     )
@@ -343,6 +357,10 @@ def prepare(source: str, *, requested_env: str | None = None,
 
 def _ready_path(home: Path, request_id: str) -> Path:
     return home / "logs" / f"worker-ready-{request_id}.json"
+
+
+def _go_path(home: Path, request_id: str) -> Path:
+    return home / "logs" / f"worker-go-{request_id}.json"
 
 
 def commit(req: StartRequest, *, home: Path | None = None,
@@ -373,13 +391,21 @@ def commit(req: StartRequest, *, home: Path | None = None,
         raise StartRefused("lease_unavailable", str(e)) from e
 
     ready_file = _ready_path(home, req.request_id)
+    go_file = _go_path(home, req.request_id)
     ready_file.parent.mkdir(parents=True, exist_ok=True)
     ready_file.unlink(missing_ok=True)
+    go_file.unlink(missing_ok=True)
 
     env = build_child_env(home, req.config_sha256)
     env["MMT_START_REQUEST_ID"] = req.request_id
     env["MMT_START_FENCE"] = str(lease.fence)
     env["MMT_READY_FILE"] = str(ready_file)
+    env["MMT_GO_FILE"] = str(go_file)
+    # The account the parent validated. The worker binds to this rather than
+    # resolving one of its own, so it cannot mint a second account row and file
+    # this run under a record nothing checked.
+    if req.account_id:
+        env["MMT_ACCOUNT_ID"] = req.account_id
 
     cmd = worker_cmd or [sys.executable, "-m", "src.main", "run"]
     proc = None
@@ -425,6 +451,25 @@ def commit(req: StartRequest, *, home: Path | None = None,
             raise StartRefused("env_mismatch",
                                f"worker reports {ready.get('effective_env')}, "
                                f"expected {req.effective_env}")
+        if req.account_id and ready.get("account_id") != req.account_id:
+            raise StartRefused(
+                "account_mismatch",
+                "the worker bound a different account than the one validated")
+        if int(ready.get("lease_pid", -1)) != proc.pid:
+            raise StartRefused(
+                "lease_not_transferred",
+                "the worker did not take the lease into its own name — if this "
+                "parent exits, the next start would find the lease stale and "
+                "spawn a second worker beside this one")
+
+        # Everything the worker could not check about itself now holds. Only
+        # now is it allowed to trade: until the GO lands it is blocked inside
+        # wait_for_go(), before protective exits and before any broker call.
+        go = {"request_id": req.request_id, "fence": lease.fence,
+              "worker_pid": proc.pid, "issued_at": time.time()}
+        tmp_go = go_file.with_suffix(".tmp")
+        tmp_go.write_text(json.dumps(go))
+        os.replace(tmp_go, go_file)
 
         start_audit.record(
             request_id=req.request_id, event="commit", result="ready",
@@ -456,6 +501,9 @@ def commit(req: StartRequest, *, home: Path | None = None,
                 proc.kill()
         lease.release()
         ready_file.unlink(missing_ok=True)
+        # Withdraw the clearance if it was already written. A worker being
+        # reclaimed must not find a GO waiting for it.
+        go_file.unlink(missing_ok=True)
         try:
             start_audit.record(request_id=req.request_id, event="commit",
                                result="reclaimed", source=req.source,
@@ -467,7 +515,126 @@ def commit(req: StartRequest, *, home: Path | None = None,
             log.error("could not audit the reclaim of request %s", req.request_id)
         raise
     finally:
+        # The READY file has been read by now, so removing it is safe. The GO
+        # file is NOT removed here: the worker is still polling for it, and
+        # deleting it on the way out would turn every successful start into a
+        # go_timeout. The worker unlinks it once it has been accepted.
         ready_file.unlink(missing_ok=True)
+
+
+# ── the one entry point ──────────────────────────────────────────────────────
+
+def start(source: str, *, home: Path | None = None,
+          worker_cmd: list[str] | None = None) -> dict:
+    """Start a worker. The only way to do so, for every caller.
+
+    Web, the macOS shell and the CLI all land here, so there is exactly one
+    place where a start can be refused, audited, or go wrong. The previous
+    arrangement had the web server spawning its own process and the macOS app
+    asking the web server to — which meant the rules lived in whichever caller
+    happened to implement them, and the CLI implemented none.
+
+    Raises StartRefused, whose `code` is what callers should surface. Every
+    outcome, including every refusal, is already in the audit before this
+    returns or raises.
+    """
+    req = prepare(source, home=home)
+    return commit(req, home=home, worker_cmd=worker_cmd)
+
+
+def stop(source: str = "cli", *, home: Path | None = None,
+         timeout: float = 30.0) -> dict:
+    """Stop the running worker, and close what it was holding.
+
+    Three things end together or the next start is wrong: the process, the
+    execution session, and the lease. Stopping the process alone leaves a
+    session with no ended_at (so open_sessions() reports a worker that is not
+    there) and a lease naming a dead pid (so the next start has to break it
+    before it can proceed, and "breaking a lease" is a thing that should be
+    rare enough to be alarming).
+    """
+    home = home or settings.root
+    t0 = time.time()
+    lease = start_lease.read() or {}
+    pid = lease.get("pid")
+    fence = lease.get("fence")
+
+    stopped = False
+    if isinstance(pid, int) and pid != os.getpid():
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            stopped = True
+        except (OSError, ProcessLookupError):
+            # Already gone. Not an error — but the lease and session it left
+            # behind still have to be closed, which is the rest of this.
+            log.info("stop: no live process for pid %s", pid)
+        if stopped:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.2)
+            else:
+                log.warning("stop: pid %s did not exit within %gs — SIGKILL",
+                            pid, timeout)
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except OSError:
+                    pass
+
+    # The worker closes its own session on a clean exit. This covers the rest:
+    # a kill, a crash, or a worker that never got that far.
+    closed = _close_orphan_sessions(pid)
+
+    # Only remove a lease that belongs to the worker we just stopped. Deleting
+    # one that has already moved on would hand a second worker's exclusion away.
+    if isinstance(pid, int):
+        cur = start_lease.read() or {}
+        if cur.get("pid") == pid and cur.get("fence") == fence:
+            try:
+                start_lease._lease_path().unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("stop: could not remove the lease: %s", e)
+
+    try:
+        start_audit.record(request_id=f"stop-{int(t0)}", event="stop",
+                           result="committed", source=source,
+                           worker_pid=pid if isinstance(pid, int) else None,
+                           fence_token=fence if isinstance(fence, int) else None,
+                           duration_ms=int((time.time() - t0) * 1000))
+    except start_audit.AuditRefused as e:
+        log.error("stop happened but could not be audited: %s", e)
+
+    return {"stopped": stopped, "pid": pid, "sessions_closed": closed}
+
+
+def _close_orphan_sessions(pid: int | None) -> int:
+    """Close session rows left open by a worker that is no longer running."""
+    from . import identity
+    closed = 0
+    try:
+        for row in identity.open_sessions():
+            row_pid = row.get("pid")
+            alive = False
+            if isinstance(row_pid, int):
+                try:
+                    os.kill(row_pid, 0)
+                    alive = row_pid != pid
+                except OSError:
+                    alive = False
+            if alive:
+                continue
+            with db.transaction() as c:
+                c.execute("UPDATE execution_sessions SET ended_at = ?, "
+                          "end_reason = ? WHERE session_id = ?",
+                          (datetime.now(timezone.utc).isoformat(),
+                           "stopped", row["session_id"]))
+            closed += 1
+    except Exception as e:
+        log.warning("could not close orphaned sessions: %s", e)
+    return closed
 
 
 # ── worker side ──────────────────────────────────────────────────────────────
@@ -519,12 +686,35 @@ def worker_verify_and_report() -> dict:
                            "another worker took the lease while this one was "
                            "starting")
 
+    # The lease moves into this process's name. Until now it was the parent's,
+    # and a lease held by a web server describes the wrong thing: kill the
+    # parent and the record names a pid that no longer exists, so the next
+    # Start reads it as stale, breaks it, and spawns a second worker alongside
+    # this one — which is still holding positions and still placing orders.
+    try:
+        held = start_lease.take_over(fence)
+    except start_lease.LeaseUnavailable as e:
+        raise StartRefused("lease_lost", str(e)) from e
+
+    # The account is not re-derived here. The parent already established that
+    # exactly one account matches this environment, and it passes the answer
+    # down; resolving it again would let the worker mint a second account row
+    # and file this run's trades under a record the parent never validated.
+    expected_account = os.environ.get("MMT_ACCOUNT_ID", "")
     from . import identity
-    session = identity.start_session(effective, auth_mode="protocol_simulate")
+    session = identity.start_session(effective, auth_mode="protocol_simulate",
+                                     account_id=expected_account or None)
+    if expected_account and session["account_id"] != expected_account:
+        identity.end_session("account_mismatch")
+        raise StartRefused(
+            "account_mismatch",
+            "the worker resolved a different account than the parent validated")
 
     payload = {"pid": os.getpid(), "host": socket.gethostname(),
                "session_id": session["session_id"], "fence": fence,
                "config_sha256": sha, "effective_env": effective,
+               "account_id": session["account_id"],
+               "lease_pid": held.holder_pid,
                "reported_at": time.time()}
     p = Path(ready_file)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -532,3 +722,89 @@ def worker_verify_and_report() -> dict:
     tmp.write_text(json.dumps(payload))
     os.replace(tmp, p)      # atomic: the parent never reads a half-written file
     return payload
+
+
+def current_fence() -> int:
+    """This worker's fencing token, or -1 outside a protocol start.
+
+    Read from the environment rather than kept in a module variable: the token
+    was handed to this process at spawn and is a fact about the process, not
+    state something later can update.
+    """
+    try:
+        return int(os.environ.get("MMT_START_FENCE", "-1"))
+    except ValueError:
+        return -1
+
+
+def assert_may_trade(what: str) -> None:
+    """Refuse unless this process still holds the lease it was started with.
+
+    Called before every order, modification and cancellation. The case it
+    catches is the one a health check cannot see: this process is fine, its pid
+    is alive, its connection works — and it lost a race it never knew it was
+    in. Something found it stale, took the lease, and is now the worker. Both
+    would place orders against the same account, and only the token can tell
+    them apart.
+    """
+    fence = current_fence()
+    if fence < 0:
+        raise start_lease.LeaseUnavailable(
+            f"{what} refused: this process holds no fencing token, so it was "
+            f"not started through the protocol")
+    start_lease.assert_ours(fence, what=what)
+
+
+def wait_for_go(*, timeout: float = GO_TIMEOUT_S) -> dict:
+    """Block until the parent accepts this worker. Nothing may trade before it.
+
+    READY says "I have checked myself and I am consistent". It does not say the
+    parent agrees. Between the two there are four comparisons the worker cannot
+    make on its own — that its pid is the one that was spawned, that its config
+    hash matches what was validated, that its fence is still current, that its
+    account is the one that was authorised — and any of them can fail.
+
+    Without this gate the worker simply carried on after writing READY. Its
+    first act is _startup_protect_stops(), which places and cancels orders at
+    the broker. So a worker the parent was about to reject could, and would,
+    have traded first; the parent's kill arrives afterwards and cannot recall an
+    order that has already been sent.
+
+    A GO that never comes is a refusal. The parent may have died, or decided
+    against this worker and failed to kill it — neither is permission.
+    """
+    go_file = os.environ.get("MMT_GO_FILE", "")
+    request_id = os.environ.get("MMT_START_REQUEST_ID", "")
+    fence = int(os.environ.get("MMT_START_FENCE", "-1"))
+    if not go_file:
+        raise StartRefused("incomplete_handoff", "no GO file was designated")
+
+    p = Path(go_file)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if p.exists():
+            try:
+                go = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                time.sleep(0.1)
+                continue
+            if go.get("request_id") != request_id:
+                raise StartRefused("go_mismatch",
+                                   "the GO names a different start request")
+            if int(go.get("fence", -1)) != fence:
+                raise StartRefused("go_mismatch",
+                                   "the GO carries a different fencing token")
+            if int(go.get("worker_pid", -1)) != os.getpid():
+                raise StartRefused("go_mismatch",
+                                   "the GO was issued for a different worker")
+            # Still ours to hold, at the moment we are cleared to use it.
+            start_lease.assert_ours(fence, what="starting to trade")
+            p.unlink(missing_ok=True)   # consumed; clears it for the next start
+            log.info("start protocol: GO received for request %s", request_id[:8])
+            return go
+        time.sleep(0.1)
+
+    raise StartRefused(
+        "go_timeout",
+        f"no GO within {timeout:g}s — the parent never accepted this worker. "
+        f"Exiting without trading; a start nobody confirmed is not a start")
