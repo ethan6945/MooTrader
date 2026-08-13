@@ -303,6 +303,62 @@ check(f"exactly one of twenty acquired the lease (got {acquired})", acquired == 
 check("the rest were refused, not crashed",
       sum(1 for o in outs if "REFUSED" in o) == 19)
 
+# The lease race above is the mechanism. This is the property: twenty full
+# Starts, each spawning a real worker process, must leave at most one worker
+# that was ever cleared to trade. Racing acquire() alone would still pass if
+# commit() spawned before taking the lease, or if a loser's worker were left
+# running after its parent was refused.
+h = make_home(tmp, "race_full")
+FULL_START = '''
+import sys
+from src import start_protocol as sp
+try:
+    res = sp.start("web", worker_cmd=[sys.executable, {worker!r}])
+    print("STARTED " + str(res["pid"]))
+except sp.StartRefused as e:
+    print("REFUSED " + e.code)
+except Exception as e:
+    print("ERROR " + type(e).__name__ + " " + str(e)[:80])
+'''.format(worker=str(worker_py))
+procs = [subprocess.Popen([sys.executable, "-c", FULL_START], cwd=ROOT,
+                          env=dict(os.environ, MMT_HOME=str(h),
+                                   PYTHONPATH=str(ROOT)),
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True) for _ in range(20)]
+outs = [p.communicate(timeout=180)[0] for p in procs]
+started = [o for o in outs if "STARTED" in o]
+errored = [o for o in outs if "ERROR" in o]
+check(f"at most one of twenty Starts produced a worker (got {len(started)})",
+      len(started) <= 1)
+check("every other Start refused cleanly, none errored",
+      not errored, )
+if errored:
+    print("        " + errored[0].strip())
+
+# And the survivor is the one the lease names — no orphan workers left behind
+# by refused parents.
+time.sleep(1)
+lease_rec = json.loads((h / "logs" / "worker.lease").read_text()) \
+    if (h / "logs" / "worker.lease").exists() else {}
+live = []
+for o in outs:
+    if "STARTED" in o:
+        pid = int(o.split()[1])
+        try:
+            os.kill(pid, 0)
+            live.append(pid)
+        except OSError:
+            pass
+check(f"at most one worker process is alive (got {len(live)})", len(live) <= 1)
+check("the lease names the surviving worker",
+      not live or lease_rec.get("pid") == live[0])
+for pid in live:
+    try:
+        os.killpg(os.getpgid(pid), 15)
+    except OSError:
+        pass
+(h / "logs" / "worker.lease").unlink(missing_ok=True)
+
 # A dead holder must not block forever; a live one must.
 (h / "logs" / "worker.lease").write_text(json.dumps(
     {"pid": 999999, "host": "x", "fence": 7, "started_at_str": "never"}))

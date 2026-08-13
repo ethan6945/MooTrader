@@ -60,7 +60,57 @@ _initialised = False
 _schema_frozen = False
 
 
-SCHEMA = """
+# Defined once, used twice: SCHEMA splices it in below, and _migrate_v5 rebuilds
+# the table from this exact text. A rebuild that restates the columns is a
+# rebuild that will disagree with SCHEMA one release later — this fixture drifted
+# twice already, and a table that is nearly right fails somewhere far away from
+# the definition that was wrong.
+#
+# The primary key is (account_id, symbol), not symbol.
+#
+# v4 gave this table an account_id but left symbol as the sole key, which made
+# the column decorative: SIMULATE and REAL cannot both hold AAPL, and the second
+# one to write does not fail — ON CONFLICT(symbol) UPDATEs the other account's
+# row in place, quantity, stops and all, and stamps its own account_id over the
+# top. Adding an account filter to the reads on top of that would have been
+# worse than no filter at all, because the row the filter hides is the row that
+# was just silently overwritten.
+OPEN_TRADES_DDL = """\
+CREATE TABLE IF NOT EXISTS open_trades (
+    symbol          TEXT NOT NULL,
+    qty             INTEGER NOT NULL,
+    entry_price     REAL NOT NULL,
+    stop_loss       REAL NOT NULL,
+    take_profit     REAL NOT NULL,
+    atr             REAL,
+    half_closed     INTEGER NOT NULL DEFAULT 0,
+    buy_order_id    TEXT,
+    stop_order_id   TEXT,
+    tp_order_id     TEXT,
+    opened_at       TEXT NOT NULL,
+    high_water      REAL,         -- highest price seen since entry (for MFE on close)
+    low_water       REAL,         -- lowest price seen since entry  (for MAE on close)
+    ml_proba_entry  REAL,         -- ML proba captured at entry (used for calibration)
+    strategy        TEXT,         -- which strategy fired the entry
+    extra           TEXT,
+    -- A position outlives the process that opened it, so the session here is
+    -- the one that OPENED it and is never required — a restart must not orphan
+    -- or duplicate a live position. The account is required: a position always
+    -- belongs to exactly one account.
+    account_id         TEXT NOT NULL,
+    opened_session_id  TEXT,
+    PRIMARY KEY (account_id, symbol)
+)"""
+
+# The column list, in table order — used by the v5 rebuild to copy rows across.
+OPEN_TRADES_COLUMNS = (
+    "symbol", "qty", "entry_price", "stop_loss", "take_profit", "atr",
+    "half_closed", "buy_order_id", "stop_order_id", "tp_order_id", "opened_at",
+    "high_water", "low_water", "ml_proba_entry", "strategy", "extra",
+    "account_id", "opened_session_id",
+)
+
+SCHEMA = f"""
 -- ── Identity model (v4) ─────────────────────────────────────────────────────
 -- An account is identified by an INTERNAL uuid that this software mints and
 -- never changes. The broker's own id is stored beside it as a locator, not as
@@ -106,40 +156,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_account ON execution_sessions(account_id
 CREATE INDEX IF NOT EXISTS idx_sessions_open
     ON execution_sessions(ended_at) WHERE ended_at IS NULL;
 
--- The primary key is (account_id, symbol), not symbol.
---
--- v4 gave this table an account_id but left symbol as the sole key, which made
--- the column decorative: SIMULATE and REAL cannot both hold AAPL, and the
--- second one to write does not fail — ON CONFLICT(symbol) UPDATEs the other
--- account's row in place, quantity, stops and all, and stamps its own
--- account_id over the top. Adding an account filter to the reads on top of that
--- would have been worse than no filter at all, because the row the filter hides
--- is the row that was just silently overwritten.
-CREATE TABLE IF NOT EXISTS open_trades (
-    symbol          TEXT NOT NULL,
-    qty             INTEGER NOT NULL,
-    entry_price     REAL NOT NULL,
-    stop_loss       REAL NOT NULL,
-    take_profit     REAL NOT NULL,
-    atr             REAL,
-    half_closed     INTEGER NOT NULL DEFAULT 0,
-    buy_order_id    TEXT,
-    stop_order_id   TEXT,
-    tp_order_id     TEXT,
-    opened_at       TEXT NOT NULL,
-    high_water      REAL,         -- highest price seen since entry (for MFE on close)
-    low_water       REAL,         -- lowest price seen since entry  (for MAE on close)
-    ml_proba_entry  REAL,         -- ML proba captured at entry (used for calibration)
-    strategy        TEXT,         -- which strategy fired the entry
-    extra           TEXT,
-    -- v4 identity. A position outlives the process that opened it, so the
-    -- session here is the one that OPENED it and is never required — a restart
-    -- must not orphan or duplicate a live position. The account is required:
-    -- a position always belongs to exactly one account.
-    account_id         TEXT NOT NULL,
-    opened_session_id  TEXT,
-    PRIMARY KEY (account_id, symbol)
-);
+-- open_trades is defined at OPEN_TRADES_DDL above, beside the column list the
+-- v5 rebuild copies with. Spliced rather than restated so the two cannot drift.
+{OPEN_TRADES_DDL};
 
 -- Scoped key-value state. account_id='' is the GLOBAL scope (strategy params,
 -- AI provider, health probes, telegram cursor) — things that belong to the
@@ -332,18 +351,36 @@ def _ensure_initialised() -> None:
             elif user_v < SCHEMA_VERSION:
                 # The refusal already returned above, before journal_mode was
                 # touched. Reaching here means the upgrade was permitted.
-                c.executescript(SCHEMA)
-                if user_v == 0:
-                    _migrate_from_json(c)
-                if user_v < 2:
-                    _migrate_v2(c)
-                if user_v < 3:
-                    _migrate_v3(c)
-                if user_v < 4:
-                    _migrate_v4(c)
-                if user_v < 5:
-                    _migrate_v5(c)
-                c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                #
+                # All of it in ONE transaction, explicitly. Python's sqlite3
+                # does not begin one for DDL, and executescript() COMMITs before
+                # it runs — so the default behaviour is that each migration step
+                # lands on disk as it completes. A crash partway then leaves a
+                # database that is half of two versions, still reporting the old
+                # one, and the next run resumes from a state no migration was
+                # written to expect. Either the whole upgrade happened or none
+                # of it did; there is no useful state in between.
+                c.executescript(SCHEMA)      # idempotent, outside the rebuild
+                c.execute("BEGIN IMMEDIATE")
+                try:
+                    if user_v == 0:
+                        _migrate_from_json(c)
+                    if user_v < 2:
+                        _migrate_v2(c)
+                    if user_v < 3:
+                        _migrate_v3(c)
+                    if user_v < 4:
+                        _migrate_v4(c)
+                    if user_v < 5:
+                        _migrate_v5(c)
+                    c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                except BaseException:
+                    c.execute("ROLLBACK")
+                    log.error("schema upgrade v%d -> v%d failed and was rolled "
+                              "back; the database is untouched at v%d",
+                              user_v, SCHEMA_VERSION, user_v)
+                    raise
+                c.execute("COMMIT")
                 log.info("SQLite upgraded v%d -> v%d: %s",
                          user_v, SCHEMA_VERSION, DB_FILE)
 
@@ -519,14 +556,31 @@ def _migrate_v5(c: sqlite3.Connection) -> None:
       migration refuses rather than letting INSERT OR REPLACE silently pick a
       winner between two real positions.
     """
-    cols = [r[1] for r in c.execute("PRAGMA table_info(open_trades)").fetchall()]
-    if not cols:
+    info = c.execute("PRAGMA table_info(open_trades)").fetchall()
+    if not info:
         return
-    # Already rebuilt? pk>0 on account_id is the marker.
-    pk_cols = [r[1] for r in c.execute("PRAGMA table_info(open_trades)").fetchall()
-               if r[5]]
-    if set(pk_cols) == {"account_id", "symbol"}:
+    cols = [r[1] for r in info]
+    pk_cols = {r[1] for r in info if r[5]}
+    scratch_left = c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND "
+        "name='open_trades_v4'").fetchone()
+
+    # "Already done" means the new key AND no scratch table. Checking the key
+    # alone is what made an interrupted rebuild permanent: a crash after the
+    # new table was created but before the rows were copied leaves a correctly
+    # keyed, EMPTY open_trades next to a full open_trades_v4 — and a guard that
+    # only looks at the key returns early, so the positions stay hidden in the
+    # scratch table forever while the bot reports holding nothing.
+    if pk_cols == {"account_id", "symbol"} and not scratch_left:
         return
+
+    if scratch_left:
+        log.warning("v5: found open_trades_v4 from an interrupted rebuild — "
+                    "restoring from it and starting over")
+        c.execute("DROP TABLE IF EXISTS open_trades")
+        c.execute("ALTER TABLE open_trades_v4 RENAME TO open_trades")
+        info = c.execute("PRAGMA table_info(open_trades)").fetchall()
+        cols = [r[1] for r in info]
 
     account_id = _ensure_local_account(c)
     c.execute("UPDATE open_trades SET account_id = ? WHERE account_id IS NULL "
@@ -542,13 +596,25 @@ def _migrate_v5(c: sqlite3.Connection) -> None:
             "by hand; picking a winner automatically would discard a real "
             "position.")
 
-    shared = [x for x in cols]
-    collist = ", ".join(shared)
+    before = c.execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
+    carried = [x for x in OPEN_TRADES_COLUMNS if x in cols]
+    collist = ", ".join(carried)
+
+    # No executescript() in here. It issues an implicit COMMIT before running,
+    # which would end the transaction in the middle of the rebuild — verified:
+    # rename, executescript, then die, and the file is left with an empty new
+    # open_trades and a renamed old one, committed. The whole point of v5 is
+    # that the software knows which positions it holds; a migration that can
+    # lose them is worse than the defect it fixes.
     c.execute("ALTER TABLE open_trades RENAME TO open_trades_v4")
-    c.executescript(SCHEMA)          # recreates open_trades with the new key
+    c.execute(OPEN_TRADES_DDL)
     c.execute(f"INSERT INTO open_trades ({collist}) "
               f"SELECT {collist} FROM open_trades_v4")
     moved = c.execute("SELECT COUNT(*) FROM open_trades").fetchone()[0]
+    if moved != before:
+        raise RuntimeError(
+            f"v5 rebuild would lose positions: {before} before, {moved} after. "
+            f"Refusing; the transaction is rolled back.")
     c.execute("DROP TABLE open_trades_v4")
     c.execute("CREATE INDEX IF NOT EXISTS idx_open_account "
               "ON open_trades(account_id)")

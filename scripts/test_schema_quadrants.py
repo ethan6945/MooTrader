@@ -422,6 +422,112 @@ check("a duplicate (account, symbol) refuses the migration",
       snapshot(db2)["version"] == 4)
 check("...and leaves both positions in place", open_count(db2) == before_dupe == 2)
 
+
+# ── 7. fault injection: a migration that dies partway ───────────────────────
+#
+# The v5 rebuild is the one migration that can lose data: SQLite cannot ALTER a
+# primary key, so the table is renamed, recreated and copied. Every point in
+# that sequence is a point the process can die at — power, SIGKILL, a full disk.
+#
+# It DID lose data before this. c.executescript() issues an implicit COMMIT
+# before running, so the original rebuild committed in the middle of itself: a
+# crash right after left an empty, correctly-keyed open_trades beside a full
+# open_trades_v4, on disk, permanently. The early-return guard then saw the new
+# key and skipped the migration on every later run, so the positions stayed
+# hidden in the scratch table and the bot came up believing it held nothing —
+# while the broker still held everything.
+print("\n7  a migration interrupted at every step")
+
+CRASH_AT = '''
+import os, sqlite3, sys
+sys.path.insert(0, {root!r})
+from src import db
+
+# Die at the Nth write of the upgrade. sqlite3's trace callback fires for every
+# statement, which is a fault injector that needs no hooks in the code itself.
+target = int(os.environ["CRASH_AFTER"])
+seen = [0]
+real_connect = sqlite3.connect
+def traced(*a, **kw):
+    conn = real_connect(*a, **kw)
+    def trace(stmt):
+        s = stmt.strip().upper()
+        if s.startswith(("ALTER", "CREATE TABLE", "INSERT", "DROP", "UPDATE")):
+            seen[0] += 1
+            if seen[0] == target:
+                os._exit(9)      # no unwinding, no cleanup: a real crash
+    conn.set_trace_callback(trace)
+    return conn
+sqlite3.connect = traced
+db._ensure_initialised()
+print("SURVIVED")
+'''
+
+def positions_in(path: Path):
+    c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    c.row_factory = sqlite3.Row
+    try:
+        return {r["symbol"]: r["qty"] for r in c.execute(
+            "SELECT symbol, qty FROM open_trades")}
+    finally:
+        c.close()
+
+
+ORIGINAL = {"AAPL": 100, "MSFT": 7, "NVDA": 42}
+crashed_at_least_once = False
+survivors = 0
+for step in range(1, 13):
+    home = tmp / f"crash{step}"
+    (home / "data").mkdir(parents=True); (home / "logs").mkdir()
+    dbp = home / "data" / "trader.db"
+    make_v4_open_trades(dbp, [(s, q, "acct-sim") for s, q in ORIGINAL.items()])
+
+    env = dict(os.environ, MMT_HOME=str(home), PYTHONPATH=str(ROOT),
+               MMT_ALLOW_SCHEMA_UPGRADE="1", CRASH_AFTER=str(step))
+    r = subprocess.run([sys.executable, "-c", CRASH_AT.format(root=str(ROOT))],
+                       cwd=ROOT, env=env, capture_output=True, text=True)
+    if r.returncode == 9:
+        crashed_at_least_once = True
+    elif "SURVIVED" in r.stdout:
+        survivors += 1
+
+    # Whatever happened, reopening must produce every position exactly once.
+    env2 = dict(env); env2["CRASH_AFTER"] = "0"      # no injection this time
+    r2 = subprocess.run([sys.executable, "-c", CRASH_AT.format(root=str(ROOT))],
+                        cwd=ROOT, env=env2, capture_output=True, text=True)
+    ok = "SURVIVED" in r2.stdout
+    got = positions_in(dbp) if ok else {}
+    if not ok:
+        print("        " + (r2.stderr.strip().splitlines() or ["?"])[-1][:150])
+    check(f"crash after write {step}: recovers with all positions intact",
+          ok and got == ORIGINAL)
+
+check("the injector actually interrupted something", crashed_at_least_once)
+
+# And the specific shape that used to be permanent: a scratch table left behind
+# with the rows in it, next to an empty correctly-keyed table.
+home = tmp / "orphaned_scratch"
+(home / "data").mkdir(parents=True); (home / "logs").mkdir()
+dbp = home / "data" / "trader.db"
+make_v4_open_trades(dbp, [(s, q, "acct-sim") for s, q in ORIGINAL.items()])
+c = sqlite3.connect(str(dbp))
+c.execute("ALTER TABLE open_trades RENAME TO open_trades_v4")
+c.execute(__import__("importlib").import_module("src.db").OPEN_TRADES_DDL)
+c.commit(); c.close()                       # exactly the committed half-state
+r = subprocess.run([sys.executable, "-c", CRASH_AT.format(root=str(ROOT))],
+                   cwd=ROOT, env=dict(os.environ, MMT_HOME=str(home),
+                                      PYTHONPATH=str(ROOT),
+                                      MMT_ALLOW_SCHEMA_UPGRADE="1",
+                                      CRASH_AFTER="0"),
+                   capture_output=True, text=True)
+check("an orphaned scratch table is recovered, not skipped past",
+      "SURVIVED" in r.stdout and positions_in(dbp) == ORIGINAL)
+c = sqlite3.connect(f"file:{dbp}?mode=ro", uri=True)
+check("...and the scratch table is gone afterwards",
+      not c.execute("SELECT name FROM sqlite_master WHERE "
+                    "name='open_trades_v4'").fetchone())
+c.close()
+
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
