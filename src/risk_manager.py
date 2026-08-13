@@ -25,6 +25,8 @@ _DEFAULT_STATE = {
     "starting_cash": 0.0,
     "realized_pnl_today": 0.0,
     "halted": False,
+    "halt_reason": None,
+    "halt_detail": None,
     # Account-level peak equity for the drawdown circuit breaker. Tracked
     # via record_trade_close on every realised PnL — independent of
     # starting_cash so it survives day rollovers.
@@ -616,11 +618,49 @@ def can_open_new(
         if daily_loss_frac >= settings.daily_drawdown_stop:
             # Atomic single-key write — a whole-state save here could clobber
             # concurrent updates (e.g. a close booking PnL on another thread).
-            db.atomic_state(lambda _s: {"halted": True})
+            halt("daily drawdown",
+                 f"{daily_loss_frac:.1%} of ${base:.0f} realized loss today "
+                 f"≥ the {settings.daily_drawdown_stop:.0%} limit")
             return False, (f"daily drawdown {daily_loss_frac:.1%} of ${base:.0f} "
                            f"≥ {settings.daily_drawdown_stop:.0%}")
 
     return True, "ok"
+
+
+def halt(reason: str, detail: str = "") -> None:
+    """Stop trading, and say why. Idempotent; the FIRST reason is kept.
+
+    The existing halt was a bare `{"halted": True}` written by the drawdown
+    check, so an operator finding a halted bot could only guess which rule had
+    fired. That mattered little while there was one rule. It stops being true
+    the moment a protective-order failure can halt as well: "halted" then means
+    either "you lost 6% today" or "there is a stop order at the broker that
+    this software could not cancel and can no longer account for", and those
+    call for opposite actions.
+
+    The first reason wins because it is the one that describes the problem. A
+    later cause is usually a consequence of the first.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    stamp = _dt.now(_tz.utc).isoformat()
+
+    def _apply(state: dict) -> dict:
+        if state.get("halted") and state.get("halt_reason"):
+            return {}
+        return {"halted": True, "halt_reason": reason,
+                "halt_detail": detail[:500], "halt_started_at": stamp}
+
+    db.atomic_state(_apply)
+    log.error("TRADING HALTED — %s%s", reason, f": {detail}" if detail else "")
+    try:
+        db.audit_insert("halt", reason=reason, extra={"detail": detail[:500]})
+    except Exception as e:
+        log.warning("could not audit the halt: %s", e)
+    try:
+        from . import notifier
+        notifier.send(f"🛑 TRADING HALTED — {reason}\n{detail[:300]}")
+    except Exception as e:
+        log.warning("could not notify about the halt: %s", e)
 
 
 def record_trade_close(realized_pnl: float, account_usd: float | None = None) -> None:

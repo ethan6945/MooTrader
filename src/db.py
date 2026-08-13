@@ -44,7 +44,8 @@ SCHEMA_VERSION = 6          # v6: the orders table (state machine + idempotency)
 ACCOUNT_SCOPED_KEYS = frozenset({
     "budget_usd", "peak_equity", "starting_cash",
     "realized_pnl_total", "realized_pnl_today",
-    "halted", "halt_started_at", "loss_streak_days", "last_close_day", "day",
+    "halted", "halt_started_at", "halt_reason", "halt_detail",
+    "loss_streak_days", "last_close_day", "day",
     "auto_budget_seed", "auto_budget_base_realized", "auto_budget_enabled",
     "auto_budget_disarmed", "auto_budget_history",
     "recent_closes", "reentry_cooldown", "gap_exit_queue",

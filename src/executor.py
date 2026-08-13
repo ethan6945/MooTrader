@@ -498,12 +498,22 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         stop_order_id = existing.get("stop_order_id")
         tp_order_id = existing.get("tp_order_id")
         if settings.moo_trade_env == "REAL" and not settings.real_use_soft_exits:
-            for oid in (stop_order_id, tp_order_id):
-                if oid:
-                    try:
-                        client.cancel_order(oid)
-                    except Exception as e:
-                        log.warning("cancel old bracket leg %s failed: %s", oid, e)
+            # Both old legs must be gone before new ones go on. This used to
+            # catch only exceptions — so a clean `False` from the broker, an
+            # explicit refusal, fell straight through — and then placed the
+            # replacement bracket regardless. The result is two stop orders
+            # covering overlapping quantity: when price reaches them, both sell,
+            # and the second sale is stock we no longer hold.
+            cancels_ok = all(
+                cancel_protective(client, signal.symbol, oid, leg)
+                for oid, leg in ((stop_order_id, "stop"), (tp_order_id, "take-profit"))
+            )
+            if not cancels_ok:
+                raise RuntimeError(
+                    f"{signal.symbol}: cannot re-bracket a stack while an old "
+                    f"protective leg is still live at the broker. Trading is "
+                    f"halted; the added shares were bought and are recorded, "
+                    f"and the existing bracket still covers the original lot.")
             stop_order_id, tp_order_id = place_bracket(
                 client, signal.symbol, new_total_qty, new_stop, new_tp
             )
@@ -699,6 +709,76 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
         return ExitFill(price=quote_px, filled=0)
 
 
+def cancel_protective(client: MooClient, symbol: str, order_id: str,
+                      leg: str) -> bool:
+    """Cancel a protective leg. A refusal halts trading. Returns True if accepted.
+
+    A stop or take-profit that would not cancel is still working at the broker.
+    Everything after that point is reasoning about a position whose protection
+    this software can no longer account for: place a replacement and there are
+    two stops for overlapping quantity; sell the shares and the surviving leg
+    becomes a naked short the moment it triggers.
+
+    There is no local recovery from that. The order belongs to the broker, and
+    only a person looking at the account can decide what to do about it. So
+    trading stops, the residual is recorded with the symbol and leg that owns
+    it, and the position is deliberately NOT removed — a holding whose
+    protection is in doubt must stay visible.
+
+    Note the asymmetry with success: True means the CANCEL REQUEST was
+    accepted, not that the order is gone. That is why callers must still poll
+    rather than assume the leg is dead.
+    """
+    if not order_id:
+        return True
+    try:
+        accepted = client.cancel_order(order_id)
+    except Exception as e:
+        accepted = False
+        detail = f"{type(e).__name__}: {e}"
+    else:
+        detail = "" if accepted else "the broker refused the cancellation"
+
+    if accepted:
+        return True
+
+    residual = {"symbol": symbol, "leg": leg, "broker_order_id": str(order_id),
+                "at": datetime.utcnow().isoformat(), "detail": detail[:300]}
+    try:
+        db.update_state({"residual_orders": [
+            *(db.get_state().get("residual_orders") or []), residual]})
+    except Exception as e:
+        log.error("could not record the residual order %s: %s", order_id, e)
+    try:
+        risk_manager.halt(
+            "protective order cancel failed",
+            f"{symbol} {leg} order {order_id} is still live at the broker and "
+            f"could not be cancelled ({detail}). The position is left held and "
+            f"protected by whatever that order does; resolve it by hand.")
+    except Exception as e:
+        log.error("could not halt after a failed protective cancel: %s", e)
+    return False
+
+
+def residual_orders() -> list[dict]:
+    """Protective legs this software failed to cancel, still unaccounted for."""
+    try:
+        return list(db.get_state().get("residual_orders") or [])
+    except Exception:
+        return []
+
+
+def clear_residual_order(broker_order_id: str) -> bool:
+    """Drop a residual once it is confirmed gone. Returns True if one was held."""
+    current = residual_orders()
+    kept = [r for r in current if str(r.get("broker_order_id")) != str(broker_order_id)]
+    if len(kept) == len(current):
+        return False
+    db.update_state({"residual_orders": kept})
+    log.info("residual order %s resolved and cleared", broker_order_id)
+    return True
+
+
 def _exit_and_book(client: MooClient, symbol: str, trade: dict, trades: dict,
                    qty: int, limit_px: float, quote_px: float,
                    reason: str) -> tuple[float, float, int]:
@@ -869,10 +949,12 @@ def _check_bracket_fills(client: MooClient, symbol: str, trade: dict) -> dict | 
     tp_filled = client.is_order_filled(tp_id, include_partial=True)
 
     if stop_filled:
-        if client.cancel_order(tp_id):
+        # The OCO race, and the reason this is a halt rather than a warning.
+        # The stop has filled, so the shares are gone; the take-profit is a live
+        # SELL for stock we no longer hold. If it triggers, that is a short —
+        # and it is the broker's order, so nothing here can stop it.
+        if cancel_protective(client, symbol, tp_id, "take-profit"):
             log.info("OCO: %s STOP filled, cancelled TP %s", symbol, tp_id)
-        else:
-            log.warning("OCO: %s STOP filled but TP cancel failed (id=%s)", symbol, tp_id)
         # 2026-07-27: book the leg's ACTUAL fill, not its trigger level. A broker
         # STOP becomes a market order once touched, so in a gap it fills well
         # below stop_loss — booking the level made every gapped stop-out look
@@ -885,10 +967,10 @@ def _check_bracket_fills(client: MooClient, symbol: str, trade: dict) -> dict | 
                 "price": exit_px, "qty": trade["qty"], "pnl": pnl}
 
     if tp_filled:
-        if client.cancel_order(stop_id):
+        # Same race, other leg: the take-profit sold the shares and the stop is
+        # a live SELL for stock we no longer hold.
+        if cancel_protective(client, symbol, stop_id, "stop"):
             log.info("OCO: %s TP filled, cancelled STOP %s", symbol, stop_id)
-        else:
-            log.warning("OCO: %s TP filled but STOP cancel failed (id=%s)", symbol, stop_id)
         exit_px = _bracket_fill_price(client, tp_id, trade["take_profit"],
                                      symbol, "TP_BRACKET")
         pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "TP_BRACKET")
@@ -987,12 +1069,13 @@ def _force_close(client: MooClient, symbol: str, trade: dict,
     already have filled — so selling on top of it risks a double sell. Same
     defer-to-next-cycle policy the max-hold path adopted (2026-07-02 P2):
     raise, let the per-symbol wrapper log it, retry next cycle."""
-    for key in ("stop_order_id", "tp_order_id"):
+    for key, leg in (("stop_order_id", "stop"), ("tp_order_id", "take-profit")):
         oid = trade.get(key)
-        if oid and not client.cancel_order(oid):
+        if oid and not cancel_protective(client, symbol, oid, leg):
             raise RuntimeError(
                 f"{symbol}: cancel of bracket leg {key}={oid} failed — deferring "
-                f"{reason} close to next cycle (leg may be live or already filled)")
+                f"{reason} close to next cycle (leg may be live or already "
+                f"filled). Trading is halted until the residual is resolved.")
     # The SELL must actually be placed before the close is booked (2026-07-02
     # audit P1-1). The old version swallowed a failed order and booked the close
     # anyway — the broker still held the shares, the books said "realized", and
@@ -1088,10 +1171,11 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
             # so selling on top of it risks a double sell. Defer to the next
             # cycle: _check_bracket_fills will book a fill, or the cancel is
             # retried (2026-07-02 audit P2).
-            for oid in (trade["stop_order_id"], trade["tp_order_id"]):
-                if oid and not client.cancel_order(oid):
+            for oid, leg in ((trade["stop_order_id"], "stop"),
+                             (trade["tp_order_id"], "take-profit")):
+                if oid and not cancel_protective(client, symbol, oid, leg):
                     log.warning("%s max-hold: cancel of bracket leg %s failed — "
-                                "deferring close to next cycle", symbol, oid)
+                                "position left held, trading halted", symbol, oid)
                     return
             pnl, exit_px, sold = _exit_and_book(
                 client, symbol, trade, trades, int(trade["qty"]),
@@ -1534,11 +1618,13 @@ def close_position(client: MooClient, symbol: str, reason: str = "MANUAL") -> di
     if last is None:
         raise RuntimeError(f"{symbol} price looks halted/anomalous — refusing to "
                            f"market-sell at ~$0; brackets left intact, retry next cycle.")
-    for key in ("stop_order_id", "tp_order_id"):
+    for key, leg in (("stop_order_id", "stop"), ("tp_order_id", "take-profit")):
         oid = trade.get(key)
-        if oid:
-            ok = client.cancel_order(oid)
-            log.info("close_position(%s): cancel %s leg %s → %s", reason, key, oid, ok)
+        if oid and not cancel_protective(client, symbol, oid, leg):
+            raise RuntimeError(
+                f"{symbol}: the {leg} order {oid} could not be cancelled — "
+                f"refusing to sell into a live protective order. Trading is "
+                f"halted; the position stays held and stays tracked.")
     requested = int(trade["qty"])
     pnl, exit_px, sold = _exit_and_book(
         client, symbol, trade, trades, requested,
@@ -1568,11 +1654,16 @@ def manual_close(client: MooClient, symbol: str) -> dict:
                            f"retry once the symbol resumes trading.")
 
     # Cancel any live bracket legs so we don't oversell.
-    for key in ("stop_order_id", "tp_order_id"):
+    # A manual close is still a close: selling on top of a protective leg that
+    # would not cancel is the same double-sale as anywhere else, and the fact
+    # that a person asked for it does not make the surviving order go away.
+    for key, leg in (("stop_order_id", "stop"), ("tp_order_id", "take-profit")):
         oid = trade.get(key)
-        if oid:
-            ok = client.cancel_order(oid)
-            log.info("manual_close: cancel %s leg %s → %s", key, oid, ok)
+        if oid and not cancel_protective(client, symbol, oid, leg):
+            raise RuntimeError(
+                f"{symbol}: the {leg} order {oid} could not be cancelled — "
+                f"refusing the manual close rather than selling into a live "
+                f"protective order. Trading is halted; resolve it at the broker.")
 
     requested = int(trade["qty"])
     pnl, exit_px, sold = _exit_and_book(
@@ -1597,7 +1688,12 @@ def edit_stop(client: MooClient | None, symbol: str, new_stop: float) -> dict:
     new_stop_id = trade.get("stop_order_id")
     if new_stop_id and client is not None:
         try:
-            client.cancel_order(new_stop_id)
+            if not cancel_protective(client, symbol, new_stop_id, "stop"):
+                raise RuntimeError(
+                    f"{symbol}: the existing stop {new_stop_id} could not be "
+                    f"cancelled — refusing to place a second one. Trading is "
+                    f"halted; the OLD stop is still live and still protecting "
+                    f"the position at its previous level.")
             new_stop_id = client.place_stop_loss(
                 symbol, trade["qty"], new_stop,
                 intent='stop edit').broker_order_id

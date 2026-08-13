@@ -433,8 +433,15 @@ class MooClient:
             return None
 
     def cancel_order(self, order_id: str) -> bool:
-        """Cancel a pending order. Returns True on success."""
+        """Ask the broker to cancel an order. True means the REQUEST was accepted.
+
+        It does not mean the order is gone. The order may have filled between
+        the decision to cancel and the request arriving, and the broker will
+        happily accept a cancel for something already executed. Callers that
+        need to know whether protection is still live must poll, not assume.
+        """
         _assert_may_trade(f"cancelling order {order_id}")
+        row = order_log.by_broker_id(order_id)
         try:
             ret, data = self.trade.modify_order(
                 modify_order_op=ModifyOrderOp.CANCEL,
@@ -445,9 +452,16 @@ class MooClient:
             )
             if ret == RET_OK:
                 _note_gated_op_ok()
+            if row:
+                order_log.cancel_requested(row["client_order_id"],
+                                           accepted=(ret == RET_OK),
+                                           detail="" if ret == RET_OK else str(data))
             return ret == RET_OK
         except Exception as e:
             log.warning("cancel_order(%s) failed: %s", order_id, e)
+            if row:
+                order_log.cancel_requested(row["client_order_id"], accepted=False,
+                                           detail=f"{type(e).__name__}: {e}")
             return False
 
     def list_pending_buys(self) -> "pd.DataFrame":

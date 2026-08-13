@@ -188,6 +188,49 @@ def get(coid: str) -> dict | None:
     return dict(r) if r else None
 
 
+def by_broker_id(broker_order_id: str) -> dict | None:
+    acct = db._require_account_id("looking up an order")
+    with db.conn() as c:
+        r = c.execute("SELECT * FROM orders WHERE account_id = ? AND "
+                      "broker_order_id = ? ORDER BY created_at DESC LIMIT 1",
+                      (acct, str(broker_order_id))).fetchone()
+    return dict(r) if r else None
+
+
+def cancel_requested(coid: str, *, accepted: bool, detail: str = "") -> None:
+    """Record that a cancellation was ASKED FOR. Never that it happened.
+
+    The broker accepting a cancel request says the request was well-formed. It
+    does not say the order is gone: it may have filled in the moment between
+    the decision to cancel and the request arriving. That gap is exactly the
+    OCO race — the stop and the take-profit both filling before either could be
+    pulled — so an order stays live here until a poll shows what became of it.
+
+    A refused cancel is worse and is recorded loudly: the order is still
+    working, and anything that assumed otherwise is about to act on a position
+    it does not have the protection it thinks it has.
+    """
+    row = get(coid)
+    if row is None:
+        return
+    extra = {}
+    if row.get("extra"):
+        try:
+            extra = json.loads(row["extra"])
+        except (json.JSONDecodeError, TypeError):
+            extra = {}
+    extra["cancel_requested_at"] = _now()
+    extra["cancel_accepted"] = bool(accepted)
+    if detail:
+        extra["cancel_detail"] = detail[:300]
+    _set(coid, extra=json.dumps(extra, default=str),
+         last_error=None if accepted else f"cancel refused: {detail[:400]}")
+    log.log(logging.INFO if accepted else logging.ERROR,
+            "order %s: cancel %s%s", coid,
+            "accepted (not yet confirmed gone)" if accepted else "REFUSED",
+            f" — {detail[:200]}" if detail else "")
+
+
 def live_orders(symbol: str | None = None) -> list[dict]:
     """Orders that have not reached a terminal state, for THIS account."""
     acct = db._require_account_id("listing live orders")
