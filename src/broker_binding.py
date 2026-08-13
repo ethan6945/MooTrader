@@ -86,6 +86,7 @@ class TradeBinding:
     security_firm: str
     acc_type: str
     acc_status: str
+    firm_verified: bool
     account_ref: str
     resolved_at: float
 
@@ -95,8 +96,9 @@ class TradeBinding:
 
     def describe(self) -> str:
         """Safe to log: the account is an HMAC reference, never the number."""
-        return (f"{self.trade_env} {self.account_ref} "
-                f"({self.security_firm}/{self.acc_type})")
+        firm = self.security_firm if self.firm_verified else \
+            f"{self.security_firm or 'unreported'}, firm unverified"
+        return f"{self.trade_env} {self.account_ref} ({firm}/{self.acc_type})"
 
 
 _bound: TradeBinding | None = None
@@ -152,12 +154,34 @@ def resolve(trade_ctx, *, trade_env: str, expected_acc_id: str | int | None = No
             f"OpenD reports no {env} account. This run committed to {env}; it "
             f"will not fall back to whatever else is available.")
 
-    candidates = [r for r in same_env if firm_of(r) == want_firm] or None
-    if candidates is None:
-        raise BrokerBindingRefused(
-            "security_firm_mismatch",
-            f"no {env} account under security firm {want_firm!r} "
-            f"(OpenD offers {sorted({firm_of(r) for r in same_env})})")
+    # The security firm, when the broker reports one.
+    #
+    # It often does not. This paper account comes back with security_firm='N/A'
+    # — the SDK's stand-in for a field the gateway left unset — and an equality
+    # check against the configured FUTUMY refused every start against a real
+    # OpenD while passing every test written with a fake context.
+    #
+    # Treating "not reported" as a mismatch is wrong, and so is treating it as a
+    # match. What makes the firm safe here is that it is an INPUT, not a filter:
+    # OpenSecTradeContext is constructed with it, and this account list is that
+    # context's answer. A connection for the wrong firm returns a different list
+    # rather than a mislabelled one. So an absent field is recorded as
+    # unverified and allowed; a field that is present and different is refused,
+    # because then the broker is actively contradicting us.
+    _UNREPORTED = {"", "N/A", "NONE", "NA"}
+    reported = [r for r in same_env if firm_of(r) not in _UNREPORTED]
+    if reported:
+        candidates = [r for r in reported if firm_of(r) == want_firm]
+        if not candidates:
+            raise BrokerBindingRefused(
+                "security_firm_mismatch",
+                f"no {env} account under security firm {want_firm!r} "
+                f"(OpenD reports {sorted({firm_of(r) for r in reported})})")
+    else:
+        candidates = list(same_env)
+        log.info("OpenD did not report a security firm for the %s account; "
+                 "relying on the connection, which was opened as %s",
+                 env, want_firm)
 
     # An explicitly remembered account wins over "the only one", so that a
     # second account appearing later cannot silently move the run.
@@ -186,6 +210,7 @@ def resolve(trade_ctx, *, trade_env: str, expected_acc_id: str | int | None = No
         security_firm=firm_of(row),
         acc_type=str(row.get("acc_type") or ""),
         acc_status=str(row.get("acc_status") or ""),
+        firm_verified=firm_of(row) not in _UNREPORTED,
         account_ref=_aref.ref(str(row["acc_id"]), kind="broker"),
         resolved_at=time.time(),
     )

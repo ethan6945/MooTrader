@@ -709,8 +709,25 @@ for allow, expect, label in ((False, "GATE-BLOCKED", "withheld"),
 staging_src = (ROOT / "scripts" / "staging.py").read_text()
 check("the staging harness starts with orders withheld",
       "allow_orders=False" in staging_src)
-check("...and never copies credentials into the staging .env",
-      "STAGING_DROP" in staging_src and "MOO_TRADE_PWD" in staging_src)
+
+# And must not carry credentials into the staging .env. This is checked by
+# behaviour, not by grepping for a constant: the first version DID have a
+# credential list, and a live 79-character Gemini key went through it anyway
+# because the list said GEMINI_API_KEY and the file holds GEMINI_API_KEYS.
+# WEB_SECRET and OPEND_LOGIN_ACCOUNT were not on it at all.
+sys.path.insert(0, str(ROOT / "scripts"))
+import staging as _staging                                  # noqa: E402
+LEAKED_ONCE = ("GEMINI_API_KEYS", "WEB_SECRET", "OPEND_LOGIN_ACCOUNT")
+for key in LEAKED_ONCE:
+    check(f"{key} is recognised as sensitive", _staging._is_sensitive(key))
+for key in ("DEEPSEEK_API_KEY", "TAVILY_API_KEY", "MOO_TRADE_PWD",
+            "WEB_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"):
+    check(f"{key} is recognised as sensitive", _staging._is_sensitive(key))
+# ...without sweeping up the settings staging needs in order to be staging.
+for key in ("MAX_POSITION_PCT", "ACCOUNT_USD", "ENTRY_SCORE_THRESHOLD",
+            "SIGNAL_WATCHLIST", "MOO_TRADE_ENV", "GEMINI_MODEL"):
+    check(f"{key} is not treated as a credential",
+          not _staging._is_sensitive(key))
 
 
 # ── 8. a direct launch is refused ──────────────────────────────────────────

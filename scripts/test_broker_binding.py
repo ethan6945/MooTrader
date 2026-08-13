@@ -131,9 +131,30 @@ check("a recorded account that OpenD does not offer refuses",
 check("no account for the environment refuses",
       refuses("no_account_for_env", bb.resolve,
               FakeTrade([acct(999, env="REAL")]), trade_env="SIMULATE"))
-check("a different security firm refuses",
+check("a REPORTED firm that differs refuses",
       refuses("security_firm_mismatch", bb.resolve,
               FakeTrade([acct(111, firm="OTHERFIRM")]), trade_env="SIMULATE"))
+
+# What a real OpenD actually returns. The first version of this check compared
+# security_firm for equality and refused every start against the live gateway,
+# while passing every test here — because the fixture supplied a firm and the
+# broker does not. The paper account comes back with 'N/A', the SDK's stand-in
+# for a field that was never set.
+#
+# Unreported is not a mismatch and not a match. The firm is an INPUT to
+# OpenSecTradeContext, and this list is that context's answer, so a connection
+# for the wrong firm returns a different list rather than a mislabelled one.
+for blank in ("N/A", "", "NONE"):
+    b = bb.resolve(FakeTrade([acct(111, firm=blank)]), trade_env="SIMULATE")
+    check(f"an unreported firm ({blank!r}) binds rather than refusing",
+          b.acc_id == 111)
+    check("...and the binding says the firm was not verified",
+          b.firm_verified is False)
+    check("...which the log line makes visible",
+          "unverified" in b.describe())
+verified = bb.resolve(FakeTrade([acct(111)]), trade_env="SIMULATE")
+check("a matching reported firm is marked verified",
+      verified.firm_verified is True and "unverified" not in verified.describe())
 check("a failed account list refuses",
       refuses("acc_list_failed", bb.resolve,
               FakeTrade([], ret=RET_ERROR), trade_env="SIMULATE"))

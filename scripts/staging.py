@@ -37,6 +37,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 STAGING_HOME = Path(os.environ.get("MMT_STAGING_HOME",
                                    Path.home() / "MooTraderStaging"))
 STAGING_PORT = "8771"          # the authoritative web panel is on 8770
@@ -52,13 +55,24 @@ STAGING_OVERRIDES = {
     "AUTO_APPLY_PARAMS": "false",
     "AUTO_BUDGET_ENABLED": "false",
     "MAX_POSITIONS_AUTOSCALE": "false",
-    "TELEGRAM_TOKEN": "",
-    "TELEGRAM_CHAT_ID": "",
 }
-# Keys never copied at all. Credentials a staging run has no business holding.
-STAGING_DROP = ("DEEPSEEK_API_KEY", "TAVILY_API_KEY", "GEMINI_API_KEY",
-                "FINNHUB_KEY", "OPENAI_API_KEY", "WEB_PASSWORD",
-                "MOO_TRADE_PWD")
+# Which keys are dropped is decided BY PATTERN, not by a list of names.
+#
+# The first version of this listed them exactly, and immediately proved why
+# that does not work: it named GEMINI_API_KEY and the real file holds
+# GEMINI_API_KEYS, so a live 79-character key was copied into the staging .env.
+# WEB_SECRET and OPEND_LOGIN_ACCOUNT were not on the list at all. An exact-name
+# list is a list of the credentials someone remembered.
+#
+# src/hermes_improve.py already classifies these by substring for the snapshot
+# redaction, and its is_identifier_key docstring names OPEND_LOGIN_ACCOUNT as
+# the reason it exists. Reusing it means there is one answer to "is this
+# sensitive?" rather than a third list to keep in sync.
+from src.hermes_improve import is_identifier_key, is_secret_key   # noqa: E402
+
+
+def _is_sensitive(key: str) -> bool:
+    return is_secret_key(key) or is_identifier_key(key)
 
 
 def _staging_env() -> dict:
@@ -79,26 +93,62 @@ def cmd_init(args) -> int:
     (STAGING_HOME / "data").mkdir(parents=True)
     (STAGING_HOME / "logs").mkdir(parents=True)
 
+    # config/ is copied, not left empty. The first staging run died in
+    # load_watchlist() on a missing config/watchlist.json — before it reached
+    # OpenD, so the run proved the handshake and nothing about the broker.
+    # These files are watchlists and universe pools: they carry no credentials
+    # and staging must score the same names as production or it is exercising a
+    # different bot.
+    cfg = STAGING_HOME / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for src in sorted((ROOT / "config").glob("*.json")):
+        if src.name.endswith(".bak"):
+            continue
+        shutil.copy2(src, cfg / src.name)
+        copied += 1
+
     # The .env is DERIVED from the real one rather than copied: staging must
     # match production's risk settings (otherwise it validates nothing) while
     # holding none of its credentials and reaching none of its channels.
     src_env = ROOT / ".env"
-    lines, seen = [], set()
+    lines, seen, dropped = [], set(), []
     if src_env.exists():
         for raw in src_env.read_text().splitlines():
             s = raw.strip()
             if not s or s.startswith("#") or "=" not in s:
                 continue
             k = s.split("=", 1)[0].strip()
-            if k in STAGING_DROP:
+            if _is_sensitive(k):
+                dropped.append(k)
                 continue
             seen.add(k)
             lines.append(f"{k}={STAGING_OVERRIDES.get(k, s.split('=', 1)[1].strip())}")
     for k, v in STAGING_OVERRIDES.items():
         if k not in seen:
             lines.append(f"{k}={v}")
-    (STAGING_HOME / ".env").write_text("\n".join(sorted(lines)) + "\n")
-    os.chmod(STAGING_HOME / ".env", 0o600)
+
+    # Written with O_EXCL at 0600 rather than write_text: the default mode would
+    # briefly leave it world-readable, and this file is derived from one that
+    # holds credentials — being wrong about that once is enough.
+    env_path = STAGING_HOME / ".env"
+    env_path.unlink(missing_ok=True)
+    fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, ("\n".join(sorted(lines)) + "\n").encode())
+    finally:
+        os.close(fd)
+
+    # Verified, not assumed. The check that matters is on the file that was
+    # actually written, because the bug this replaces was a name that did not
+    # match the pattern someone had in mind.
+    leaked = [ln.split("=", 1)[0] for ln in env_path.read_text().splitlines()
+              if "=" in ln and _is_sensitive(ln.split("=", 1)[0])
+              and ln.split("=", 1)[1].strip()]
+    if leaked:
+        env_path.unlink(missing_ok=True)
+        print(f"REFUSING: {leaked} carried values into the staging .env")
+        return 1
 
     # A fresh database at the current schema. Never a copy of the authoritative
     # one: staging writing into a copy of real history produces a ledger that
@@ -114,6 +164,9 @@ def cmd_init(args) -> int:
         return 1
 
     print(f"staging home : {STAGING_HOME}")
+    print(f"dropped      : {len(dropped)} sensitive key(s) — "
+          f"{', '.join(sorted(dropped)) or 'none'}")
+    print(f"config       : {copied} file(s) copied")
     print(f"database     : {STAGING_HOME / 'data' / 'trader.db'} (fresh)")
     print(f"web port     : {STAGING_PORT}")
     print(f"account      : {r.stdout.strip().splitlines()[-1]}")
