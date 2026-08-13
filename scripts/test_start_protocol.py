@@ -497,9 +497,12 @@ print("\n7c  the fencing token gates every order")
 h = make_home(tmp, "fence")
 FENCE_CHECK = '''
 import json, os
-from src import start_protocol as sp, start_lease
+from src import start_protocol as sp, start_lease, identity
 os.environ["MMT_START_FENCE"] = "5"
 (sp.settings.root / "logs").mkdir(parents=True, exist_ok=True)
+# A session, so this block isolates the FENCE dimension. Without one every
+# case below blocks, and the test would pass for the wrong reason.
+identity.start_session("SIMULATE", account_id="acct-0-SIMULATE")
 lease = sp.settings.root / "logs" / "worker.lease"
 lease.write_text(json.dumps({"pid": os.getpid(), "fence": 5, "host": "h"}))
 try:
@@ -527,6 +530,79 @@ check("the holder may trade", "ALLOWED-1" in r.stdout)
 check("a process that lost the lease may not, though it is healthy",
       "BLOCKED-2" in r.stdout)
 check("a process with no token may not trade", "BLOCKED-3" in r.stdout)
+
+# The session half of the same gate. A Stop closes the session row and then
+# signals the process; between those two there is a window, and a worker that
+# is slow to die must not use it to place an order nobody expects.
+SESSION_CHECK = '''
+import json, os
+from src import start_protocol as sp, start_lease, db, identity
+os.environ["MMT_START_FENCE"] = "5"
+(sp.settings.root / "logs").mkdir(parents=True, exist_ok=True)
+(sp.settings.root / "logs" / "worker.lease").write_text(
+    json.dumps({"pid": os.getpid(), "fence": 5, "host": "h"}))
+try:
+    sp.assert_may_trade("placing an order")
+    print("ALLOWED-NOSESSION")
+except start_lease.LeaseUnavailable:
+    print("BLOCKED-NOSESSION")
+sess = identity.start_session("SIMULATE", account_id="acct-0-SIMULATE")
+try:
+    sp.assert_may_trade("placing an order")
+    print("ALLOWED-OPEN")
+except Exception as e:
+    print("BLOCKED-OPEN " + str(e)[:60])
+# A Stop was recorded, but this process is still alive and mid-scan.
+with db.transaction() as c:
+    c.execute("UPDATE execution_sessions SET ended_at = ? WHERE session_id = ?",
+              ("2026-08-13T00:00:00", sess["session_id"]))
+try:
+    sp.assert_may_trade("placing an order")
+    print("ALLOWED-ENDED")
+except start_lease.LeaseUnavailable:
+    print("BLOCKED-ENDED")
+'''
+h = make_home(tmp, "sessiongate")
+r = in_home(h, SESSION_CHECK)
+check("no session -> no orders", "BLOCKED-NOSESSION" in r.stdout)
+check("an open session may trade", "ALLOWED-OPEN" in r.stdout)
+check("a session already stopped may not, even while the process lives",
+      "BLOCKED-ENDED" in r.stdout)
+
+
+# ── 7d. stop ends the process, the session and the lease ───────────────────
+print("\n7d  stop closes all three")
+h = make_home(tmp, "stop")
+STOP = '''
+import json, sys, time
+from src import start_protocol as sp, identity, db
+res = sp.start("web", worker_cmd=[sys.executable, {worker!r}])
+print("STARTED " + json.dumps(res))
+open_before = len(identity.open_sessions())
+out = sp.stop("cli")
+print("STOPPED " + json.dumps(out))
+print("SESSIONS " + str(open_before) + "->" + str(len(identity.open_sessions())))
+'''
+r = in_home(h, STOP.format(worker=str(worker_py)), timeout=180)
+started = [l for l in r.stdout.splitlines() if l.startswith("STARTED")]
+stopped = [l for l in r.stdout.splitlines() if l.startswith("STOPPED")]
+sessions = [l for l in r.stdout.splitlines() if l.startswith("SESSIONS")]
+check("stop reports having stopped a worker",
+      bool(stopped) and json.loads(stopped[0][8:]).get("stopped") is True)
+check("the session was closed", bool(sessions) and sessions[0].endswith("1->0"))
+check("the lease is gone", not (h / "logs" / "worker.lease").exists())
+if started:
+    pid = json.loads(started[0][8:])["pid"]
+    time.sleep(0.5)
+    gone = False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        gone = True
+    check("the worker process is gone", gone)
+audit_lines = (h / "logs" / "start_audit.jsonl").read_text().splitlines()
+recs = [json.loads(l) for l in audit_lines]
+check("the stop is audited", any(a.get("event") == "stop" for a in recs))
 
 
 # ── 8. a direct launch is refused ──────────────────────────────────────────

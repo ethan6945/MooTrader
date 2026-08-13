@@ -749,14 +749,22 @@ def current_fence() -> int:
 
 
 def assert_may_trade(what: str) -> None:
-    """Refuse unless this process still holds the lease it was started with.
+    """Refuse unless this process is still the worker, by lease AND by session.
 
-    Called before every order, modification and cancellation. The case it
-    catches is the one a health check cannot see: this process is fine, its pid
-    is alive, its connection works — and it lost a race it never knew it was
-    in. Something found it stale, took the lease, and is now the worker. Both
-    would place orders against the same account, and only the token can tell
-    them apart.
+    Called before every order, modification and cancellation.
+
+    The lease answers "am I still the one allowed to trade?". The case it
+    catches is invisible from anywhere else: this process is fine, its pid is
+    alive, its connection works — and it lost a race it never knew it was in.
+    Something found it stale, took the lease, and is now the worker. Both would
+    place orders against the same account, and only the token separates them.
+
+    The session answers "is this run still supposed to be happening?". A Stop
+    closes the session row and then signals the process; if the signal is lost,
+    or the process is mid-scan and slow to die, the gap between those two is a
+    window in which a worker nobody believes is running places an order. The
+    row is re-read rather than trusted from memory, precisely because the thing
+    that changed it is outside this process.
     """
     fence = current_fence()
     if fence < 0:
@@ -764,6 +772,35 @@ def assert_may_trade(what: str) -> None:
             f"{what} refused: this process holds no fencing token, so it was "
             f"not started through the protocol")
     start_lease.assert_ours(fence, what=what)
+
+    from . import identity
+    session = identity.current_session()
+    if not session:
+        raise start_lease.LeaseUnavailable(
+            f"{what} refused: this process has no execution session, so the "
+            f"order could not be attributed to a run")
+    try:
+        with db.conn() as c:
+            row = c.execute("SELECT ended_at, trade_env FROM execution_sessions "
+                            "WHERE session_id = ?",
+                            (session["session_id"],)).fetchone()
+    except Exception as e:
+        # Fail closed. Not being able to confirm the run is still open is not
+        # the same as it being open, and the cost of pausing is a missed scan.
+        raise start_lease.LeaseUnavailable(
+            f"{what} refused: cannot confirm this session is still open ({e})")
+    if row is None:
+        raise start_lease.LeaseUnavailable(
+            f"{what} refused: this session is not in the database")
+    if row["ended_at"]:
+        raise start_lease.LeaseUnavailable(
+            f"{what} refused: this session was ended at {row['ended_at']} — a "
+            f"Stop has already been recorded for this run")
+    if row["trade_env"] != session["trade_env"]:
+        raise start_lease.LeaseUnavailable(
+            f"{what} refused: the session's recorded environment "
+            f"({row['trade_env']}) is not the one this process is running as "
+            f"({session['trade_env']})")
 
 
 def wait_for_go(*, timeout: float = GO_TIMEOUT_S) -> dict:
