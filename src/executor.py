@@ -203,13 +203,16 @@ def place_bracket(
     fall back to soft tracking."""
     stop_id, tp_id = None, None
     try:
-        stop_id = client.place_stop_loss(symbol, qty, stop_price)
+        stop_id = client.place_stop_loss(symbol, qty, stop_price,
+                                         intent='bracket stop').broker_order_id
         log.info("Bracket STOP attached %s qty=%d @ $%.2f (id=%s)",
                  symbol, qty, stop_price, stop_id)
     except Exception as e:
         log.error("Bracket STOP failed for %s: %s", symbol, e)
     try:
-        tp_id = client.place_limit_order(symbol, qty, tp_price, TrdSide.SELL)
+        tp_id = client.place_limit_order(symbol, qty, tp_price, TrdSide.SELL,
+                                        kind='TP',
+                                        intent='bracket take-profit').broker_order_id
         log.info("Bracket TP attached %s qty=%d @ $%.2f (id=%s)",
                  symbol, qty, tp_price, tp_id)
     except Exception as e:
@@ -424,15 +427,66 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
                   signal.symbol, limit_px, stop_px, tp_px, signal.atr)
         return None
 
-    buy_order_id = client.place_limit_order(
-        signal.symbol, qty, limit_px, TrdSide.BUY
+    placement = client.place_limit_order(
+        signal.symbol, qty, limit_px, TrdSide.BUY,
+        kind="STACK" if is_stack else "ENTRY",
+        intent=f"score {getattr(signal, 'score', '?')}",
     )
+    buy_order_id = placement.broker_order_id
+
+    # Wait for the broker to say what actually happened, and use THAT.
+    #
+    # This block replaces "write the position at the requested quantity and the
+    # limit price, immediately". Both halves of that were fiction:
+    #
+    #   qty         — a limit order that filled 40 of 100 produced a 100-share
+    #                 record, so the stop and take-profit covered 60 shares
+    #                 nobody owned, and the exit for them would have opened a
+    #                 short. Every naked short in this account began that way.
+    #   entry_price — the limit is what we ASKED for. Booking it as the entry
+    #                 puts a price the broker never gave us into the R-multiple,
+    #                 which feeds half-Kelly, the optimizer and adaptive sizing.
+    #
+    # The wait is bounded. A timeout is not a failure: it means the order is
+    # still working, and the position is whatever has filled SO FAR. The
+    # remainder is not invented and not deferred to the next reconcile — it
+    # simply is not a position yet, and the order stays live in the log.
+    final = client.await_fill(placement.client_order_id,
+                              timeout=_ENTRY_FILL_WAIT_SEC)
+    filled = int(final.get("filled_qty") or 0)
+    fill_px = float(final.get("avg_fill_price") or 0) or None
+
+    if filled <= 0:
+        # Nothing was bought. Recording a position here is exactly what left a
+        # phantom HPE 64 in the books on 2026-08-11 — a holding that existed in
+        # one database and nowhere else, which reconcile later "closed" at a
+        # price for a sale that never happened.
+        _LAST_ENTRY_SKIP = ("no_fill",
+                            f"order {final.get('state')} with nothing filled")
+        log.warning("%s: no position — order %s is %s with 0/%d filled. The "
+                    "order remains tracked; no holding is recorded for shares "
+                    "that were not bought.",
+                    signal.symbol, placement.client_order_id,
+                    final.get("state"), qty)
+        return None
+
+    if filled < qty:
+        log.warning("%s: partial entry %d/%d @ $%.4f — the position is the %d "
+                    "shares that filled. Protective levels are sized to those.",
+                    signal.symbol, filled, qty, fill_px or limit_px, filled)
+
+    # From here on `qty` means what was bought, and `entry_px` what it cost.
+    qty = filled
+    entry_px = fill_px or limit_px
 
     if is_stack:
         old_qty = int(existing["qty"])
         old_entry = float(existing["entry_price"])
         new_total_qty = old_qty + qty
-        new_avg_entry = (old_qty * old_entry + qty * limit_px) / new_total_qty
+        # entry_px, not limit_px: the average cost of a position is the average
+        # of what was paid. Using the limit here made every stack drift the
+        # recorded basis toward a price the broker never charged.
+        new_avg_entry = (old_qty * old_entry + qty * entry_px) / new_total_qty
         # Stop/TP trail UP only — never weaken protection on the original lot.
         new_stop = max(float(existing.get("stop_loss", 0)), stop_px)
         new_tp = max(float(existing.get("take_profit", 0)), tp_px)
@@ -474,12 +528,12 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
             "stacks": stacks,
             "last_stack_at": datetime.utcnow().isoformat(),
             "last_stack_qty": qty,
-            "last_stack_price": limit_px,
+            "last_stack_price": entry_px,
         })
         # Refresh water-marks to current price for the new combined lot.
-        trade["high_water"] = max(float(trade.get("high_water") or limit_px), limit_px)
+        trade["high_water"] = max(float(trade.get("high_water") or entry_px), entry_px)
         log.info("STACK #%d on %s: +%d @ $%.2f → total %d, avg $%.2f, stop $%.2f, tp $%.2f",
-                 stacks, signal.symbol, qty, limit_px,
+                 stacks, signal.symbol, qty, entry_px,
                  new_total_qty, new_avg_entry, new_stop, new_tp)
     else:
         stop_order_id, tp_order_id = None, None
@@ -501,7 +555,7 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         trade = {
             "symbol": signal.symbol,
             "qty": qty,
-            "entry_price": limit_px,
+            "entry_price": entry_px,
             "stop_loss": stop_px,
             "take_profit": tp_px,
             "atr": signal.atr,
@@ -510,7 +564,7 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
             # anchors the 1/3 tranche size to the ORIGINAL lot; init_risk_per_share
             # is the R unit (entry − initial stop) for the +TP1_R / +TP2_R levels.
             "qty_initial": qty,
-            "init_risk_per_share": max(float(limit_px) - float(stop_px), 0.0),
+            "init_risk_per_share": max(float(entry_px) - float(stop_px), 0.0),
             "tp1_done": False,
             "tp2_done": False,
             "buy_order_id": buy_order_id,
@@ -518,8 +572,8 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
             "tp_order_id": tp_order_id,
             "opened_at": datetime.utcnow().isoformat(),
             # Water-marks start at the entry price — updated each manage tick.
-            "high_water": limit_px,
-            "low_water": limit_px,
+            "high_water": entry_px,
+            "low_water": entry_px,
             "strategy": getattr(signal, "strategy", "trend"),
             # Pattern strategy: remember which chart pattern triggered the entry
             # so the dashboard/GUI can badge it (None for the other strategies).
@@ -536,6 +590,12 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
 # booking at the pre-order quote instead. Short on purpose: the ORDER is the
 # protection and it is already live by the time we poll — this only decides
 # which price lands in the books. Falling back is safe (reconcile re-syncs).
+# How long an entry waits for its fill before the position is written from
+# whatever has filled so far. Longer than the exit poll below: an exit is
+# already protective the moment it is live, whereas an entry that is recorded
+# before it fills creates a holding that does not exist.
+_ENTRY_FILL_WAIT_SEC = 20.0
+
 _FILL_POLL_ATTEMPTS = 3
 _FILL_POLL_SLEEP_SEC = 0.4
 
@@ -588,7 +648,9 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
     itself fails to place (callers already handle that).
     """
     _assert_still_held(client, symbol, qty, reason)
-    order_id = client.place_limit_order(symbol, qty, limit_px, TrdSide.SELL)
+    placement = client.place_limit_order(symbol, qty, limit_px, TrdSide.SELL,
+                                         kind='EXIT', intent=reason)
+    order_id = placement.broker_order_id
     try:
         for attempt in range(_FILL_POLL_ATTEMPTS):
             fill = client.get_order_fill(order_id)
@@ -1435,7 +1497,9 @@ def edit_stop(client: MooClient | None, symbol: str, new_stop: float) -> dict:
     if new_stop_id and client is not None:
         try:
             client.cancel_order(new_stop_id)
-            new_stop_id = client.place_stop_loss(symbol, trade["qty"], new_stop)
+            new_stop_id = client.place_stop_loss(
+                symbol, trade["qty"], new_stop,
+                intent='stop edit').broker_order_id
             log.info("edit_stop: %s broker stop re-placed @ $%.2f (id=%s)",
                      symbol, new_stop, new_stop_id)
         except Exception as e:

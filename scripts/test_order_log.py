@@ -121,14 +121,20 @@ c = moo_client.MooClient()
 obs = ObservingTrade()
 c._trade = obs
 bb.bind(bb.resolve(obs, trade_env="SIMULATE"))
-oid = c.place_limit_order("AAPL", 10, 190.0, TrdSide.BUY)
+placed = c.place_limit_order("AAPL", 10, 190.0, TrdSide.BUY)
 check("the order was already in the database when the broker was called",
       obs.seen_state == "PENDING_SUBMIT")
 check("the broker was given our client_order_id as the remark",
       bool(obs.seen_remark) and obs.seen_remark.startswith("mmt"))
 row = order_log.get(obs.seen_remark)
 check("and it is SUBMITTED once the broker answered", row["state"] == "SUBMITTED")
-check("with the broker's id recorded", row["broker_order_id"] == oid)
+check("with the broker's id recorded",
+      row["broker_order_id"] == placed.broker_order_id)
+# Placement carries BOTH ids and is deliberately not str-able: a call site
+# that had not been updated would otherwise keep "working" while dropping
+# the client id, which is the half that survives a lost answer.
+check("...and the placement carries our id too",
+      placed.client_order_id == obs.seen_remark)
 check("the requested quantity is recorded", row["requested_qty"] == 10)
 check("nothing is filled yet", row["filled_qty"] == 0)
 check("it carries the session", row["session_id"] == SESSION["session_id"])
@@ -186,8 +192,8 @@ check("an order_id of 0 is UNKNOWN rather than assumed failed",
 print("\n3  an UNKNOWN is settled only by the broker")
 
 c, ft = fresh_client("ok")
-oid = c.place_limit_order("HPE", 20, 21.5, TrdSide.BUY)
-coid = ft.calls[-1]["remark"]
+placed = c.place_limit_order("HPE", 20, 21.5, TrdSide.BUY)
+coid = placed.client_order_id
 # Pretend we never saw the answer.
 order_log.unknown(coid, "connection dropped after submit")
 check("the order is UNKNOWN", order_log.get(coid)["state"] == "UNKNOWN")

@@ -119,13 +119,15 @@ def manage(client, regime_label: str, current_cash: float,
     try:
         if action == "buy":
             limit_px = round(price * 1.001, 2)
-            client.place_limit_order(sym, qty, limit_px, TrdSide.BUY)
+            client.place_limit_order(sym, qty, limit_px, TrdSide.BUY,
+                                     kind='ENTRY', intent='cash sleeve')
             msg = (f"🏦 *现金生息* — 熊市闲置资金买入 {sym} {qty} 股 @≈${limit_px}\n"
                    f"  ≈${qty * price:.0f} 停泊在国债 ETF 吃 ~4-5% 无风险年化，"
                    f"市场转好会自动卖出换回现金。")
         else:  # sell
             limit_px = round(price * 0.999, 2)
-            client.place_limit_order(sym, qty, limit_px, TrdSide.SELL)
+            client.place_limit_order(sym, qty, limit_px, TrdSide.SELL,
+                                     kind='EXIT', intent='cash sleeve')
             msg = (f"🏦 *现金生息 · 解除* — 卖出 {sym} {qty} 股 @≈${limit_px}\n"
                    f"  市场恢复可交易，资金换回现金供策略开多。")
     except Exception as e:

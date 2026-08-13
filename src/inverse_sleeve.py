@@ -158,7 +158,8 @@ def manage(client, regime_label: str, budget: float) -> dict:
         qty = int(pos["qty"])
         px = round(ind["price"] * 0.999, 2)
         try:
-            client.place_limit_order(sym, qty, px, TrdSide.SELL)
+            client.place_limit_order(sym, qty, px, TrdSide.SELL,
+                                     kind='EXIT', intent='inverse sleeve')
         except Exception as e:
             log.warning("inverse_sleeve sell failed: %s", e)
             return {"action": "sell", "qty": qty, "error": str(e)}
@@ -179,7 +180,8 @@ def manage(client, regime_label: str, budget: float) -> dict:
         return {"action": "hold", "reason": "qty<1 after sizing/caps"}
     px = round(ind["price"] * 1.001, 2)
     try:
-        client.place_limit_order(sym, qty, px, TrdSide.BUY)
+        client.place_limit_order(sym, qty, px, TrdSide.BUY,
+                                 kind='ENTRY', intent='inverse sleeve')
     except Exception as e:
         log.warning("inverse_sleeve buy failed: %s", e)
         return {"action": "buy", "qty": qty, "error": str(e)}

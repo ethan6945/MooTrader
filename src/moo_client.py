@@ -12,6 +12,7 @@ import math
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Iterator
 
 import pandas as pd
@@ -148,6 +149,19 @@ def _acc_id() -> int:
     there is not.
     """
     return broker_binding.require("a broker call").acc_id
+
+
+@dataclass(frozen=True)
+class Placement:
+    """What came back from asking for an order: both ids, never just one.
+
+    broker_order_id is what the broker calls it; client_order_id is what we
+    called it before it existed. The second is the one that survives a lost
+    answer, so returning only the first — as this did — meant the caller could
+    not wait on, or later claim, an order whose response never arrived.
+    """
+    broker_order_id: str
+    client_order_id: str
 
 
 class MooClient:
@@ -637,7 +651,7 @@ class MooClient:
 
     def _place(self, *, symbol: str, qty: int, price: float, side: TrdSide,
                kind: str, order_type=OrderType.NORMAL,
-               aux_price: float | None = None, intent: str = "") -> str:
+               aux_price: float | None = None, intent: str = "") -> "Placement":
         """Place one order, recorded before it is sent.
 
         The order of operations is the point. order_log.begin() commits a row
@@ -698,7 +712,59 @@ class MooClient:
         _note_gated_op_ok()
         log.info("Placed %s %s qty=%s price=%.2f order_id=%s (%s)",
                  side, symbol, qty, price, order_id, coid)
-        return order_id
+        return Placement(broker_order_id=order_id, client_order_id=coid)
+
+    def await_fill(self, client_order_id: str, *, timeout: float = 20.0,
+                   poll: float = 0.5) -> dict:
+        """Poll one order until it settles or the wait runs out. Returns its row.
+
+        The order log is updated on every poll, so whatever this returns is also
+        on disk — a crash mid-wait leaves the last known state recorded rather
+        than nothing.
+
+        A timeout is not a failure and not a fill. It means the order is still
+        working, and the caller must treat the quantity that HAS filled as the
+        real one. That is the whole point: the previous code recorded a position
+        the size of the request the instant the order was accepted, so a limit
+        that filled 40 of 100 produced a 100-share position with a stop covering
+        60 shares that were never bought.
+        """
+        deadline = time.time() + timeout
+        row = order_log.get(client_order_id)
+        if row is None:
+            raise RuntimeError(f"unknown order {client_order_id}")
+        broker_id = row.get("broker_order_id")
+
+        while True:
+            try:
+                ret, data = self.trade.order_list_query(
+                    trd_env=_env_enum(), acc_id=_acc_id())
+                if ret == RET_OK and data is not None and len(data):
+                    hit = order_log.claim_from_broker(client_order_id, data)
+                    if hit is None and broker_id:
+                        hit = order_log._claim_by_broker_id(broker_id, data)
+                    if hit is not None:
+                        state = order_log.map_broker_status(hit.get("order_status"))
+                        order_log.record_fill(
+                            client_order_id,
+                            filled_qty=int(float(hit.get("dealt_qty") or 0)),
+                            avg_price=float(hit.get("dealt_avg_price") or 0) or None,
+                            state=state,
+                            broker_order_id=str(hit.get("order_id") or "") or None)
+                        if state in order_log.TERMINAL_STATES:
+                            return order_log.get(client_order_id)
+            except Exception as e:
+                # A failed poll is not evidence about the order. Keep trying
+                # until the deadline; the log still holds the last known state.
+                log.warning("fill poll for %s failed: %s", client_order_id, e)
+
+            if time.time() >= deadline:
+                final = order_log.get(client_order_id)
+                log.info("order %s still working after %.0fs — %s of %s filled",
+                         client_order_id, timeout, final.get("filled_qty"),
+                         final.get("requested_qty"))
+                return final
+            time.sleep(poll)
 
     def history_orders(self, start: str, end: str):
         """Every order in the window, live and settled, with `remark` intact.
@@ -733,13 +799,13 @@ class MooClient:
     def place_limit_order(
         self, symbol: str, qty: int, price: float, side: TrdSide,
         *, kind: str | None = None, intent: str = ""
-    ) -> str:
+    ) -> Placement:
         return self._place(symbol=symbol, qty=qty, price=price, side=side,
                            kind=kind or ("ENTRY" if side == TrdSide.BUY else "EXIT"),
                            intent=intent)
 
     def place_stop_loss(self, symbol: str, qty: int, stop_price: float,
-                        *, intent: str = "") -> str:
+                        *, intent: str = "") -> Placement:
         """Sell-stop to close a long position."""
         return self._place(symbol=symbol, qty=qty, price=stop_price,
                            side=TrdSide.SELL, kind="STOP",
