@@ -1711,7 +1711,44 @@ def _startup_protect_stops() -> None:
                       "catchup/scheduler; the fast-stop loop will retry", e)
 
 
+def _startup_recover_orders() -> None:
+    """Settle what the last run left working, before this one decides anything.
+
+    Ahead of _startup_protect_stops() on purpose. That pass places and cancels
+    orders, and it does so from the local position record — which, until every
+    unfinished order is settled, describes the account as it was when this
+    software last saw it rather than as it is. A stop placed on that basis can
+    be for shares that were sold while we were down, or miss shares that were
+    bought.
+
+    Never raises. A recovery that cannot reach the broker leaves the orders
+    unsettled and halts; crashing here would leave the worker dead instead of
+    stopped, and a dead worker places no protective exits at all.
+    """
+    try:
+        from . import startup_recovery
+        with client() as c:
+            result = startup_recovery.recover(c)
+            if result["checked"]:
+                notifier.send(
+                    f"↻ Restart recovery: {result['checked']} unfinished "
+                    f"order(s) — {result['resolved']} settled, "
+                    f"{result['never_landed']} never landed"
+                    + (f", {len(result['unresolved'])} UNRESOLVED (halted)"
+                       if result["unresolved"] else ""))
+            pos = startup_recovery.reconcile_positions_from_orders(c)
+            if pos.get("differences"):
+                log.warning("startup: broker and local positions disagree "
+                            "after recovery — %s", pos["differences"])
+    except Exception as e:
+        log.error("startup recovery failed: %s — continuing to protective "
+                  "exits, but the order picture may be incomplete", e)
+
+
 def run_loop() -> None:
+    # What the last run left working is settled before anything is decided.
+    _startup_recover_orders()
+
     # Protective exits come FIRST — before catchup, before the scheduler.
     #
     # 2026-07-27 incident: the process started at 10:30 ET holding DELL + CAT,
