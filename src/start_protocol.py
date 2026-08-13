@@ -113,6 +113,13 @@ class StartRequest:
     # parent never saw. account_ref above is the HMAC, safe to log; this is the
     # raw id, and it goes to the child environment, never to the audit.
     account_id: str | None = None
+    # Whether this run may reach the broker's order book. Separate from whether
+    # it may run: a staging worker starts, connects, reads positions and scores
+    # candidates, and places nothing. Under one permission that is not
+    # expressible, and staging becomes production against a paper account —
+    # whose fills land in the same broker account the authoritative ledger
+    # tracks, invisibly to it.
+    allow_orders: bool = True
     prepared_at: float = field(default_factory=time.time)
 
 
@@ -231,7 +238,7 @@ def build_child_env(home: Path, config_sha: str) -> dict[str, str]:
 # ── prepare ──────────────────────────────────────────────────────────────────
 
 def prepare(source: str, *, requested_env: str | None = None,
-            home: Path | None = None) -> StartRequest:
+            home: Path | None = None, allow_orders: bool = True) -> StartRequest:
     """Validate everything that must be true before a worker may exist.
 
     Refuses — with a stable code — on: an unknown source, a REAL request, a
@@ -349,7 +356,7 @@ def prepare(source: str, *, requested_env: str | None = None,
         request_id=request_id, source=source, effective_env=effective,
         config_sha256=config_sha, safety=safety,
         db_version=db_version, db_integrity=integrity, account_ref=account_ref,
-        account_id=account_id,
+        account_id=account_id, allow_orders=allow_orders,
         build_id=build_id(), executable=str(exe),
         executable_sha256=_file_sha256(exe),
     )
@@ -477,7 +484,11 @@ def commit(req: StartRequest, *, home: Path | None = None,
         # now is it allowed to trade: until the GO lands it is blocked inside
         # wait_for_go(), before protective exits and before any broker call.
         go = {"request_id": req.request_id, "fence": lease.fence,
-              "worker_pid": proc.pid, "issued_at": time.time()}
+              "worker_pid": proc.pid, "issued_at": time.time(),
+              # Two grants, not one. "You may run" and "you may place orders"
+              # are different sentences, and a staging run needs the first
+              # without the second.
+              "orders": bool(req.allow_orders)}
         tmp_go = go_file.with_suffix(".tmp")
         tmp_go.write_text(json.dumps(go))
         os.replace(tmp_go, go_file)
@@ -536,7 +547,8 @@ def commit(req: StartRequest, *, home: Path | None = None,
 # ── the one entry point ──────────────────────────────────────────────────────
 
 def start(source: str, *, home: Path | None = None,
-          worker_cmd: list[str] | None = None) -> dict:
+          worker_cmd: list[str] | None = None,
+          allow_orders: bool = True) -> dict:
     """Start a worker. The only way to do so, for every caller.
 
     Web, the macOS shell and the CLI all land here, so there is exactly one
@@ -549,7 +561,7 @@ def start(source: str, *, home: Path | None = None,
     outcome, including every refusal, is already in the audit before this
     returns or raises.
     """
-    req = prepare(source, home=home)
+    req = prepare(source, home=home, allow_orders=allow_orders)
     return commit(req, home=home, worker_cmd=worker_cmd)
 
 
@@ -847,8 +859,23 @@ def wait_for_go(*, timeout: float = GO_TIMEOUT_S) -> dict:
                                    "the GO was issued for a different worker")
             # Still ours to hold, at the moment we are cleared to use it.
             start_lease.assert_ours(fence, what="starting to trade")
+
+            # The second grant. The gate starts shut, so this is the only thing
+            # that opens it — and a GO that does not say `orders: true` shuts it
+            # for good rather than leaving it merely ungranted. The difference
+            # matters: "not yet granted" is a state something could later change
+            # its mind about, and a staging run must not be able to.
+            from . import order_gate
+            if go.get("orders") is True:
+                order_gate.permit(f"granted by the parent for request "
+                                  f"{request_id[:8]}")
+            else:
+                order_gate.deny(f"the parent cleared request {request_id[:8]} to "
+                                f"run but not to place orders")
+
             p.unlink(missing_ok=True)   # consumed; clears it for the next start
-            log.info("start protocol: GO received for request %s", request_id[:8])
+            log.info("start protocol: GO received for request %s (%s)",
+                     request_id[:8], order_gate.describe())
             return go
         time.sleep(0.1)
 

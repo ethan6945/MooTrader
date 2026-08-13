@@ -605,6 +605,114 @@ recs = [json.loads(l) for l in audit_lines]
 check("the stop is audited", any(a.get("event") == "stop" for a in recs))
 
 
+# ── 7e. running and trading are two separate grants ────────────────────────
+#
+# Staging needs a worker that starts, connects, reads positions and manages
+# state, and places nothing. Files alone cannot give that: staging has its own
+# MMT_HOME, database, logs and port, but there is ONE OpenD on 127.0.0.1:11111
+# and one paper account behind it — the same account the authoritative ledger
+# describes. A staging order would land there, and the authoritative database
+# would never hear about it; at the next reconcile it is a phantom holding.
+#
+# So the boundary is not the file layout, it is not sending the order.
+print("\n7e  a run may be cleared to start without being cleared to trade")
+
+GATE = '''
+import json, os, sys
+from src import order_gate
+
+print("DEFAULT " + str(order_gate.permitted()))
+try:
+    order_gate.require("placing an order")
+    print("ALLOWED-UNGRANTED")
+except order_gate.OrdersNotPermitted:
+    print("BLOCKED-UNGRANTED")
+
+order_gate.permit("test")
+print("AFTER-PERMIT " + str(order_gate.permitted()))
+
+# One-way: denying is always allowed, re-granting afterwards is not.
+order_gate.deny("staging")
+print("AFTER-DENY " + str(order_gate.permitted()))
+try:
+    order_gate.permit("changed my mind")
+    print("REGRANTED")
+except order_gate.OrdersNotPermitted:
+    print("REGRANT-REFUSED")
+try:
+    order_gate.require("placing an order")
+    print("ALLOWED-AFTER-DENY")
+except order_gate.OrdersNotPermitted:
+    print("BLOCKED-AFTER-DENY")
+'''
+h = make_home(tmp, "gate")
+r = in_home(h, GATE)
+check("the gate starts shut", "DEFAULT False" in r.stdout)
+check("an ungranted process may not place an order",
+      "BLOCKED-UNGRANTED" in r.stdout)
+check("a grant opens it", "AFTER-PERMIT True" in r.stdout)
+check("denying shuts it", "AFTER-DENY False" in r.stdout)
+check("...and it cannot be reopened", "REGRANT-REFUSED" in r.stdout)
+check("...so orders stay blocked", "BLOCKED-AFTER-DENY" in r.stdout)
+
+# End to end: the parent withholds the trading grant, and the worker that comes
+# up is genuinely unable to reach the order book — checked through MooClient's
+# real guard, not by reading the flag back.
+NOORDERS = '''
+import json, sys
+from src import start_protocol as sp
+res = sp.start("cli", worker_cmd=[sys.executable, {worker!r}],
+               allow_orders={allow})
+print("STARTED " + json.dumps(res))
+'''
+PROBE = '''
+import os, sys
+sys.path.insert(0, {root!r})
+from src import start_protocol, order_gate, moo_client
+start_protocol.worker_verify_and_report()
+go = start_protocol.wait_for_go()
+out = os.path.join(os.environ["MMT_HOME"], "logs", "probe.txt")
+try:
+    moo_client._assert_may_trade("placing an order")
+    open(out, "w").write("COULD-TRADE")
+except order_gate.OrdersNotPermitted:
+    open(out, "w").write("GATE-BLOCKED")
+except Exception as e:
+    open(out, "w").write("OTHER " + type(e).__name__)
+'''
+probe_py = tmp / "probe_worker.py"
+probe_py.write_text(PROBE.format(root=str(ROOT)))
+
+for allow, expect, label in ((False, "GATE-BLOCKED", "withheld"),
+                             (True, "COULD-TRADE", "granted")):
+    h = make_home(tmp, f"noorder_{allow}")
+    r = in_home(h, NOORDERS.format(worker=str(probe_py), allow=allow),
+                timeout=120)
+    probe = h / "logs" / "probe.txt"
+    for _ in range(100):
+        if probe.exists():
+            break
+        time.sleep(0.1)
+    got = probe.read_text() if probe.exists() else "(no probe)"
+    check(f"with the trading grant {label}, the worker reports {expect}",
+          got == expect)
+    lease = h / "logs" / "worker.lease"
+    if lease.exists():
+        rec = json.loads(lease.read_text())
+        try:
+            os.killpg(os.getpgid(rec["pid"]), 15)
+        except OSError:
+            pass
+        lease.unlink(missing_ok=True)
+
+# The staging harness must ask for exactly this.
+staging_src = (ROOT / "scripts" / "staging.py").read_text()
+check("the staging harness starts with orders withheld",
+      "allow_orders=False" in staging_src)
+check("...and never copies credentials into the staging .env",
+      "STAGING_DROP" in staging_src and "MOO_TRADE_PWD" in staging_src)
+
+
 # ── 8. a direct launch is refused ──────────────────────────────────────────
 print("\n8  bypassing the protocol")
 h3 = make_home(tmp, "direct")

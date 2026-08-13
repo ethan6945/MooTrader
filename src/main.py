@@ -2092,9 +2092,15 @@ def main() -> None:
     # there is no second place for the rules to be almost right.
     if cmd in ("start", "stop"):
         from . import start_protocol
+        # --no-orders starts a worker that does everything except reach the
+        # broker's order book. It is how a staging run is expressed, and it is
+        # a property of THIS start rather than a setting on disk: the grant
+        # travels in the parent's GO, and a worker that does not receive it
+        # shuts its own gate for the rest of its life.
+        no_orders = "--no-orders" in sys.argv[2:]
         try:
-            result = (start_protocol.start("cli") if cmd == "start"
-                      else start_protocol.stop("cli"))
+            result = (start_protocol.start("cli", allow_orders=not no_orders)
+                      if cmd == "start" else start_protocol.stop("cli"))
         except start_protocol.StartRefused as e:
             print(f"refused ({e.code}): {e.detail}", file=sys.stderr)
             sys.exit(3)

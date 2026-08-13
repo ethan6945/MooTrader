@@ -130,7 +130,12 @@ def _assert_may_trade(what: str) -> None:
     the call site: this process is healthy, its connection is fine, and it
     simply is not the current worker any more.
     """
-    from . import start_protocol
+    from . import order_gate, start_protocol
+    # Two questions, asked in this order. "May this process reach the order book
+    # at all?" is answered by the grant the parent issued at GO time and cannot
+    # change afterwards. "Is this process still the worker?" is answered by the
+    # lease and the session, and can change under it at any moment.
+    order_gate.require(what)
     start_protocol.assert_may_trade(what)
 
 
