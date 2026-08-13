@@ -244,6 +244,10 @@ def main() -> int:
     ap.add_argument("--refresh", action="store_true",
                     help="re-query every month instead of using the cache")
     args = ap.parse_args()
+    # Reads the ledger whole. Read-only, but a report that silently blends a
+    # paper fill with a live one is worse than no report.
+    from src import db as _db
+    _db.assert_single_account(what="the broker reconciliation")
     if args.refresh or not CACHE.exists():
         data = fetch(args.refresh)
     else:

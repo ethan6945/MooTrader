@@ -23,7 +23,6 @@ from .indicators import Signal
 
 log = logging.getLogger(__name__)
 
-OPEN_TRADES_FILE = settings.root / "data" / "open_trades.json"
 TRADE_LOG_FILE = settings.root / "data" / "trades.jsonl"   # legacy mirror
 NY = pytz.timezone("America/New_York")
 

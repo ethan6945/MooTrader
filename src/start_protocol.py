@@ -324,9 +324,20 @@ def prepare(source: str, *, requested_env: str | None = None,
     mirror = home / "data" / "open_trades.json"
     if mirror.exists():
         try:
-            mirror_positions = set(json.loads(mirror.read_text()) or {})
+            raw = json.loads(mirror.read_text()) or {}
         except (json.JSONDecodeError, OSError) as e:
             refuse("mirror_unreadable", f"cannot read open_trades.json: {e}")
+        # There is one mirror file for the whole installation, so it may have
+        # been written by the other account. Comparing this account's positions
+        # against that file is comparing two different things and calling the
+        # difference a conflict — and the operator's fix for a bogus conflict
+        # is to overwrite the mirror, which discards the other account's record.
+        mirror_account = raw.get("_account_id") if isinstance(raw, dict) else None
+        if mirror_account and mirror_account != account_id:
+            refuse("mirror_other_account",
+                   "data/open_trades.json was written by a different account. "
+                   "Rebuild it for this one rather than reconciling against it")
+        mirror_positions = {k for k in raw if not k.startswith("_")}
         if mirror_positions != db_positions:
             refuse("position_conflict",
                    f"database holds {sorted(db_positions) or 'nothing'} but the "

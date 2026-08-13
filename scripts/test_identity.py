@@ -117,6 +117,9 @@ check("paper realized PnL survived the live write",
 # A global write from one side is visible to the other.
 db.update_state({"ai_model": "deepseek-v4-pro"})
 use_account("REAL")
+# ai_model is in GLOBAL_SCOPED_KEYS. Naming a listed key matters here: an
+# unlisted one now defaults to the account, so this assertion would be testing
+# the default rather than the global scope it is about.
 check("a global write crosses accounts",
       db.get_state().get("ai_model") == "deepseek-v4-pro")
 
@@ -204,6 +207,40 @@ try:
     check("db rejects an invalid trade_env", False)
 except Exception:
     check("db rejects an invalid trade_env", True)
+
+
+# ── 4b. an unclassified key is filed where a mistake is harmless ───────────
+#
+# The default used to be global: anything not in ACCOUNT_SCOPED_KEYS was
+# software-wide. That is the wrong direction to be wrong in — a future
+# account-sensitive key nobody remembered to list would be shared between paper
+# and live in silence, and the symptom is a live order sized off paper state.
+# Filed under the account instead, a genuinely global key is merely stored
+# twice and read back correctly by both.
+print("\nunclassified keys default to the account")
+use_account("SIMULATE")
+db.update_state({"some_future_key": "paper-value"})
+use_account("REAL")
+check("an unlisted key does not leak to the other account",
+      db.get_state().get("some_future_key") is None)
+db.update_state({"some_future_key": "live-value"})
+use_account("SIMULATE")
+check("...and each account keeps its own",
+      db.get_state().get("some_future_key") == "paper-value")
+
+# Explicitly-classified global keys still cross, which is the point of listing.
+db.update_state({"ai_provider": "deepseek"})
+use_account("REAL")
+check("an explicitly global key is shared",
+      db.get_state().get("ai_provider") == "deepseek")
+
+# A strategy sleeve is account-scoped: switching one on to try it on paper must
+# not switch it on for real money.
+use_account("SIMULATE")
+db.update_state({"inverse_sleeve_enabled": True})
+use_account("REAL")
+check("a sleeve enabled on paper is not enabled live",
+      not db.get_state().get("inverse_sleeve_enabled"))
 
 
 # ── 5. the ledger itself cannot cross ───────────────────────────────────────
@@ -349,6 +386,64 @@ check("updating a position does not restamp its opening session",
       again and again["opened_session_id"] == sess["session_id"])
 check("...but the update itself applied", again and again["qty"] == 4)
 identity.end_session("test")
+
+
+# ── 8. the legacy JSON mirrors say whose they are ──────────────────────────
+#
+# There is ONE data/state.json and ONE data/open_trades.json for the whole
+# installation, written by executor, reconcile and every state update. Nothing
+# in either file said which account it described, so a REAL run replaced the
+# paper account's view with live numbers, silently. That matters most at the
+# next start: start_protocol compares the mirror against the database, an
+# unstamped file from the other account reads as a position conflict, and the
+# obvious fix for a bogus conflict is to overwrite the mirror — destroying the
+# other account's record in order to silence a warning about it.
+print("\nthe JSON mirrors are attributable")
+import json as _json                                  # noqa: E402
+
+use_account("SIMULATE")
+sim_id = identity.active_account_id()
+db.update_state({"budget_usd": 10000.0})
+state_json = _json.loads((db._STATE_JSON).read_text())
+check("state.json records the account it describes",
+      state_json.get("_account_id") == sim_id)
+check("...and the environment", state_json.get("_trade_env") == "SIMULATE")
+
+db.mirror_open_trades_json({"AAPL": {"qty": 100}})
+ot = _json.loads((db._OPEN_TRADES_JSON).read_text())
+check("open_trades.json records the account", ot.get("_account_id") == sim_id)
+check("...and still holds the positions", ot.get("AAPL", {}).get("qty") == 100)
+
+use_account("REAL")
+real_id = identity.active_account_id()
+db.mirror_open_trades_json({"NVDA": {"qty": 3}})
+ot2 = _json.loads((db._OPEN_TRADES_JSON).read_text())
+check("a live rebuild restamps the file", ot2.get("_account_id") == real_id)
+check("...so the overwrite is detectable rather than silent",
+      ot2.get("_account_id") != sim_id)
+
+# The stamp is metadata, not a holding: anything reading positions skips '_'.
+positions = {k for k in ot2 if not k.startswith("_")}
+check("the stamp is not mistaken for a position", positions == {"NVDA"})
+
+# Re-stamping is idempotent — a mirror written from a previously stamped dict
+# must not accumulate a second copy of the metadata as a fake symbol.
+db.mirror_open_trades_json(ot2)
+ot3 = _json.loads((db._OPEN_TRADES_JSON).read_text())
+check("round-tripping a stamped mirror does not invent a position",
+      {k for k in ot3 if not k.startswith("_")} == {"NVDA"})
+
+
+# ── 9. whole-table maintenance tools stop at two accounts ──────────────────
+print("\nthe one-shot tools refuse an ambiguous database")
+try:
+    db.assert_single_account(what="a whole-table tool")
+    check("a two-account database is refused", False)
+except SystemExit:
+    # These tools query whole tables. They are not wrong today, with one
+    # account; they become wrong silently at two, and the output would blend
+    # paper fills with live ones under one heading.
+    check("a two-account database is refused", True)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

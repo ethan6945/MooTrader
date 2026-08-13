@@ -52,7 +52,6 @@ STATIC = BUNDLE_DIR / "web" / "static"
 # Override only for running an isolated/secondary instance (e.g. tests). Default = repo .env.
 ENV_FILE = Path(os.getenv("WEB_ENV_FILE") or (ROOT / ".env"))
 ACCOUNT_FILE = ROOT / "data" / "account.json"
-OPEN_TRADES_FILE = ROOT / "data" / "open_trades.json"
 TRADER_LOG = ROOT / "logs" / "trader.log"
 SIGNAL_LOG = ROOT / "logs" / "signal_reporter.log"
 SIGNAL_PID = ROOT / "logs" / "signal_reporter.pid"

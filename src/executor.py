@@ -218,7 +218,6 @@ def place_bracket(
 
 log = logging.getLogger(__name__)
 
-OPEN_TRADES_FILE = settings.root / "data" / "open_trades.json"
 
 
 def _load_open_trades() -> dict:
@@ -240,11 +239,9 @@ def _save_open_trades(trades: dict) -> None:
         t["symbol"] = sym
         db.upsert_open_trade(t)
     # Legacy JSON mirror (kept until all GUI readers migrate; cheap to write).
-    try:
-        OPEN_TRADES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        OPEN_TRADES_FILE.write_text(json.dumps(trades, indent=2, default=str))
-    except Exception as e:
-        log.warning("legacy JSON mirror write failed: %s", e)
+    # Through db so it carries the account stamp — there is one file for both
+    # accounts, and an unstamped one cannot be told apart from the other's.
+    db.mirror_open_trades_json(trades)
 
 
 # --- same-day re-entry cooldown (2026-07-15) ---

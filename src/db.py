@@ -50,7 +50,30 @@ ACCOUNT_SCOPED_KEYS = frozenset({
     "recent_closes", "reentry_cooldown", "gap_exit_queue",
     "shorts_alerted_day", "reconcile_severe_streak",
     "portfolio_full_notified", "stats_reset_at", "pending_approvals",
+    # Strategy sleeves are account-scoped rather than global on purpose. They
+    # read like software settings, but "I switched this on to see what it does"
+    # is a thing done on paper, and inheriting that decision into a live account
+    # is the surprise worth not having.
+    "cash_yield_enabled", "inverse_sleeve_enabled",
 })
+# Keys that genuinely belong to the software rather than to an account, listed
+# explicitly so that "not account-scoped" is a decision someone made rather than
+# the result of a lookup missing.
+GLOBAL_SCOPED_KEYS = frozenset({
+    "ai_provider", "ai_model", "ai_fail_streak", "ai_last_error", "ai_last_ok_ts",
+    "health_ai_calls_ok", "health_ai_calls_ok_streak",
+    "health_gemini_ok", "health_gemini_ok_streak",
+    "health_options_stats_ok", "health_options_stats_ok_streak",
+    "regime_last_label", "telegram_offset",
+    # One-time migration markers: facts about this installation's history.
+    "baseline_established_at", "ledger_merge", "ledger_quality_migration",
+    "phase0a_applied", "poststop_reconcile",
+})
+
+# Prefixes that are global by nature. Strategy parameters describe the software's
+# behaviour, not one account's money.
+_GLOBAL_KEY_PREFIXES = ("param_", "health_", "cron_")
+
 GLOBAL_SCOPE = ""
 _init_lock = threading.Lock()
 _initialised = False
@@ -983,8 +1006,68 @@ def _require_account_id(what: str) -> str:
     return acc
 
 
+_warned_unclassified: set[str] = set()
+
+
+def assert_single_account(db_path=None, *, what: str = "this tool") -> str:
+    """Refuse if the ledger holds rows for more than one account.
+
+    For the one-shot maintenance tools — the ledger merge, the broker
+    reconciliation — which were written when there was one account and query
+    whole tables. They are not wrong today, because there is one account; they
+    become wrong silently the moment there are two, and the symptom is a
+    reconciliation report that mixes paper fills with live ones.
+
+    Cheaper and more honest than retrofitting an account argument onto tools
+    that have already served their purpose: they either run against an
+    unambiguous database or they stop.
+    """
+    import sqlite3 as _sq
+    path = db_path or DB_FILE
+    c = _sq.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        found = set()
+        for table in ("open_trades", "closed_trades", "audit", "history"):
+            try:
+                found |= {r[0] for r in c.execute(
+                    f"SELECT DISTINCT account_id FROM {table}") if r[0]}
+            except _sq.Error:
+                continue           # pre-v4 table: no account column at all
+    finally:
+        c.close()
+    if len(found) > 1:
+        raise SystemExit(
+            f"{what} operates on whole tables and this database holds "
+            f"{len(found)} accounts. Refusing: its output would mix them. "
+            f"Scope it to one account before running it again.")
+    return next(iter(found), "")
+
+
 def _scope_for(key: str, account_id: str) -> str:
-    return account_id if key in ACCOUNT_SCOPED_KEYS else GLOBAL_SCOPE
+    """Where a key is filed. Unclassified keys go to the ACCOUNT, not global.
+
+    The default used to be global: anything not in ACCOUNT_SCOPED_KEYS was
+    software-wide. That is the wrong direction to be wrong in. A new key that
+    turns out to be account-sensitive — some future realized-PnL variant, a
+    per-account cooldown — would be shared between paper and live silently, and
+    the symptom is a live order sized off paper state.
+
+    Defaulting to the account is wrong in the harmless direction: a genuinely
+    global key filed per-account is stored twice and read back correctly by
+    both. So unknown keys land there, and say so once, loudly enough that the
+    classification gets made rather than inherited.
+    """
+    if key in ACCOUNT_SCOPED_KEYS:
+        return account_id
+    if key in GLOBAL_SCOPED_KEYS or key.startswith(_GLOBAL_KEY_PREFIXES):
+        return GLOBAL_SCOPE
+    if key not in _warned_unclassified:
+        _warned_unclassified.add(key)
+        log.warning(
+            "kv_state key %r is in neither ACCOUNT_SCOPED_KEYS nor "
+            "GLOBAL_SCOPED_KEYS — filing it under the account, which is the "
+            "safe guess. Classify it in db.py.", key)
+    return account_id
 
 
 def _kv_is_scoped(c) -> bool:
@@ -1085,9 +1168,42 @@ def atomic_state(fn) -> dict:
     return out
 
 
-# ── state.json mirror (2026-07-06) ──────────────────────
+# ── legacy JSON mirrors ─────────────────────────────────
 
 _STATE_JSON = settings.root / "data" / "state.json"
+_OPEN_TRADES_JSON = settings.root / "data" / "open_trades.json"
+
+
+def mirror_open_trades_json(trades: dict) -> None:
+    """Write data/open_trades.json for this account, stamped.
+
+    One file, two accounts. Both executor and reconcile wrote it directly with
+    a bare position dict, so a REAL run replaced the paper account's mirror and
+    the file said nothing about which one it described. start_protocol compares
+    the mirror against the database at every start; an unstamped file from the
+    other account reads as a position conflict, and the obvious fix for a bogus
+    conflict is to overwrite the mirror — which destroys the other account's
+    record to silence a warning about it.
+
+    The underscore keys are metadata; readers skip anything starting with '_'.
+    """
+    payload = {k: v for k, v in trades.items() if not str(k).startswith("_")}
+    try:
+        acct = _active_account_id()
+        if acct:
+            payload["_account_id"] = acct
+            try:
+                from . import identity
+                payload["_trade_env"] = (identity.account_info(acct) or {}).get(
+                    "trade_env", "")
+            except Exception:
+                pass
+        _OPEN_TRADES_JSON.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _OPEN_TRADES_JSON.with_suffix(f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload, indent=2, default=str))
+        os.replace(tmp, _OPEN_TRADES_JSON)
+    except Exception as e:
+        log.warning("open_trades.json mirror write failed: %s", e)
 
 
 def _mirror_state_json(state: dict) -> None:
@@ -1098,12 +1214,29 @@ def _mirror_state_json(state: dict) -> None:
 
     Atomic (tmp + os.replace): the scheduler and the web server both come
     through here from separate processes — a plain write_text truncates
-    first, so a concurrent reader could catch a half-written file."""
+    first, so a concurrent reader could catch a half-written file.
+
+    Stamped with the account it describes. There is one state.json for the
+    whole installation, so a REAL run overwrites the paper account's file with
+    live numbers and nothing in it says so. Anyone reading it — the operator,
+    an external script, a future version of this code — sees a budget and a
+    realized PnL with no way to tell whose they are. The stamp does not make
+    the file per-account; it makes the ambiguity detectable.
+    """
     try:
         import os as _os
+        acct = _active_account_id()
+        payload = dict(state)
+        payload["_account_id"] = acct
+        try:
+            from . import identity
+            payload["_trade_env"] = (identity.account_info(acct) or {}).get(
+                "trade_env", "")
+        except Exception:
+            payload["_trade_env"] = ""
         _STATE_JSON.parent.mkdir(parents=True, exist_ok=True)
         tmp = _STATE_JSON.with_suffix(f".tmp.{_os.getpid()}")
-        tmp.write_text(json.dumps(state, indent=2, default=str))
+        tmp.write_text(json.dumps(payload, indent=2, default=str))
         _os.replace(tmp, _STATE_JSON)
     except Exception as e:
         log.warning("state.json mirror failed: %s", e)

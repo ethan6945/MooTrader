@@ -293,6 +293,11 @@ def main() -> int:
     g.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
+    # This merges whole tables. It predates the account model and has no way to
+    # say which account it is merging, so it runs only where that is unambiguous.
+    from src import db as _db
+    _db.assert_single_account(APP_DB, what="the ledger merge")
+
     p = plan()
     print(f"source (repo) : {REPO_DB}")
     print(f"target (app)  : {APP_DB}\n")

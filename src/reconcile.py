@@ -31,7 +31,6 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-OPEN_TRADES_FILE = settings.root / "data" / "open_trades.json"
 RECONCILE_FILE = settings.root / "data" / "reconcile.json"
 NY = pytz.timezone("America/New_York")
 
@@ -535,7 +534,7 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
 
         if fixes_applied:
             try:
-                OPEN_TRADES_FILE.write_text(json.dumps(our_trades, indent=2, default=str))
+                db.mirror_open_trades_json(our_trades)
                 # Persist reconciled state to SQLite (primary store). Use the db
                 # layer directly instead of the executor-internal _save helper so
                 # reconcile doesn't couple to executor's private API surface.

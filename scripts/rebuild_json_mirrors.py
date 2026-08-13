@@ -42,13 +42,57 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-def _kv(c) -> dict:
+def resolve_account(c, wanted: str | None) -> tuple[str, str]:
+    """The account these mirrors describe. Returns (account_id, trade_env).
+
+    Required rather than inferred once more than one account exists. There is
+    ONE set of mirror files for the installation, so rebuilding them is always
+    a statement about whose positions they show; leaving that implicit means
+    the answer depends on row order.
+    """
+    try:
+        rows = [dict(r) for r in c.execute(
+            "SELECT account_id, trade_env, label FROM accounts ORDER BY created_at")]
+    except sqlite3.Error:
+        return "", ""                       # pre-v4 database: one namespace
+    if not rows:
+        return "", ""
+    if wanted:
+        hit = [r for r in rows
+               if r["account_id"] == wanted or r["trade_env"] == wanted.upper()]
+        if not hit:
+            raise SystemExit(f"no account matching {wanted!r}; this database has "
+                             + ", ".join(f"{r['trade_env']}={r['account_id']}"
+                                         for r in rows))
+        if len(hit) > 1:
+            raise SystemExit(f"{wanted!r} matches {len(hit)} accounts — name one")
+        return hit[0]["account_id"], hit[0]["trade_env"]
+    if len(rows) > 1:
+        raise SystemExit(
+            "this database has more than one account and the mirrors describe "
+            "only one. Pass --account SIMULATE|REAL|<uuid>; guessing here would "
+            "write one account's positions into a file the other reads.")
+    return rows[0]["account_id"], rows[0]["trade_env"]
+
+
+def _kv(c, account_id: str) -> dict:
+    """Global keys, overlaid with this account's. Never another account's.
+
+    This used to merge every row in the table, ordered so that account-scoped
+    values overwrote global ones — which is right with one account and
+    arbitrary with two: whichever the database returned last won, and the file
+    ended up holding one account's budget and possibly the other's PnL.
+    """
     scoped = any(r[1] == "account_id"
                  for r in c.execute("PRAGMA table_info(kv_state)"))
     out = {}
-    q = ("SELECT key, value FROM kv_state ORDER BY account_id <> '' ASC"
-         if scoped else "SELECT key, value FROM kv_state")
-    for r in c.execute(q):
+    if scoped:
+        rows = c.execute(
+            "SELECT key, value FROM kv_state WHERE account_id IN ('', ?) "
+            "ORDER BY account_id <> '' ASC", (account_id,))
+    else:
+        rows = c.execute("SELECT key, value FROM kv_state")
+    for r in rows:
         try:
             out[r["key"]] = json.loads(r["value"])
         except (json.JSONDecodeError, TypeError):
@@ -56,12 +100,17 @@ def _kv(c) -> dict:
     return out
 
 
-def build(c) -> dict[str, object]:
-    """The three mirrors, derived entirely from the database."""
-    state = _kv(c)
+def build(c, account_id: str, trade_env: str) -> dict[str, object]:
+    """The three mirrors for ONE account, derived entirely from the database."""
+    state = _kv(c, account_id)
 
     open_trades = {}
-    for r in c.execute("SELECT * FROM open_trades"):
+    scoped_positions = any(r[1] == "account_id"
+                           for r in c.execute("PRAGMA table_info(open_trades)"))
+    rows = (c.execute("SELECT * FROM open_trades WHERE account_id = ?",
+                      (account_id,)) if scoped_positions and account_id
+            else c.execute("SELECT * FROM open_trades"))
+    for r in rows:
         d = dict(r)
         extra = d.pop("extra", None)
         if extra:
@@ -76,6 +125,20 @@ def build(c) -> dict[str, object]:
         for k in ("account_id", "opened_session_id"):
             d.pop(k, None)
         open_trades[d["symbol"]] = d
+
+    # Captured before the stamps go on: everything below counts positions, and
+    # the two underscore keys are metadata, not holdings.
+    symbols = sorted(open_trades)
+
+    # Both mirrors say whose they are. One file serves the whole installation,
+    # so without this a REAL rebuild silently replaces the paper account's view
+    # and nothing in the file admits it. start_protocol refuses a mirror
+    # stamped for another account rather than reading it as a conflict.
+    if account_id:
+        open_trades["_account_id"] = account_id
+        open_trades["_trade_env"] = trade_env
+        state["_account_id"] = account_id
+        state["_trade_env"] = trade_env
 
     # account.json: refresh only the fields the database actually owns. Live
     # cash and market values come from the broker during a scan and are left
@@ -92,8 +155,8 @@ def build(c) -> dict[str, object]:
     account.update({
         "realized_pnl_total": realized,
         "realized_pnl_today": float(state.get("realized_pnl_today") or 0.0),
-        "positions_count": len(open_trades),
-        "symbols": sorted(open_trades),
+        "positions_count": len(symbols),
+        "symbols": symbols,
         "budget": float(state.get("budget_usd") or 0.0),
         "budget_usd": float(state.get("budget_usd") or 0.0),
         "total_pnl": round(realized + float(account.get("unrealized_pnl") or 0.0), 4),
@@ -113,6 +176,9 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true")
     g.add_argument("--apply", action="store_true")
+    ap.add_argument("--account", default=None, metavar="SIMULATE|REAL|<uuid>",
+                    help="which account the mirrors describe; required once "
+                         "the database holds more than one")
     a = ap.parse_args()
     if not a.db.exists():
         sys.exit(f"no such db: {a.db}")
@@ -120,10 +186,12 @@ def main() -> int:
 
     c = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
-    mirrors = build(c)
+    account_id, trade_env = resolve_account(c, a.account)
+    mirrors = build(c, account_id, trade_env)
     c.close()
 
     print(f"  db : {a.db}")
+    print(f"  acct: {trade_env or 'pre-v4'} {account_id or '(single namespace)'}")
     print(f"  out: {out_dir}\n")
     drift = 0
     for name, data in mirrors.items():
@@ -135,7 +203,8 @@ def main() -> int:
             except (json.JSONDecodeError, OSError):
                 old = {}
         if name == "open_trades.json":
-            was, now = sorted(old), sorted(data)
+            was = sorted(k for k in old if not k.startswith("_"))
+            now = sorted(k for k in data if not k.startswith("_"))
             ghosts = [s for s in was if s not in now]
             print(f"  {name:<18} was {was or '[]'} -> {now or '[]'}"
                   + (f"   removing phantom {ghosts}" if ghosts else ""))
