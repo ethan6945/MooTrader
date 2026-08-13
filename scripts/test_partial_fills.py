@@ -91,10 +91,14 @@ class FakeTrade:
 
 
 class FakeClient(moo_client.MooClient):
-    def __init__(self, fill_qty, fill_price, status="FILLED_ALL"):
+    def __init__(self, fill_qty, fill_price, status="FILLED_ALL", holdings=None):
         super().__init__()
         bb.reset()
         self._trade = FakeTrade(fill_qty, fill_price, status)
+        # What the broker says we hold. _assert_still_held asks this before
+        # every exit — the duplicate-sell guard — so an exit test that leaves it
+        # empty is testing the guard, not the booking.
+        self._holdings = holdings or {}
         bb.bind(bb.resolve(self._trade, trade_env="SIMULATE"))
     # Everything that would reach a real gateway is stubbed. Without the
     # `quote` override the first run opened a live OpenQuoteContext against
@@ -107,7 +111,10 @@ class FakeClient(moo_client.MooClient):
     def get_last_price(self, symbol):
         return None          # no live quote -> the entry uses the signal price
     def get_positions(self):
-        return pd.DataFrame()
+        if not self._holdings:
+            return pd.DataFrame()
+        return pd.DataFrame([{"code": f"US.{s}", "qty": float(q)}
+                             for s, q in self._holdings.items()])
     def get_short_symbols(self):
         return set()
 
@@ -225,6 +232,76 @@ check("the order is still live, not written off",
 check("...so it stays in the live list",
       any(x["client_order_id"] == p.client_order_id
           for x in order_log.live_orders()))
+
+
+# ── 7. a partial EXIT books what sold and keeps the rest ───────────────────
+#
+# _sell_and_book_price used to return only a price, so all ten callers booked
+# the quantity they had ASKED to sell and then removed the position. On a
+# partial that closes shares still held: the software goes flat, the broker
+# does not, and the next exit for those shares is a sell of stock we do not
+# own. Its own comment said the residual was "reconcile's job", which is the
+# thing that must not be true.
+print("\n7  a partial exit books what sold, and the rest stays held")
+reset_positions()
+
+# Open 100, then let only 30 of the exit fill.
+c = FakeClient(fill_qty=100, fill_price=50.0, status="FILLED_ALL")
+opened = executor.open_position(c, sig("XOM", 50.0, 1.0), 100)
+check("a full position is open", opened and opened["qty"] == 100)
+
+before_closes = len(db.closed_trades(limit=500, include_excluded=True))
+c2 = FakeClient(fill_qty=30, fill_price=49.0, status="FILLED_PART",
+                holdings={"XOM": 100})
+trades = executor._load_open_trades()
+pnl, px, sold = executor._exit_and_book(
+    c2, "XOM", trades["XOM"], trades, 100, 48.5, 49.0, "SL")
+
+check("only what sold is reported", sold == 30)
+after = db.load_open_trades().get("XOM")
+check("the position is NOT removed", after is not None)
+check("...and holds exactly the residual", after and after["qty"] == 70)
+
+closes = db.closed_trades(limit=500, include_excluded=True)
+check("exactly one close was booked", len(closes) == before_closes + 1)
+check("...for the quantity that actually sold", closes[-1]["qty"] == 30)
+check("...at the price it actually sold for",
+      abs(float(closes[-1]["exit"]) - 49.0) < 1e-9)
+
+# Selling the residual finishes the job and removes the position.
+c3 = FakeClient(fill_qty=70, fill_price=48.8, status="FILLED_ALL",
+                holdings={"XOM": 70})
+trades = executor._load_open_trades()
+pnl, px, sold = executor._exit_and_book(
+    c3, "XOM", trades["XOM"], trades, 70, 48.0, 48.8, "SL")
+check("the residual sells", sold == 70)
+check("...and now the position is gone", "XOM" not in db.load_open_trades())
+closes = db.closed_trades(limit=500, include_excluded=True)
+check("two closes total, 30 + 70",
+      closes[-1]["qty"] == 70 and closes[-2]["qty"] == 30)
+
+
+# ── 8. an exit that fills nothing books nothing ────────────────────────────
+print("\n8  an exit that fills nothing leaves the position exactly as it was")
+reset_positions()
+c = FakeClient(fill_qty=25, fill_price=10.0, status="FILLED_ALL")
+executor.open_position(c, sig("KO", 10.0, 0.2), 25)
+before_closes = len(db.closed_trades(limit=500, include_excluded=True))
+
+c2 = FakeClient(fill_qty=0, fill_price=0, status="SUBMITTED",
+                holdings={"KO": 25})
+trades = executor._load_open_trades()
+pnl, px, sold = executor._exit_and_book(
+    c2, "KO", trades["KO"], trades, 25, 9.5, 9.8, "SL")
+check("nothing is reported sold", sold == 0)
+check("no close is booked",
+      len(db.closed_trades(limit=500, include_excluded=True)) == before_closes)
+held = db.load_open_trades().get("KO")
+check("the position is untouched", held and held["qty"] == 25)
+# The safe direction. Booking a close here would mark shares realized that the
+# broker still holds, and the next exit for them would be a short.
+check("...so a later exit still has shares to sell", held["qty"] == 25)
+
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

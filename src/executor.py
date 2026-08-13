@@ -12,6 +12,7 @@ import logging
 import math
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -596,6 +597,12 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
 # before it fills creates a holding that does not exist.
 _ENTRY_FILL_WAIT_SEC = 20.0
 
+# An exit waits less. The ORDER is the protection and it is live the moment it
+# is accepted, so this only decides how long we wait before recording what has
+# happened so far — and an unrecorded partial is corrected on the next tick,
+# whereas an unplaced exit is unprotected.
+_EXIT_FILL_WAIT_SEC = 8.0
+
 _FILL_POLL_ATTEMPTS = 3
 _FILL_POLL_SLEEP_SEC = 0.4
 
@@ -635,9 +642,22 @@ def _assert_still_held(client: MooClient, symbol: str, qty: int, reason: str) ->
         f"record is reconcile's job.")
 
 
+@dataclass(frozen=True)
+class ExitFill:
+    """What an exit actually achieved: a price, and how many shares moved.
+
+    Returning only the price — as this did — made every caller book the
+    quantity it had asked to sell, which on a partial fill is a close for
+    shares that are still held.
+    """
+    price: float
+    filled: int
+
+
 def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
-                         limit_px: float, quote_px: float, reason: str) -> float:
-    """Place an exit SELL and return the price the close should be BOOKED at.
+                         limit_px: float, quote_px: float,
+                         reason: str) -> "ExitFill":
+    """Place an exit SELL and report the fill price AND the quantity sold.
 
     Returns the broker's actual dealt_avg_price when it can be read within
     ~1.2s, else `quote_px` (the pre-order quote) so booking never blocks on the
@@ -652,30 +672,78 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
                                          kind='EXIT', intent=reason)
     order_id = placement.broker_order_id
     try:
-        for attempt in range(_FILL_POLL_ATTEMPTS):
-            fill = client.get_order_fill(order_id)
-            if fill:
-                px, got = fill["price"], fill["qty"]
-                if got < qty:
-                    # Partial: book the real average anyway (better than the
-                    # quote) and let reconcile pick up the residual, which is
-                    # the pre-existing policy for partially-filled exits.
-                    log.warning("%s %s: partial exit fill %d/%d @ $%.2f — "
-                                "booking at fill price, reconcile will re-sync "
-                                "the remainder", symbol, reason, got, qty, px)
-                slip_bps = (px - quote_px) / quote_px * 1e4 if quote_px else 0.0
-                log.info("%s %s: booked at actual fill $%.2f (quote was $%.2f, "
-                         "%+.1f bps)", symbol, reason, px, quote_px, slip_bps)
-                return px
-            if attempt < _FILL_POLL_ATTEMPTS - 1:
-                time.sleep(_FILL_POLL_SLEEP_SEC)
-        log.info("%s %s: fill price not readable yet — booking at quote $%.2f "
-                 "(order %s placed; reconcile will correct if it fills away)",
-                 symbol, reason, quote_px, order_id)
+        final = client.await_fill(placement.client_order_id,
+                                  timeout=_EXIT_FILL_WAIT_SEC)
+        got = int(final.get("filled_qty") or 0)
+        px = float(final.get("avg_fill_price") or 0) or None
+        if got > 0 and px:
+            if got < qty:
+                log.warning("%s %s: partial exit %d/%d @ $%.2f — booking %d "
+                            "sold; %d shares remain held and stay tracked",
+                            symbol, reason, got, qty, px, got, qty - got)
+            slip_bps = (px - quote_px) / quote_px * 1e4 if quote_px else 0.0
+            log.info("%s %s: booked at actual fill $%.2f (quote was $%.2f, "
+                     "%+.1f bps)", symbol, reason, px, quote_px, slip_bps)
+            return ExitFill(price=px, filled=got)
+        log.info("%s %s: nothing filled yet on order %s — booking nothing. The "
+                 "order stays live; the position stays held.",
+                 symbol, reason, order_id)
+        return ExitFill(price=quote_px, filled=0)
     except Exception as e:
-        log.warning("%s %s: fill-price lookup failed (%s) — booking at quote "
-                    "$%.2f", symbol, reason, e, quote_px)
-    return quote_px
+        # A lookup failure is not evidence about the sale. Reporting zero filled
+        # keeps the position held, which is the safe direction: the alternative
+        # is booking a close for shares that may still be ours, and the next
+        # exit for them would be a sell we do not hold — a short.
+        log.warning("%s %s: fill lookup failed (%s) — treating as unsold; the "
+                    "order remains tracked", symbol, reason, e)
+        return ExitFill(price=quote_px, filled=0)
+
+
+def _exit_and_book(client: MooClient, symbol: str, trade: dict, trades: dict,
+                   qty: int, limit_px: float, quote_px: float,
+                   reason: str) -> tuple[float, float, int]:
+    """Sell up to `qty`, book exactly what sold, and leave any residual held.
+
+    Returns (pnl, exit_price, sold).
+
+    This exists because the booking quantity and the decision to remove the
+    position were made in ten different places, each from the number the caller
+    ASKED to sell. A partial sale then booked a close for shares that had not
+    sold and removed a position that was still held — after which the software
+    believed it was flat while the broker was not, and the next exit for those
+    shares would have been a sell of stock we did not own. That is the shape of
+    every naked short in this account.
+
+    Both decisions now come from one number, the filled quantity, and the caller
+    must not remove the position itself.
+    """
+    fill = _sell_and_book_price(client, symbol, qty, limit_px, quote_px, reason)
+    return _book_exit(symbol, trade, trades, fill, reason)
+
+
+def _book_exit(symbol: str, trade: dict, trades: dict, fill: "ExitFill",
+               reason: str) -> tuple[float, float, int]:
+    """Book a completed sale and settle the position. Returns (pnl, price, sold).
+
+    Split from the sell so the stop-hit path can decide its label — BREAKEVEN
+    or SL — from the price the fill actually came back at, which is the rule
+    that path is written around, and still have the quantity and the removal
+    decided here rather than in the caller.
+    """
+    if fill.filled <= 0:
+        return 0.0, fill.price, 0
+
+    pnl = _close_and_log(symbol, trade, fill.filled, fill.price, reason)
+    remaining = int(trade.get("qty", 0)) - fill.filled
+    if remaining > 0:
+        trade["qty"] = remaining
+        trades[symbol] = trade
+        log.warning("%s: %d share(s) still held after a partial %s — the "
+                    "position stays open and protected", symbol, remaining, reason)
+    else:
+        trades.pop(symbol, None)
+    _save_open_trades(trades)
+    return pnl, fill.price, fill.filled
 
 
 def _close_and_log(symbol: str, trade: dict, qty: int, exit_price: float, reason: str) -> float:
@@ -905,8 +973,15 @@ def _is_stalled(trade: dict, last_price: float, atr_ref: float) -> bool:
 
 
 def _force_close(client: MooClient, symbol: str, trade: dict,
-                 last: float, reason: str) -> tuple[float, dict]:
+                 last: float, reason: str,
+                 trades: dict | None = None) -> tuple[float, dict]:
     """Cancel any bracket legs and market-sell the position. Returns (pnl, action).
+
+    `trades` is the live position map. It is passed in so the removal happens
+    HERE, from the quantity that actually sold, rather than in each of the nine
+    callers from the quantity that was requested — on a partial sale those are
+    different numbers, and popping on the second one leaves the software flat
+    while the broker still holds shares.
 
     2026-07-07: a bracket leg that FAILS to cancel may still be live — or may
     already have filled — so selling on top of it risks a double sell. Same
@@ -926,9 +1001,14 @@ def _force_close(client: MooClient, symbol: str, trade: dict,
     # site wraps per-symbol), the trade record stays tracked, and the exit is
     # retried next cycle. Note: any bracket legs were already cancelled above,
     # so until the retry succeeds the position is soft-tracked only.
-    exit_px = _sell_and_book_price(client, symbol, trade["qty"],
-                                   last * (1 - PROTECTIVE_EXIT_SLIP), last, reason)
-    pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, reason)
+    requested = int(trade["qty"])
+    pnl, exit_px, sold = _exit_and_book(
+        client, symbol, trade, trades if trades is not None else {},
+        requested, last * (1 - PROTECTIVE_EXIT_SLIP), last, reason)
+    if sold <= 0:
+        raise RuntimeError(
+            f"{symbol}: {reason} exit filled nothing — the position is still "
+            f"held and stays tracked; retrying next cycle")
     # An AI/sentinel risk-off close means "don't hold this today" — block the
     # scanner from buying it straight back this session (DELL churn, 2026-07-14).
     # EOD_FLAT joins them for a different reason: the flatten runs on the 5-min
@@ -938,7 +1018,7 @@ def _force_close(client: MooClient, symbol: str, trade: dict,
     if reason in ("GAP_RISK", "SMART_EXIT", "EOD_FLAT"):
         _set_reentry_cooldown(symbol, reason)
     return pnl, {"type": reason.lower(), "symbol": symbol, "price": exit_px,
-                 "qty": trade["qty"], "pnl": pnl}
+                 "qty": sold, "partial": sold < requested, "pnl": pnl}
 
 
 def _manage_one(client: MooClient, symbol: str, trade: dict,
@@ -994,9 +1074,11 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
             (float(trade["entry_price"]) - float(trade["stop_loss"])) / 3.5, 0.01
         )
         if _is_stalled(trade, last, atr_ref):
-            pnl, action = _force_close(client, symbol, trade, last, "STALL_OUT")
+            pnl, action = _force_close(client, symbol, trade, last, "STALL_OUT", trades)
             actions.append(action)
-            trades.pop(symbol)
+            # The position was removed inside _force_close, from the quantity
+            # that actually sold. Popping again here would discard a residual
+            # that a partial fill legitimately left held.
             log.info("Stall-out close (bracket): %s @ $%.2f (pnl=%.2f)", symbol, last, pnl)
             return
 
@@ -1011,14 +1093,13 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
                     log.warning("%s max-hold: cancel of bracket leg %s failed — "
                                 "deferring close to next cycle", symbol, oid)
                     return
-            exit_px = _sell_and_book_price(
-                client, symbol, trade["qty"],
+            pnl, exit_px, sold = _exit_and_book(
+                client, symbol, trade, trades, int(trade["qty"]),
                 last * (1 - PROTECTIVE_EXIT_SLIP), last, "MAX_HOLD")
-            pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "MAX_HOLD")
-            actions.append({"type": "max_hold_bracket", "symbol": symbol,
-                            "price": exit_px, "qty": trade["qty"],
-                            "age_days": age_days, "pnl": pnl})
-            trades.pop(symbol)
+            if sold:
+                actions.append({"type": "max_hold_bracket", "symbol": symbol,
+                                "price": exit_px, "qty": sold,
+                                "age_days": age_days, "pnl": pnl})
         return   # bracket path done — don't fall through to soft logic
 
     # --- SIMULATE / REAL-fallback (no bracket): soft-track via snapshot polling ---
@@ -1056,9 +1137,10 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
         # raised-to-entry stop (07-15 HPE: "BREAKEVEN" at -1.36R), and the
         # label decides whether the SL re-entry cooldown fires. Anything worse
         # than -0.25R is a stop-out, whatever the stop was raised to.
-        exit_px = _sell_and_book_price(
-            client, symbol, trade["qty"],
+        fill = _sell_and_book_price(
+            client, symbol, int(trade["qty"]),
             last * (1 - PROTECTIVE_EXIT_SLIP), last, reason)
+        exit_px = fill.price
         # Relabel AFTER the fill is known — the rule above is explicitly about
         # "the price the close is actually booked at", and since 2026-07-27 that
         # is the broker's fill, not the pre-order quote.
@@ -1068,10 +1150,12 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
             _loss_r = ((exit_px - _entry) / _risk) if _risk > 0 else 0.0
             if _loss_r <= -0.25 or (_risk <= 0 and exit_px < _entry * 0.995):
                 reason = "SL"
-        pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, reason)
-        actions.append({"type": "stop_hit", "symbol": symbol, "price": exit_px,
-                        "qty": trade["qty"], "stop": trade["stop_loss"], "pnl": pnl})
-        trades.pop(symbol)
+        stop_level = trade["stop_loss"]
+        pnl, exit_px, sold = _book_exit(symbol, trade, trades, fill, reason)
+        if sold:
+            actions.append({"type": "stop_hit", "symbol": symbol,
+                            "price": exit_px, "qty": sold,
+                            "stop": stop_level, "pnl": pnl})
         return
 
     # Fast-stop loop: protective checks (breakeven ratchet + soft stop) are done.
@@ -1086,9 +1170,11 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
         (float(trade["entry_price"]) - float(trade["stop_loss"])) / 3.5, 0.01
     )
     if _is_stalled(trade, last, atr_ref):
-        pnl, action = _force_close(client, symbol, trade, last, "STALL_OUT")
+        pnl, action = _force_close(client, symbol, trade, last, "STALL_OUT", trades)
         actions.append(action)
-        trades.pop(symbol)
+        # The position was removed inside _force_close, from the quantity
+        # that actually sold. Popping again here would discard a residual
+        # that a partial fill legitimately left held.
         log.info("Stall-out close: %s @ $%.2f (pnl=%.2f)", symbol, last, pnl)
         return
 
@@ -1096,13 +1182,13 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
     opened = datetime.fromisoformat(trade["opened_at"])
     age_days = _business_days_between(opened, datetime.utcnow())
     if age_days >= runtime_config.max_hold_days():
-        exit_px = _sell_and_book_price(
-            client, symbol, trade["qty"],
+        pnl, exit_px, sold = _exit_and_book(
+            client, symbol, trade, trades, int(trade["qty"]),
             last * (1 - PROTECTIVE_EXIT_SLIP), last, "MAX_HOLD")
-        pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "MAX_HOLD")
-        actions.append({"type": "max_hold", "symbol": symbol, "price": exit_px,
-                        "qty": trade["qty"], "age_days": age_days, "pnl": pnl})
-        trades.pop(symbol)
+        if sold:
+            actions.append({"type": "max_hold", "symbol": symbol,
+                            "price": exit_px, "qty": sold,
+                            "age_days": age_days, "pnl": pnl})
         return
 
     # --- partial profit-taking ---
@@ -1122,33 +1208,35 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
             # TP1 — first 1/3
             if not trade.get("tp1_done") and last >= entry + _settings.tp1_r * risk \
                     and tranche < trade["qty"]:
-                exit_px = _sell_and_book_price(client, symbol, tranche,
-                                              last, last, "TP1")
-                pnl = _close_and_log(symbol, trade, tranche, exit_px, "TP1")
-                trade["qty"] -= tranche
-                trade["tp1_done"] = True
-                actions.append({"type": "scale_out", "tranche": 1, "symbol": symbol,
-                                "price": exit_px, "qty": tranche, "pnl": pnl})
+                pnl, exit_px, sold = _exit_and_book(
+                    client, symbol, trade, trades, tranche, last, last, "TP1")
+                # tp1_done only when the tranche actually sold. Marking it on a
+                # request would skip TP1 forever after a partial fill.
+                if sold:
+                    trade["tp1_done"] = True
+                    actions.append({"type": "scale_out", "tranche": 1,
+                                    "symbol": symbol, "price": exit_px,
+                                    "qty": sold, "pnl": pnl})
             # TP2 — second 1/3 (may also fire this same tick if price is already
             # through both levels, matching the backtest's per-bar sequential check)
             if trade.get("tp1_done") and not trade.get("tp2_done") \
                     and last >= entry + _settings.tp2_r * risk and tranche < trade["qty"]:
-                exit_px = _sell_and_book_price(client, symbol, tranche,
-                                              last, last, "TP2")
-                pnl = _close_and_log(symbol, trade, tranche, exit_px, "TP2")
-                trade["qty"] -= tranche
-                trade["tp2_done"] = True
-                actions.append({"type": "scale_out", "tranche": 2, "symbol": symbol,
-                                "price": exit_px, "qty": tranche, "pnl": pnl})
+                pnl, exit_px, sold = _exit_and_book(
+                    client, symbol, trade, trades, tranche, last, last, "TP2")
+                if sold:
+                    trade["tp2_done"] = True
+                    actions.append({"type": "scale_out", "tranche": 2,
+                                    "symbol": symbol, "price": exit_px,
+                                    "qty": sold, "pnl": pnl})
         # runner exits WHOLE at the single take-profit (no trail) — same full-TP
         # close the backtest books for the remaining lot.
         if last >= trade["take_profit"] and trade["qty"] > 0:
-            exit_px = _sell_and_book_price(client, symbol, trade["qty"],
-                                          last, last, "TP")
-            pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "TP")
-            actions.append({"type": "tp_full", "symbol": symbol, "price": exit_px,
-                            "qty": trade["qty"], "pnl": pnl})
-            trades.pop(symbol)
+            pnl, exit_px, sold = _exit_and_book(
+                client, symbol, trade, trades, int(trade["qty"]),
+                last, last, "TP")
+            if sold:
+                actions.append({"type": "tp_full", "symbol": symbol,
+                                "price": exit_px, "qty": sold, "pnl": pnl})
             return
         return   # scale-out path done — skip the legacy half-close + trail below
 
@@ -1161,12 +1249,11 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
     # remaining live↔backtest divergence. (Positions opened before this change
     # with half_closed=True simply ride their remainder to this same full TP.)
     if last >= trade["take_profit"]:
-        exit_px = _sell_and_book_price(client, symbol, trade["qty"],
-                                      last, last, "TP")
-        pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "TP")
-        actions.append({"type": "tp_full", "symbol": symbol, "price": exit_px,
-                        "qty": trade["qty"], "pnl": pnl})
-        trades.pop(symbol)
+        pnl, exit_px, sold = _exit_and_book(
+            client, symbol, trade, trades, int(trade["qty"]), last, last, "TP")
+        if sold:
+            actions.append({"type": "tp_full", "symbol": symbol,
+                            "price": exit_px, "qty": sold, "pnl": pnl})
         return
 
 
@@ -1246,9 +1333,11 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                 continue   # halted/anomalous — re-check next scan, don't sell at $0
             try:
                 pnl, action = _force_close(client, symbol, trades[symbol],
-                                           last, "BLACKLIST")
+                                           last, "BLACKLIST", trades)
                 actions.append(action)
-                trades.pop(symbol)
+                # The position was removed inside _force_close, from the quantity
+                # that actually sold. Popping again here would discard a residual
+                # that a partial fill legitimately left held.
                 log.warning("Blacklist auto-close: %s @ $%.2f (pnl=%.2f)",
                             symbol, last, pnl)
                 # Feedback 铁律: force-closing a real position must be visible.
@@ -1287,9 +1376,11 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                 continue   # halted/anomalous — don't sell at $0, re-check next scan
             try:
                 pnl, action = _force_close(client, symbol, trades[symbol],
-                                           last, "GAP_RISK")
+                                           last, "GAP_RISK", trades)
                 actions.append(action)
-                trades.pop(symbol)
+                # The position was removed inside _force_close, from the quantity
+                # that actually sold. Popping again here would discard a residual
+                # that a partial fill legitimately left held.
                 log.warning("Gap-sentinel close: %s @ $%.2f (pnl=%.2f) — %s",
                             symbol, last, pnl, reason)
                 try:
@@ -1324,9 +1415,11 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                 continue
             try:
                 pnl, action = _force_close(client, symbol, trades[symbol],
-                                           last, "SMART_EXIT")
+                                           last, "SMART_EXIT", trades)
                 actions.append(action)
-                trades.pop(symbol)
+                # The position was removed inside _force_close, from the quantity
+                # that actually sold. Popping again here would discard a residual
+                # that a partial fill legitimately left held.
                 log.warning("Smart-exit close: %s @ $%.2f (pnl=%.2f) — %s",
                             symbol, last, pnl, reason)
                 try:
@@ -1359,9 +1452,11 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                 continue
             try:
                 pnl, action = _force_close(client, symbol, trades[symbol],
-                                           last, "EOD_FLAT")
+                                           last, "EOD_FLAT", trades)
                 actions.append(action)
-                trades.pop(symbol)
+                # The position was removed inside _force_close, from the quantity
+                # that actually sold. Popping again here would discard a residual
+                # that a partial fill legitimately left held.
                 log.warning("News-driven EOD flatten: %s @ $%.2f (pnl=%.2f)",
                             symbol, last, pnl)
                 try:
@@ -1402,9 +1497,11 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                 continue
             try:
                 pnl, action = _force_close(client, symbol, trades[symbol],
-                                           last, "OVER_CAP")
+                                           last, "OVER_CAP", trades)
                 actions.append(action)
-                trades.pop(symbol)
+                # The position was removed inside _force_close, from the quantity
+                # that actually sold. Popping again here would discard a residual
+                # that a partial fill legitimately left held.
                 log.warning("Over-cap flush: %s (R=%.2f) @ $%.2f (pnl=%.2f)",
                             symbol, r_now, last, pnl)
             except Exception as e:
@@ -1442,15 +1539,17 @@ def close_position(client: MooClient, symbol: str, reason: str = "MANUAL") -> di
         if oid:
             ok = client.cancel_order(oid)
             log.info("close_position(%s): cancel %s leg %s → %s", reason, key, oid, ok)
-    exit_px = _sell_and_book_price(client, symbol, trade["qty"],
-                                   last * (1 - PROTECTIVE_EXIT_SLIP), last, reason)
-    pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, reason)
-    trades.pop(symbol)
-    _save_open_trades(trades)
+    requested = int(trade["qty"])
+    pnl, exit_px, sold = _exit_and_book(
+        client, symbol, trade, trades, requested,
+        last * (1 - PROTECTIVE_EXIT_SLIP), last, reason)
+    if sold <= 0:
+        raise RuntimeError(f"{symbol}: {reason} exit filled nothing — the "
+                           f"position is still held and stays tracked")
     if reason in ("GAP_RISK", "SMART_EXIT"):
         _set_reentry_cooldown(symbol, reason)
-    return {"type": reason.lower(), "symbol": symbol, "qty": trade["qty"],
-            "price": exit_px, "pnl": pnl}
+    return {"type": reason.lower(), "symbol": symbol, "qty": sold,
+            "partial": sold < requested, "price": exit_px, "pnl": pnl}
 
 
 def manual_close(client: MooClient, symbol: str) -> dict:
@@ -1475,13 +1574,15 @@ def manual_close(client: MooClient, symbol: str) -> dict:
             ok = client.cancel_order(oid)
             log.info("manual_close: cancel %s leg %s → %s", key, oid, ok)
 
-    exit_px = _sell_and_book_price(client, symbol, trade["qty"],
-                                   last * (1 - PROTECTIVE_EXIT_SLIP), last, "MANUAL")
-    pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "MANUAL")
-    trades.pop(symbol)
-    _save_open_trades(trades)
-    return {"type": "manual_close", "symbol": symbol, "qty": trade["qty"],
-            "price": exit_px, "pnl": pnl}
+    requested = int(trade["qty"])
+    pnl, exit_px, sold = _exit_and_book(
+        client, symbol, trade, trades, requested,
+        last * (1 - PROTECTIVE_EXIT_SLIP), last, "MANUAL")
+    if sold <= 0:
+        raise RuntimeError(f"{symbol}: the manual close filled nothing — the "
+                           f"position is still held and stays tracked")
+    return {"type": "manual_close", "symbol": symbol, "qty": sold,
+            "partial": sold < requested, "price": exit_px, "pnl": pnl}
 
 
 def edit_stop(client: MooClient | None, symbol: str, new_stop: float) -> dict:
