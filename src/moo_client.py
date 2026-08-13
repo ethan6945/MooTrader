@@ -121,6 +121,13 @@ def _env_enum() -> TrdEnv:
     return broker_binding.require("a broker call").trd_env
 
 
+def start_protocol_assert(what: str) -> None:
+    """Lease and session only. Separate from the order gate so an order can be
+    RECORDED before it is refused — see _place."""
+    from . import start_protocol
+    start_protocol.assert_may_trade(what)
+
+
 def _assert_may_trade(what: str) -> None:
     """Refuse a broker mutation unless this process still holds its lease.
 
@@ -675,7 +682,9 @@ class MooClient:
         all: the call that neither succeeds nor fails looks exactly like the
         call that never happened, and the retry buys twice.
         """
-        _assert_may_trade(f"placing a {side} order for {symbol}")
+        # Lease and session first: without them there is no run to attribute an
+        # order to, so there is nothing to record either.
+        start_protocol_assert(f"placing a {side} order for {symbol}")
         rounded = round(price, 2) if price >= 1 else round(price, 4)
         aux = None if aux_price is None else (
             round(aux_price, 2) if aux_price >= 1 else round(aux_price, 4))
@@ -683,6 +692,21 @@ class MooClient:
         coid = order_log.begin(symbol=symbol, side=str(side).split(".")[-1],
                                kind=kind, requested_qty=int(qty),
                                limit_price=rounded, aux_price=aux, intent=intent)
+
+        # The order gate is checked AFTER the intent is recorded, so a refused
+        # order is still written down as FAILED_LOCAL — never sent, but visible.
+        #
+        # Checking it first meant a staging run left no trace of what the
+        # strategy had wanted to do: the whole point of running without order
+        # capability is to watch the decisions, and they were being discarded at
+        # the last step. FAILED_LOCAL already meant "we refused it ourselves";
+        # this is what it is for.
+        from . import order_gate
+        try:
+            order_gate.require(f"placing a {side} order for {symbol}")
+        except order_gate.OrdersNotPermitted as e:
+            order_log.failed_local(coid, str(e))
+            raise
         kwargs = dict(price=rounded, qty=qty, code=self._format_code(symbol),
                       trd_side=side, order_type=order_type,
                       trd_env=_env_enum(), acc_id=_acc_id(),

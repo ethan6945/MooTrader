@@ -303,5 +303,35 @@ check("the position is untouched", held and held["qty"] == 25)
 check("...so a later exit still has shares to sell", held["qty"] == 25)
 
 
+
+# ── 9. a refused order is still written down ───────────────────────────────
+#
+# The order gate used to be checked before the intent was recorded, so a
+# staging run left no trace of what the strategy had wanted to do — and
+# watching the decisions without sending them is the entire purpose of running
+# without order capability.
+print("\n9  an order the gate refuses is recorded as FAILED_LOCAL, never sent")
+order_gate.deny("staging-style run")
+c = FakeClient(fill_qty=10, fill_price=10.0)
+before = len(order_log.recent(limit=500))
+try:
+    c.place_limit_order("SPY", 10, 500.0, TrdSide.BUY)
+    check("the call is refused", False)
+except order_gate.OrdersNotPermitted:
+    check("the call is refused", True)
+
+after = order_log.recent(limit=500)
+check("the intent was recorded anyway", len(after) == before + 1)
+row = after[0]
+check("...as FAILED_LOCAL", row["state"] == "FAILED_LOCAL")
+check("...for the symbol and size that was wanted",
+      row["symbol"] == "SPY" and row["requested_qty"] == 10)
+check("...with the reason", "NOT permitted" in (row["last_error"] or ""))
+check("nothing reached the broker",
+      not any(k["code"].endswith("SPY") for k in c._trade.placed))
+check("...and it is not counted as live",
+      not any(o["client_order_id"] == row["client_order_id"]
+              for o in order_log.live_orders()))
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
