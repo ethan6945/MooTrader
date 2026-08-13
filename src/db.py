@@ -32,7 +32,7 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 DB_FILE = settings.root / "data" / "trader.db"
-SCHEMA_VERSION = 5          # v5: open_trades keyed by (account_id, symbol)
+SCHEMA_VERSION = 6          # v6: the orders table (state machine + idempotency)
 
 # kv_state keys that belong to a brokerage ACCOUNT rather than to the software.
 # Everything not listed here stays global (account_id=''): strategy params, AI
@@ -182,6 +182,68 @@ CREATE INDEX IF NOT EXISTS idx_sessions_open
 -- open_trades is defined at OPEN_TRADES_DDL above, beside the column list the
 -- v5 rebuild copies with. Spliced rather than restated so the two cannot drift.
 {OPEN_TRADES_DDL};
+
+-- ── Orders (v6) ─────────────────────────────────────────────────────────────
+-- Every order this software has ever asked for, whether or not it worked.
+--
+-- Until v6 there was no such record. A position row was written the instant
+-- place_order() returned, at the REQUESTED quantity and the LIMIT price, and
+-- that was the only trace an order had ever existed. Three consequences, all
+-- of which have happened:
+--
+--   * A partial fill left the local quantity higher than the broker's, so the
+--     stop and take-profit covered shares we did not own.
+--   * An order that never filled left a position that did not exist — the
+--     phantom HPE 64 of 2026-08-11, which reconcile later booked as a sale.
+--   * A call that timed out AFTER the broker accepted it looked identical to
+--     one that never arrived, so a retry bought twice.
+--
+-- The row is written BEFORE the broker is called and flushed to disk. That
+-- ordering is the whole design: a crash between the write and the call leaves
+-- a record saying "this may have been sent", which is recoverable, instead of
+-- silence, which is not.
+--
+-- client_order_id is ours, generated before the call and passed to the broker
+-- as `remark` — which comes back on order queries, so an order whose result we
+-- never saw can still be claimed by name rather than guessed at from
+-- (symbol, side, quantity, roughly when).
+CREATE TABLE IF NOT EXISTS orders (
+    client_order_id TEXT PRIMARY KEY,
+    account_id      TEXT NOT NULL,
+    session_id      TEXT NOT NULL,     -- an order happens in exactly one run
+    symbol          TEXT NOT NULL,
+    side            TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    kind            TEXT NOT NULL,     -- ENTRY|STACK|STOP|TP|EXIT|SCALE_OUT
+    intent          TEXT,              -- why this order was asked for
+    requested_qty   INTEGER NOT NULL,
+    limit_price     REAL,
+    aux_price       REAL,
+    -- PENDING_SUBMIT  written; the broker has not been called yet
+    -- SUBMITTED       the broker accepted it and gave us an id
+    -- UNKNOWN         the call failed in a way that does NOT prove the order
+    --                 never arrived. Must be resolved by asking, never assumed
+    -- REJECTED        the broker refused it; nothing reached the book
+    -- FAILED_LOCAL    we refused it ourselves; never sent
+    -- PARTIAL         some quantity filled
+    -- FILLED / CANCELLED / EXPIRED   terminal
+    state           TEXT NOT NULL,
+    broker_order_id TEXT,
+    filled_qty      INTEGER NOT NULL DEFAULT 0,
+    avg_fill_price  REAL,
+    created_at      TEXT NOT NULL,
+    submitted_at    TEXT,
+    resolved_at     TEXT,
+    last_polled_at  TEXT,
+    last_error      TEXT,
+    extra           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orders_account ON orders(account_id);
+CREATE INDEX IF NOT EXISTS idx_orders_symbol  ON orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_orders_broker  ON orders(broker_order_id);
+-- The recovery query: everything that has not reached a terminal state. Partial
+-- rather than full so a growing history of settled orders costs nothing.
+CREATE INDEX IF NOT EXISTS idx_orders_live ON orders(state)
+    WHERE state IN ('PENDING_SUBMIT', 'SUBMITTED', 'UNKNOWN', 'PARTIAL');
 
 -- Scoped key-value state. account_id='' is the GLOBAL scope (strategy params,
 -- AI provider, health probes, telegram cursor) — things that belong to the

@@ -29,7 +29,7 @@ from moomoo import (
     RET_OK,
 )
 
-from . import broker_binding
+from . import broker_binding, order_log
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -627,60 +627,124 @@ class MooClient:
         ]
         return {c.split(".")[-1] for c in pending["code"].tolist()}
 
-    def place_limit_order(
-        self, symbol: str, qty: int, price: float, side: TrdSide
-    ) -> str:
+    # Messages that mean "we did not get an answer", as opposed to "the answer
+    # was no". The distinction decides whether a failure is REJECTED (evidence
+    # that nothing reached the order book) or UNKNOWN (no evidence either way).
+    # Getting it wrong in the safe direction costs one extra broker query; wrong
+    # in the other direction is a duplicate order.
+    _AMBIGUOUS = ("timeout", "timed out", "connection", "disconnect", "broken",
+                  "reset", "unreachable", "no response", "网络", "超时")
+
+    def _place(self, *, symbol: str, qty: int, price: float, side: TrdSide,
+               kind: str, order_type=OrderType.NORMAL,
+               aux_price: float | None = None, intent: str = "") -> str:
+        """Place one order, recorded before it is sent.
+
+        The order of operations is the point. order_log.begin() commits a row
+        and flushes it, and only then is the broker called — so a crash or a
+        dropped connection leaves a record saying "this may exist", which can be
+        resolved by asking. Recording afterwards cannot express that case at
+        all: the call that neither succeeds nor fails looks exactly like the
+        call that never happened, and the retry buys twice.
+        """
         _assert_may_trade(f"placing a {side} order for {symbol}")
-        # US stocks require 2-decimal precision for price >= $1.
         rounded = round(price, 2) if price >= 1 else round(price, 4)
-        ret, data = self.trade.place_order(
-            price=rounded,
-            qty=qty,
-            code=self._format_code(symbol),
-            trd_side=side,
-            order_type=OrderType.NORMAL,
-            trd_env=_env_enum(), acc_id=_acc_id(),
-        )
+        aux = None if aux_price is None else (
+            round(aux_price, 2) if aux_price >= 1 else round(aux_price, 4))
+
+        coid = order_log.begin(symbol=symbol, side=str(side).split(".")[-1],
+                               kind=kind, requested_qty=int(qty),
+                               limit_price=rounded, aux_price=aux, intent=intent)
+        kwargs = dict(price=rounded, qty=qty, code=self._format_code(symbol),
+                      trd_side=side, order_type=order_type,
+                      trd_env=_env_enum(), acc_id=_acc_id(),
+                      # Our id, carried by the broker and returned on order
+                      # queries — so an order whose result we never saw can be
+                      # claimed by name instead of guessed at from its shape.
+                      remark=coid)
+        if aux is not None:
+            kwargs["aux_price"] = aux
+
+        try:
+            ret, data = self.trade.place_order(**kwargs)
+        except Exception as e:
+            order_log.unknown(coid, f"{type(e).__name__}: {e}")
+            raise RuntimeError(
+                f"place_order for {symbol} failed without an answer ({e}) — "
+                f"order {coid} recorded UNKNOWN; it will be resolved by "
+                f"querying the broker, not by assuming") from e
+
         if ret != RET_OK:
-            raise RuntimeError(f"place_order failed for {symbol}: {data}")
+            msg = str(data)
+            if any(m in msg.lower() for m in self._AMBIGUOUS):
+                order_log.unknown(coid, msg)
+            else:
+                order_log.rejected(coid, msg)
+            raise RuntimeError(f"place_order failed for {symbol}: {msg}")
+
         order_id = str(data.iloc[0]["order_id"]).strip()
-        # 2026-07-09: an order_id of 0/empty means the broker never actually
-        # accepted the order (the OpenD-rs gateway returned a need_op_confirm
-        # stub with order_id=0, then silently purged it — every "buy" became a
-        # phantom entry that reconcile later booked as a fake MANUAL_SELL).
-        # Treat it as a placement failure so no position is ever recorded.
+        # 2026-07-09: an order_id of 0/empty came from an OpenD-rs gateway that
+        # returned a need_op_confirm stub and then purged it. This used to be
+        # treated as a clean failure, which is a guess — the broker answered
+        # with something meaningless, not with "no". UNKNOWN says that, and the
+        # recovery sweep settles it.
         if order_id in ("", "0", "None", "nan"):
+            order_log.unknown(coid, f"broker returned order_id={order_id!r}")
             raise RuntimeError(
                 f"place_order for {symbol} returned invalid order_id={order_id!r} "
-                "— order not accepted by broker/gateway, treating as failed"
-            )
+                f"— order {coid} recorded UNKNOWN pending a broker query")
+
+        order_log.submitted(coid, order_id)
         _note_gated_op_ok()
-        log.info("Placed %s %s qty=%s price=%.2f order_id=%s", side, symbol, qty, price, order_id)
+        log.info("Placed %s %s qty=%s price=%.2f order_id=%s (%s)",
+                 side, symbol, qty, price, order_id, coid)
         return order_id
 
-    def place_stop_loss(self, symbol: str, qty: int, stop_price: float) -> str:
+    def history_orders(self, start: str, end: str):
+        """Every order in the window, live and settled, with `remark` intact.
+
+        Both endpoints, concatenated. An order placed minutes ago may not have
+        reached the history endpoint yet while sitting plainly in the live one,
+        and the recovery sweep asking only history would conclude it never
+        existed — about an order that is working at the broker right now.
+
+        Note `end` is INCLUSIVE on this API. That caused a double-count when
+        these rows were summed by month; here they are matched by id, so a row
+        appearing twice is harmless and the wider window is worth more.
+        """
+        frames = []
+        for fn, kwargs in (
+            (self.trade.order_list_query, {}),
+            (self.trade.history_order_list_query, {"start": start, "end": end}),
+        ):
+            try:
+                ret, data = fn(trd_env=_env_enum(), acc_id=_acc_id(), **kwargs)
+                if ret == RET_OK and data is not None and len(data):
+                    frames.append(data)
+            except Exception as e:
+                log.warning("order query failed (%s): %s", fn.__name__, e)
+        if not frames:
+            return pd.DataFrame()
+        out = pd.concat(frames, ignore_index=True)
+        if "order_id" in out.columns:
+            out = out.drop_duplicates(subset=["order_id"], keep="last")
+        return out
+
+    def place_limit_order(
+        self, symbol: str, qty: int, price: float, side: TrdSide,
+        *, kind: str | None = None, intent: str = ""
+    ) -> str:
+        return self._place(symbol=symbol, qty=qty, price=price, side=side,
+                           kind=kind or ("ENTRY" if side == TrdSide.BUY else "EXIT"),
+                           intent=intent)
+
+    def place_stop_loss(self, symbol: str, qty: int, stop_price: float,
+                        *, intent: str = "") -> str:
         """Sell-stop to close a long position."""
-        _assert_may_trade(f"placing a stop for {symbol}")
-        rounded = round(stop_price, 2) if stop_price >= 1 else round(stop_price, 4)
-        ret, data = self.trade.place_order(
-            price=rounded,
-            qty=qty,
-            code=self._format_code(symbol),
-            trd_side=TrdSide.SELL,
-            order_type=OrderType.STOP,
-            aux_price=rounded,
-            trd_env=_env_enum(), acc_id=_acc_id(),
-        )
-        if ret != RET_OK:
-            raise RuntimeError(f"stop-loss failed for {symbol}: {data}")
-        order_id = str(data.iloc[0]["order_id"]).strip()
-        if order_id in ("", "0", "None", "nan"):
-            raise RuntimeError(
-                f"stop-loss for {symbol} returned invalid order_id={order_id!r} "
-                "— order not accepted by broker/gateway, treating as failed"
-            )
-        _note_gated_op_ok()
-        return order_id
+        return self._place(symbol=symbol, qty=qty, price=stop_price,
+                           side=TrdSide.SELL, kind="STOP",
+                           order_type=OrderType.STOP, aux_price=stop_price,
+                           intent=intent)
 
     # ---------- helpers ----------
     @staticmethod

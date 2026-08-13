@@ -61,6 +61,7 @@ CHECKS = {
     "qualmig":    ("scripts/test_quality_migration.py",  True,  True,  180),
     "startproto": ("scripts/test_start_protocol.py",   True,  True,  420),
     "binding":    ("scripts/test_broker_binding.py",   True,  True,  120),
+    "orderlog":   ("scripts/test_order_log.py",       True,  True,  180),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

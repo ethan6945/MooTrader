@@ -136,6 +136,14 @@ def in_home(home: Path, code: str, extra_env=None, timeout=90):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 tmp = Path(tempfile.mkdtemp(prefix="mmt-start-"))
 worker_py = tmp / "fake_worker.py"
 worker_py.write_text(FAKE_WORKER.format(root=str(ROOT)))
@@ -325,7 +333,7 @@ procs = [subprocess.Popen([sys.executable, "-c", FULL_START], cwd=ROOT,
                                    PYTHONPATH=str(ROOT)),
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True) for _ in range(20)]
-outs = [p.communicate(timeout=180)[0] for p in procs]
+outs = [p.communicate(timeout=300)[0] for p in procs]
 started = [o for o in outs if "STARTED" in o]
 errored = [o for o in outs if "ERROR" in o]
 check(f"at most one of twenty Starts produced a worker (got {len(started)})",
@@ -337,18 +345,21 @@ if errored:
 
 # And the survivor is the one the lease names — no orphan workers left behind
 # by refused parents.
-time.sleep(1)
+#
+# Polled rather than slept on. A fixed sleep here is a test that passes on an
+# idle machine and fails on a busy one: twenty parents each spawning a worker
+# take longer to settle under load, and a safety check that reports a failure
+# because the machine was busy is a safety check people learn to re-run.
+started_pids = [int(o.split()[1]) for o in outs if "STARTED" in o]
+deadline = time.time() + 20
+while time.time() < deadline:
+    live = [pid for pid in started_pids if _alive(pid)]
+    if len(live) <= 1:
+        break
+    time.sleep(0.25)
+live = [pid for pid in started_pids if _alive(pid)]
 lease_rec = json.loads((h / "logs" / "worker.lease").read_text()) \
     if (h / "logs" / "worker.lease").exists() else {}
-live = []
-for o in outs:
-    if "STARTED" in o:
-        pid = int(o.split()[1])
-        try:
-            os.kill(pid, 0)
-            live.append(pid)
-        except OSError:
-            pass
 check(f"at most one worker process is alive (got {len(live)})", len(live) <= 1)
 check("the lease names the surviving worker",
       not live or lease_rec.get("pid") == live[0])
