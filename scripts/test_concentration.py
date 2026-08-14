@@ -193,5 +193,50 @@ notional, frac = concentration.symbol_exposure("AAPL")
 check("exposure is the committed cost", abs(notional - 4500) < 1e-6)
 check("...regardless of where the price is now", abs(frac - 0.45) < 1e-9)
 
+
+# ── 7. open losses count toward the drawdown ───────────────────────────────
+#
+# current_drawdown_pct measured realized equity only, so a portfolio down 30%
+# on everything it held reported 0% drawdown until something was sold. The
+# circuit breaker could not fire in the situation it exists for, and could
+# only fire once the damage was already booked.
+print("\n7  unrealised losses reach the drawdown breaker")
+from src import risk_manager                                  # noqa: E402
+
+reset()
+db.update_state({"budget_usd": 10000.0, "realized_pnl_total": 0.0,
+                 "peak_equity": 10000.0})
+risk_manager.set_live_equity(None)
+check("flat and even is 0% drawdown",
+      abs(risk_manager.current_drawdown_pct()) < 1e-9)
+
+# Holding a 25% loss, nothing sold.
+risk_manager.set_live_equity(7500.0)
+dd = risk_manager.current_drawdown_pct()
+check("a 25% open loss shows as a 25% drawdown", abs(dd - 25.0) < 1e-6)
+
+# The asymmetry: paper PROFIT does not raise the high-water mark, because a
+# gain that has not been sold is not a level to measure future losses from.
+risk_manager.set_live_equity(13000.0)
+check("a 30% open GAIN does not show a negative drawdown",
+      risk_manager.current_drawdown_pct() == 0.0)
+peak_before = float(db.get_state().get("peak_equity") or 0)
+risk_manager.current_drawdown_pct()
+check("...and does not move the peak",
+      abs(float(db.get_state().get("peak_equity") or 0) - peak_before) < 1e-9)
+
+# Realized losses still count when live equity is unknown.
+risk_manager.set_live_equity(None)
+db.update_state({"realized_pnl_total": -2000.0})
+check("a realized loss still shows without a live mark",
+      abs(risk_manager.current_drawdown_pct() - 20.0) < 1e-6)
+
+# And the worse of the two is what counts: realized -2,000 with the remaining
+# book down further should not report the smaller number.
+risk_manager.set_live_equity(7000.0)
+check("the worse of realized and marked equity is used",
+      abs(risk_manager.current_drawdown_pct() - 30.0) < 1e-6)
+risk_manager.set_live_equity(None)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

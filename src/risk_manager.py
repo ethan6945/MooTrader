@@ -268,6 +268,21 @@ def current_drawdown_pct() -> float:
         return 0.0
     realized = float(state.get("realized_pnl_total") or 0.0)
     equity = equity_baseline() + realized
+
+    # Open losses count. They did not before: equity was realized-only, so a
+    # portfolio down 30% on everything it held reported 0% drawdown until
+    # something was sold — the circuit breaker unable to fire in exactly the
+    # situation it exists for, and able to fire only after the damage was
+    # already booked.
+    #
+    # The asymmetry is deliberate. Unrealised LOSSES lower equity here, while
+    # unrealised GAINS never raise the peak (compute_peak_equity takes realized
+    # only). Paper profit that has not been sold is not a high-water mark to
+    # measure future losses against; paper loss is money currently gone.
+    live = _live_equity_cache.get("value")
+    if live is not None and live > 0:
+        equity = min(equity, float(live))
+
     if equity >= peak:
         return 0.0
     return (peak - equity) / peak * 100
