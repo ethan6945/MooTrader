@@ -594,6 +594,15 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
 
     trades[signal.symbol] = trade
     _save_open_trades(trades)
+    # This fill has now been applied — by creating (or extending) the position
+    # above. Without the mark, the settlement sweep would find filled_qty >
+    # applied_qty and add the same shares a second time.
+    try:
+        from . import fill_settler
+        fill_settler.mark_applied(placement.client_order_id, filled, entry_px)
+    except Exception as e:
+        log.error("%s: position written but the fill was not marked applied "
+                  "(%s) — the settlement sweep may duplicate it", signal.symbol, e)
     return trade
 
 
@@ -662,6 +671,7 @@ class ExitFill:
     """
     price: float
     filled: int
+    client_order_id: str | None = None
 
 
 def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
@@ -694,11 +704,13 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
             slip_bps = (px - quote_px) / quote_px * 1e4 if quote_px else 0.0
             log.info("%s %s: booked at actual fill $%.2f (quote was $%.2f, "
                      "%+.1f bps)", symbol, reason, px, quote_px, slip_bps)
-            return ExitFill(price=px, filled=got)
+            return ExitFill(price=px, filled=got,
+                            client_order_id=placement.client_order_id)
         log.info("%s %s: nothing filled yet on order %s — booking nothing. The "
                  "order stays live; the position stays held.",
                  symbol, reason, order_id)
-        return ExitFill(price=quote_px, filled=0)
+        return ExitFill(price=quote_px, filled=0,
+                        client_order_id=placement.client_order_id)
     except Exception as e:
         # A lookup failure is not evidence about the sale. Reporting zero filled
         # keeps the position held, which is the safe direction: the alternative
@@ -823,6 +835,14 @@ def _book_exit(symbol: str, trade: dict, trades: dict, fill: "ExitFill",
     else:
         trades.pop(symbol, None)
     _save_open_trades(trades)
+    if getattr(fill, "client_order_id", None):
+        try:
+            from . import fill_settler
+            fill_settler.mark_applied(fill.client_order_id, fill.filled,
+                                      fill.price)
+        except Exception as e:
+            log.error("%s: close booked but the fill was not marked applied "
+                      "(%s) — the settlement sweep may duplicate it", symbol, e)
     return pnl, fill.price, fill.filled
 
 
@@ -1346,6 +1366,7 @@ def manage_open_trades(client: MooClient) -> list[dict]:
     this from different scheduler threads; the lock keeps their load→mutate→
     save cycles on the open-trades store from clobbering each other."""
     with _TRADES_LOCK:
+        _settle_outstanding_fills()
         return _manage_open_trades_locked(client)
 
 
@@ -1365,6 +1386,9 @@ def manage_stops_only(client: MooClient) -> list[dict]:
     seconds of a bar. In REAL it doubles as a fast OCO-fill detector that frees the
     slot (and cancels the opposite leg) promptly."""
     with _TRADES_LOCK:
+        # Before reading positions, not after: a late fill may BE the position
+        # this pass is about to decide a stop for.
+        _settle_outstanding_fills()
         trades = _load_open_trades()
         if not trades:
             return []
@@ -1379,6 +1403,21 @@ def manage_stops_only(client: MooClient) -> list[dict]:
                               symbol, e)
         _save_open_trades(trades)
         return actions
+
+
+def _settle_outstanding_fills() -> None:
+    """Apply any fills that arrived after their order's wait window closed.
+
+    Runs at the top of every manage tick. Before this, a fill that landed one
+    second after the entry stopped waiting updated the orders table and nothing
+    else — the shares were at the broker and in no position, and the only thing
+    that would ever have noticed was a restart.
+    """
+    try:
+        from . import fill_settler
+        fill_settler.settle_all()
+    except Exception as e:
+        log.error("fill settlement sweep failed: %s", e)
 
 
 def _manage_open_trades_locked(client: MooClient) -> list[dict]:

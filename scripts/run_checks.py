@@ -65,6 +65,7 @@ CHECKS = {
     "partials":   ("scripts/test_partial_fills.py",    True,  True,  240),
     "cancels":    ("scripts/test_protective_cancel.py", True,  True,  240),
     "recovery":   ("scripts/test_startup_recovery.py", True,  True,  240),
+    "settler":    ("scripts/test_fill_settler.py",     True,  True,  240),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

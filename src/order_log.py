@@ -81,29 +81,75 @@ def new_client_order_id() -> str:
     return "mmt" + uuid.uuid4().hex[:17]
 
 
+class DuplicateIntent(Exception):
+    """A live order already serves this business intent."""
+
+    def __init__(self, existing: dict) -> None:
+        super().__init__(
+            f"{existing['symbol']}: order {existing['client_order_id']} is "
+            f"already {existing['state']} for the same intent "
+            f"({existing.get('intent_key')})")
+        self.existing = existing
+
+
+def intent_key(symbol: str, side: str, kind: str) -> str:
+    """The stable name of what an order is FOR.
+
+    client_order_id is new on every attempt — it correlates one request with
+    one answer, which is what it is for, and is exactly why it cannot prevent a
+    second request. "Buy AAPL as an entry" is the thing there may only be one
+    live order for, and it has to be the same string on the retry as on the
+    original or it prevents nothing.
+    """
+    return f"{symbol.upper()}:{side.upper()}:{kind.upper()}"
+
+
 def begin(*, symbol: str, side: str, kind: str, requested_qty: int,
           limit_price: float | None = None, aux_price: float | None = None,
-          intent: str = "", extra: dict | None = None) -> str:
+          intent: str = "", extra: dict | None = None,
+          enforce_unique_intent: bool = True) -> str:
     """Record the intent to send an order. Returns the client_order_id.
 
     Must be called BEFORE the broker. The row is committed and the database
     flushed before this returns, so that the record cannot be younger than the
     order it describes.
+
+    Raises DuplicateIntent when a live order already serves the same intent.
+    That check is the UNIQUE index, not a read-then-write in Python: two
+    threads, or a retry racing a slow first attempt, both pass a read check and
+    only the database can refuse them both.
     """
     from . import identity
     account_id = db._require_account_id("recording an order")
     session_id = identity.require_session_id()
     coid = new_client_order_id()
+    ikey = intent_key(symbol, side, kind) if enforce_unique_intent else None
 
-    with db.transaction() as c:
-        c.execute("""
-            INSERT INTO orders (client_order_id, account_id, session_id, symbol,
-                side, kind, intent, requested_qty, limit_price, aux_price,
-                state, created_at, extra)
-            VALUES (?,?,?,?,?,?,?,?,?,?, 'PENDING_SUBMIT', ?, ?)
-        """, (coid, account_id, session_id, symbol, side.upper(), kind.upper(),
-              intent, int(requested_qty), limit_price, aux_price, _now(),
-              json.dumps(extra, default=str) if extra else None))
+    try:
+        with db.transaction() as c:
+            c.execute("""
+                INSERT INTO orders (client_order_id, account_id, session_id,
+                    symbol, side, kind, intent, requested_qty, limit_price,
+                    aux_price, state, created_at, extra, intent_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?, 'PENDING_SUBMIT', ?, ?, ?)
+            """, (coid, account_id, session_id, symbol, side.upper(),
+                  kind.upper(), intent, int(requested_qty), limit_price,
+                  aux_price, _now(),
+                  json.dumps(extra, default=str) if extra else None, ikey))
+    except sqlite3.IntegrityError as e:
+        # SQLite names the COLUMNS in this message, not the index, so matching
+        # on the index name silently never fired and the IntegrityError went to
+        # the caller as an unexplained crash.
+        msg = str(e)
+        if ikey and "intent_key" in msg and "UNIQUE" in msg.upper():
+            existing = live_for_intent(ikey)
+            if existing:
+                log.error("refusing a second live order for %s — %s is still %s",
+                          ikey, existing["client_order_id"], existing["state"])
+                raise DuplicateIntent(existing) from e
+        raise
+    if False:
+        pass
     log.info("order %s PENDING_SUBMIT — %s %s %s", coid, side, requested_qty,
              symbol)
     return coid
@@ -185,6 +231,18 @@ def get(coid: str) -> dict | None:
     with db.conn() as c:
         r = c.execute("SELECT * FROM orders WHERE client_order_id = ?",
                       (coid,)).fetchone()
+    return dict(r) if r else None
+
+
+def live_for_intent(ikey: str) -> dict | None:
+    """The live order serving this intent, if there is one."""
+    acct = db._require_account_id("checking an intent")
+    with db.conn() as c:
+        r = c.execute(
+            f"SELECT * FROM orders WHERE account_id = ? AND intent_key = ? "
+            f"AND state IN ({','.join('?' * len(LIVE_STATES))}) "
+            f"ORDER BY created_at DESC LIMIT 1",
+            (acct, ikey, *LIVE_STATES)).fetchone()
     return dict(r) if r else None
 
 

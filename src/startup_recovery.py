@@ -117,7 +117,22 @@ def recover(client, *, halt_on_unresolved: bool = True) -> dict:
             # we can see, and that is not something to resolve by deciding.
             unresolved.append(coid)
 
+    # Settling the ORDERS is only half of it: an order that filled while we were
+    # down has to reach the position and the ledger too, or recovery reports a
+    # tidy set of FILLED rows describing shares that appear in no holding.
+    try:
+        from . import fill_settler
+        settled = fill_settler.settle_all()
+        if settled["applied"]:
+            log.warning("startup recovery: applied %d share(s) from %d order(s) "
+                        "that filled while this software was not running",
+                        settled["applied"], settled["orders"])
+    except Exception as e:
+        log.error("startup recovery: could not apply fills to positions: %s", e)
+        settled = {"applied": 0, "orders": 0, "failures": [{"error": str(e)}]}
+
     result = {"checked": len(live_before), "complete": True,
+              "fills_applied": settled["applied"],
               "resolved": summary.get("resolved", 0),
               "never_landed": len(never_landed),
               "unresolved": unresolved,

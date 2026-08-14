@@ -689,9 +689,20 @@ class MooClient:
         aux = None if aux_price is None else (
             round(aux_price, 2) if aux_price >= 1 else round(aux_price, 4))
 
-        coid = order_log.begin(symbol=symbol, side=str(side).split(".")[-1],
-                               kind=kind, requested_qty=int(qty),
-                               limit_price=rounded, aux_price=aux, intent=intent)
+        try:
+            coid = order_log.begin(symbol=symbol, side=str(side).split(".")[-1],
+                                   kind=kind, requested_qty=int(qty),
+                                   limit_price=rounded, aux_price=aux,
+                                   intent=intent)
+        except order_log.DuplicateIntent as e:
+            # A live order already serves this intent. Sending a second one is
+            # how the same shares get bought — or sold — twice; the first has to
+            # reach a terminal state before another can take its place. Callers
+            # wrap per-symbol, so this defers rather than crashing the pass.
+            raise RuntimeError(
+                f"{symbol}: refusing a second {kind} order while "
+                f"{e.existing['client_order_id']} is still "
+                f"{e.existing['state']} — settle or cancel it first") from e
 
         # The order gate is checked AFTER the intent is recorded, so a refused
         # order is still written down as FAILED_LOCAL — never sent, but visible.

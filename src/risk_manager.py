@@ -661,6 +661,10 @@ MANUAL_RELEASE_REASONS = (
     "unresolved orders after restart",
     "broker order query incomplete",
     "position reconciliation failed",
+    # More sold than held. Whatever caused it — two bracket legs filling, a
+    # trade placed by hand — the books and the account disagree about what is
+    # owned, and no amount of waiting settles that.
+    "oversold position",
 )
 
 

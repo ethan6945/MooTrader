@@ -219,14 +219,31 @@ check("it is no longer live", not any(o["client_order_id"] == coid
 # Matching is by remark, not by shape. This is the case a heuristic gets wrong:
 # a retry sitting beside the original, identical in symbol, side and quantity.
 c, ft = fresh_client("ok")
-c.place_limit_order("DELL", 7, 100.0, TrdSide.BUY)
-first = ft.calls[-1]["remark"]
-c.place_limit_order("DELL", 7, 100.0, TrdSide.BUY)
-second = ft.calls[-1]["remark"]
+# Two identical orders, created directly rather than through place_limit_order:
+# the intent constraint now REFUSES the second, which is the point of it. This
+# section is about what happens when two such orders nonetheless exist — an
+# UNKNOWN and its retry — so it builds them explicitly.
+first = order_log.begin(symbol="DELL", side="BUY", kind="ENTRY",
+                        requested_qty=7, limit_price=100.0,
+                        enforce_unique_intent=False)
+order_log.submitted(first, "BRK1")
+ft.rows.append({"order_id": "BRK1", "remark": first, "code": "US.DELL",
+                "qty": 7, "dealt_qty": 0, "dealt_avg_price": 0,
+                "order_status": "SUBMITTED"})
+second = order_log.begin(symbol="DELL", side="BUY", kind="ENTRY",
+                         requested_qty=7, limit_price=100.0,
+                         enforce_unique_intent=False)
+order_log.submitted(second, "BRK2")
+ft.rows.append({"order_id": "BRK2", "remark": second, "code": "US.DELL",
+                "qty": 7, "dealt_qty": 0, "dealt_avg_price": 0,
+                "order_status": "SUBMITTED"})
 check("two identical orders get different ids", first != second)
-ft.rows[0].update({"order_status": "FILLED_ALL", "dealt_qty": 7,
-                   "dealt_avg_price": 99.9})
-ft.rows[1].update({"order_status": "CANCELLED_ALL", "dealt_qty": 0})
+for r in ft.rows:
+    if r["remark"] == first:
+        r.update({"order_status": "FILLED_ALL", "dealt_qty": 7,
+                  "dealt_avg_price": 99.9})
+    elif r["remark"] == second:
+        r.update({"order_status": "CANCELLED_ALL", "dealt_qty": 0})
 order_log.reconcile_live(c)
 check("the filled one is the one that filled",
       order_log.get(first)["state"] == "FILLED")

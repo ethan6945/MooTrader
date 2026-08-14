@@ -32,7 +32,7 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 DB_FILE = settings.root / "data" / "trader.db"
-SCHEMA_VERSION = 6          # v6: the orders table (state machine + idempotency)
+SCHEMA_VERSION = 7          # v7: applied-fill tracking + intent keys
 
 # kv_state keys that belong to a brokerage ACCOUNT rather than to the software.
 # Everything not listed here stays global (account_id=''): strategy params, AI
@@ -231,6 +231,26 @@ CREATE TABLE IF NOT EXISTS orders (
     broker_order_id TEXT,
     filled_qty      INTEGER NOT NULL DEFAULT 0,
     avg_fill_price  REAL,
+    -- What the broker has filled (filled_qty) versus what THIS software has
+    -- already applied to the position, the ledger and the PnL.
+    --
+    -- Without the second number an order is a snapshot, not a settlement: a
+    -- fill arriving after the entry's wait window updated filled_qty and
+    -- nothing else, so the shares existed at the broker and in this table and
+    -- in no position. And re-reading the same cumulative figure would apply it
+    -- twice. The delta between the two is the only thing that may be applied,
+    -- and it is bumped in the SAME transaction as the position it moved.
+    --
+    -- Per-deal ids would be better and are not available: the broker answers
+    -- "Paper trading does not support deal data" to both deal_list_query and
+    -- history_deal_list_query, so order-level cumulative totals are the finest
+    -- grain this account can offer.
+    applied_qty      INTEGER NOT NULL DEFAULT 0,
+    applied_notional REAL NOT NULL DEFAULT 0,
+    -- The business intent this order serves — "buy AAPL as an entry" — stable
+    -- across retries, unlike client_order_id which is new every attempt. One
+    -- live order per intent; see order_log.claim_intent().
+    intent_key      TEXT,
     created_at      TEXT NOT NULL,
     submitted_at    TEXT,
     resolved_at     TEXT,
@@ -245,6 +265,16 @@ CREATE INDEX IF NOT EXISTS idx_orders_broker  ON orders(broker_order_id);
 -- rather than full so a growing history of settled orders costs nothing.
 CREATE INDEX IF NOT EXISTS idx_orders_live ON orders(state)
     WHERE state IN ('PENDING_SUBMIT', 'SUBMITTED', 'UNKNOWN', 'PARTIAL');
+-- At most ONE live order per business intent. A UNIQUE index rather than a
+-- check in code: two threads, or a retry racing a slow first attempt, both pass
+-- a read-then-write check and the database is the only thing that can refuse
+-- them both. Partial, so settled orders do not block the next honest attempt.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_one_live_per_intent
+    ON orders(account_id, intent_key)
+    WHERE intent_key IS NOT NULL
+      AND state IN ('PENDING_SUBMIT', 'SUBMITTED', 'UNKNOWN', 'PARTIAL');
+CREATE INDEX IF NOT EXISTS idx_orders_unapplied ON orders(account_id)
+    WHERE filled_qty > applied_qty;
 
 -- Scoped key-value state. account_id='' is the GLOBAL scope (strategy params,
 -- AI provider, health probes, telegram cursor) — things that belong to the
@@ -708,6 +738,33 @@ def _migrate_v5(c: sqlite3.Connection) -> None:
              "symbol), %d position(s) carried over", moved)
 
 
+def _migrate_v7(c: sqlite3.Connection) -> None:
+    """v6 → v7: applied-fill tracking and intent keys on orders.
+
+    Columns only; SCHEMA has already created the table for a fresh database and
+    ALTER adds them to an existing one. Existing rows get applied_qty = 0, which
+    is deliberately WRONG in the safe direction for any order whose fills were
+    already applied by the old entry/exit code: re-applying is prevented by
+    those orders being terminal, and a fresh install has none.
+    """
+    cols = {r[1] for r in c.execute("PRAGMA table_info(orders)").fetchall()}
+    if not cols:
+        return
+    for col, decl in (("applied_qty", "INTEGER NOT NULL DEFAULT 0"),
+                      ("applied_notional", "REAL NOT NULL DEFAULT 0"),
+                      ("intent_key", "TEXT")):
+        if col not in cols:
+            c.execute(f"ALTER TABLE orders ADD COLUMN {col} {decl}")
+    # Orders that already reached a terminal state under v6 had their fills
+    # applied by the old code. Marking them applied stops the settler from
+    # replaying history the first time it runs.
+    c.execute("UPDATE orders SET applied_qty = filled_qty, "
+              "applied_notional = filled_qty * COALESCE(avg_fill_price, 0) "
+              "WHERE applied_qty = 0 AND filled_qty > 0 AND state IN "
+              "('FILLED','CANCELLED','EXPIRED','REJECTED','FAILED_LOCAL')")
+    log.info("schema migrated to v7 (applied-fill tracking, intent keys)")
+
+
 # ---------- one-time JSON → SQLite migration ----------
 
 def _ensure_local_account(c: sqlite3.Connection) -> str:
@@ -948,6 +1005,19 @@ def upsert_open_trade(trade: dict) -> None:
     except Exception:
         pass
     with transaction() as c:
+        _upsert_open_trade_c(c, trade, acc, sid, extra)
+
+
+def _upsert_open_trade_c(c, trade: dict, acc: str, sid: str | None,
+                         extra: dict) -> None:
+    """The write itself, on a caller-supplied connection.
+
+    Split out so a fill settlement can move the position and mark the fill
+    applied in ONE transaction. Two transactions have a gap, and a crash in
+    that gap either applies a fill twice or loses it — which is the whole thing
+    applied_qty exists to prevent.
+    """
+    if True:
         c.execute("""
             INSERT INTO open_trades
             (symbol, qty, entry_price, stop_loss, take_profit, atr,
@@ -1402,6 +1472,14 @@ def closed_trade_insert(row: dict) -> None:
         log.warning("closed trade for %s recorded outside any execution "
                     "session — stamped %r", row.get("symbol"), provenance)
     with conn() as c:
+        _closed_trade_insert_c(c, row, acc, sid, provenance)
+
+
+def _closed_trade_insert_c(c, row: dict, acc: str, sid: str | None,
+                           provenance: str | None) -> None:
+    """The insert itself, on a caller-supplied connection. See
+    _upsert_open_trade_c for why this split exists."""
+    if True:
         c.execute("""
             INSERT INTO closed_trades
             (ts, symbol, qty, entry, stop, exit, exit_reason,

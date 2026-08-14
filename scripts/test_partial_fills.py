@@ -268,7 +268,13 @@ check("...for the quantity that actually sold", closes[-1]["qty"] == 30)
 check("...at the price it actually sold for",
       abs(float(closes[-1]["exit"]) - 49.0) < 1e-9)
 
-# Selling the residual finishes the job and removes the position.
+# Selling the residual finishes the job. The first exit order has to reach a
+# terminal state before a second can be placed — a second LIVE exit for the
+# same symbol could sell the residual twice, which is what the intent
+# constraint refuses.
+for o in order_log.live_orders("XOM"):
+    order_log.record_fill(o["client_order_id"], filled_qty=o["filled_qty"],
+                          avg_price=o["avg_fill_price"], state="CANCELLED")
 c3 = FakeClient(fill_qty=70, fill_price=48.8, status="FILLED_ALL",
                 holdings={"XOM": 70})
 trades = executor._load_open_trades()
@@ -288,6 +294,9 @@ c = FakeClient(fill_qty=25, fill_price=10.0, status="FILLED_ALL")
 executor.open_position(c, sig("KO", 10.0, 0.2), 25)
 before_closes = len(db.closed_trades(limit=500, include_excluded=True))
 
+for o in order_log.live_orders("KO"):
+    order_log.record_fill(o["client_order_id"], filled_qty=o["filled_qty"],
+                          avg_price=o["avg_fill_price"], state="CANCELLED")
 c2 = FakeClient(fill_qty=0, fill_price=0, status="SUBMITTED",
                 holdings={"KO": 25})
 trades = executor._load_open_trades()
