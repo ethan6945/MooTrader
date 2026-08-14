@@ -816,22 +816,38 @@ class MooClient:
         these rows were summed by month; here they are matched by id, so a row
         appearing twice is harmless and the wider window is worth more.
         """
-        frames = []
+        frames, failures = [], []
         for fn, kwargs in (
             (self.trade.order_list_query, {}),
             (self.trade.history_order_list_query, {"start": start, "end": end}),
         ):
             try:
                 ret, data = fn(trd_env=_env_enum(), acc_id=_acc_id(), **kwargs)
-                if ret == RET_OK and data is not None and len(data):
+                if ret != RET_OK:
+                    failures.append(f"{fn.__name__}: {str(data)[:120]}")
+                    continue
+                if data is not None and len(data):
                     frames.append(data)
             except Exception as e:
-                log.warning("order query failed (%s): %s", fn.__name__, e)
-        if not frames:
-            return pd.DataFrame()
-        out = pd.concat(frames, ignore_index=True)
+                failures.append(f"{fn.__name__}: {type(e).__name__}: {e}")
+
+        # An empty answer and a failed question are not the same thing, and this
+        # returned the same object for both. Downstream, "no rows" is read as
+        # "the broker does not have this order" — so a transient query failure
+        # became evidence that an order never existed, and the next cycle placed
+        # it again. That is the duplicate fill this whole log exists to prevent,
+        # reintroduced one layer above it.
+        #
+        # So the completeness of the answer travels WITH the answer, and callers
+        # must not conclude anything from an incomplete one.
+        out = (pd.concat(frames, ignore_index=True) if frames
+               else pd.DataFrame())
         if "order_id" in out.columns:
             out = out.drop_duplicates(subset=["order_id"], keep="last")
+        if failures:
+            log.error("order query INCOMPLETE — %s", "; ".join(failures))
+        out.attrs["complete"] = not failures
+        out.attrs["failures"] = failures
         return out
 
     def place_limit_order(

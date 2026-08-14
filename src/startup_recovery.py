@@ -72,6 +72,26 @@ def recover(client, *, halt_on_unresolved: bool = True) -> dict:
     # broker's own list does not contain, covering a window that includes when
     # it was created, did not reach the order book — that is evidence, not a
     # guess, and leaving it live forever would block every future start.
+    # An incomplete answer is not an answer. Concluding "never landed" from a
+    # list the broker could not fully produce is exactly how a live order gets
+    # written off and placed a second time — and a duplicate fill is the worst
+    # outcome available here, worse than stopping.
+    complete = bool(summary.get("complete", True))
+    if not complete:
+        from . import risk_manager
+        still_live = [o["client_order_id"] for o in order_log.live_orders()]
+        risk_manager.halt(
+            "broker order query incomplete",
+            f"Could not get a complete order list from the broker, so "
+            f"{len(still_live)} unfinished order(s) cannot be settled: "
+            f"{still_live[:5]}. Nothing has been written off — an order absent "
+            f"from an incomplete list may be working right now. Retry when the "
+            f"connection is healthy.")
+        return {"checked": len(live_before),
+                "resolved": summary.get("resolved", 0),
+                "never_landed": 0, "unresolved": still_live, "halted": True,
+                "complete": False}
+
     never_landed, unresolved = [], []
     for coid in summary.get("orders", []):
         row = order_log.get(coid)
@@ -97,7 +117,7 @@ def recover(client, *, halt_on_unresolved: bool = True) -> dict:
             # we can see, and that is not something to resolve by deciding.
             unresolved.append(coid)
 
-    result = {"checked": len(live_before),
+    result = {"checked": len(live_before), "complete": True,
               "resolved": summary.get("resolved", 0),
               "never_landed": len(never_landed),
               "unresolved": unresolved,

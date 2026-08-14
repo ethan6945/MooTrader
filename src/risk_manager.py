@@ -67,12 +67,29 @@ def reset_for_new_day(current_cash: float) -> dict:
 
     def _apply(s: dict) -> dict:
         if s.get("day") != today:
-            return {
+            out = {
                 "day": today,
                 "starting_cash": current_cash,
                 "realized_pnl_today": 0.0,
-                "halted": False,
             }
+            # Only a halt that a new day actually answers is cleared by one.
+            #
+            # This used to write halted=False unconditionally, which was right
+            # while the only halt was the daily drawdown — a new day genuinely
+            # resets that. It is wrong now: a stop order at the broker this
+            # software could not cancel is not less true tomorrow, and an
+            # unresolved order is not resolved by the clock. Those halts were
+            # being lifted overnight, and the bot resumed trading into exactly
+            # the situation the halt existed to keep it out of.
+            if s.get("halted") and _halt_needs_a_person(s.get("halt_reason")):
+                log.warning("daily rollover: NOT clearing the halt — %s "
+                            "requires a person to resolve it",
+                            s.get("halt_reason"))
+            else:
+                out["halted"] = False
+                out["halt_reason"] = None
+                out["halt_detail"] = None
+            return out
         return {}
 
     merged = db.atomic_state(_apply)
@@ -268,6 +285,13 @@ def _check_halt_auto_release(state: dict) -> tuple[float, bool]:
     dd_pct = current_drawdown_pct()
     halt_at = state.get("halt_started_at")
     if not halt_at:
+        return dd_pct, False
+    # The seven-day release re-anchors peak equity so the drawdown reads zero.
+    # That answers a DRAWDOWN halt. Applied to an order or reconciliation halt
+    # it would resume trading a week after a discrepancy nobody looked at, and
+    # the discrepancy would still be there — with the evidence of it now a week
+    # colder. Those wait for a person.
+    if _halt_needs_a_person(state.get("halt_reason")):
         return dd_pct, False
     try:
         started = datetime.fromisoformat(halt_at)
@@ -625,6 +649,56 @@ def can_open_new(
                            f"≥ {settings.daily_drawdown_stop:.0%}")
 
     return True, "ok"
+
+
+# Halts that time does not answer. Every one of these describes a discrepancy
+# between what this software believes and what the broker holds — a live order
+# it cannot account for, a position it cannot explain — and none of them become
+# untrue at midnight. They are cleared by a person who has looked at the
+# account, through release_halt().
+MANUAL_RELEASE_REASONS = (
+    "protective order cancel failed",
+    "unresolved orders after restart",
+    "broker order query incomplete",
+    "position reconciliation failed",
+)
+
+
+def _halt_needs_a_person(reason: object) -> bool:
+    return str(reason or "") in MANUAL_RELEASE_REASONS
+
+
+def halt_status() -> dict:
+    """Whether trading is halted, why, and whether time alone can clear it."""
+    s = _load_state()
+    reason = s.get("halt_reason")
+    return {"halted": bool(s.get("halted")), "reason": reason,
+            "detail": s.get("halt_detail"), "since": s.get("halt_started_at"),
+            "needs_manual_release": _halt_needs_a_person(reason)}
+
+
+def release_halt(who: str, note: str = "") -> dict:
+    """Lift a halt deliberately. The only way to clear a manual-release one.
+
+    Takes `who` because a halt of this kind is cleared by a person who has been
+    to the broker and dealt with what caused it — and six weeks later the only
+    question that matters about that decision is who made it.
+    """
+    before = halt_status()
+    if not before["halted"]:
+        return {"released": False, "note": "not halted"}
+    db.atomic_state(lambda _s: {"halted": False, "halt_reason": None,
+                                "halt_detail": None, "halt_started_at": None})
+    log.warning("halt RELEASED by %s — was: %s (%s)%s",
+                who, before["reason"], before["detail"],
+                f" — {note}" if note else "")
+    try:
+        db.audit_insert("halt_released", reason=str(before["reason"] or ""),
+                        extra={"by": who, "note": note[:300],
+                               "was_detail": str(before["detail"] or "")[:400]})
+    except Exception as e:
+        log.warning("could not audit the halt release: %s", e)
+    return {"released": True, "was": before}
 
 
 def halt(reason: str, detail: str = "") -> None:

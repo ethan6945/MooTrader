@@ -229,5 +229,103 @@ check("...with both sides", r["differences"][0]["broker"] == 25
 # levels" failure.
 check("nothing was adopted", db.load_open_trades() == {})
 
+
+# ── 7. an incomplete answer settles nothing ────────────────────────────────
+#
+# history_orders() used to swallow both query failures and return an empty
+# frame, which is indistinguishable from "the broker has no such order". The
+# recovery then wrote UNKNOWN orders off as never having landed, and the next
+# cycle placed them again:
+#
+#     broker accepts the order -> query fails -> software sees an empty list
+#     -> declares the order non-existent -> re-places it -> duplicate fill
+#
+# A failed question is not an empty answer.
+print("\n7  a broker query that failed is not evidence of anything")
+
+
+class BrokenQueryTrade(FakeTrade):
+    """Both order queries fail, exactly as a dropped gateway would."""
+    def order_list_query(self, **kw):
+        raise ConnectionError("gateway unreachable")
+    def history_order_list_query(self, **kw):
+        raise ConnectionError("gateway unreachable")
+
+
+clear_halt(); drop_all_orders()
+c = FakeClient()
+p = c.place_limit_order("KO", 40, 60.0, TrdSide.BUY)
+order_log.unknown(p.client_order_id, "connection dropped after submit")
+age_order(p.client_order_id, 45)          # well past the settle grace
+c._trade.__class__ = BrokenQueryTrade     # now the queries fail
+
+r = startup_recovery.recover(c)
+row = order_log.get(p.client_order_id)
+check("the answer is reported incomplete", r["complete"] is False)
+check("the order is NOT written off", row["state"] == "UNKNOWN")
+check("...and is still live", any(o["client_order_id"] == p.client_order_id
+                                  for o in order_log.live_orders()))
+check("trading is halted instead", db.get_state().get("halted") is True)
+check("...with a reason naming the query, not the order",
+      db.get_state().get("halt_reason") == "broker order query incomplete")
+
+# And the frame itself carries the completeness, so nothing downstream has to
+# infer it from emptiness.
+df = c.history_orders("2026-08-01", "2026-08-14")
+check("the frame says it is incomplete", df.attrs.get("complete") is False)
+check("...and why", bool(df.attrs.get("failures")))
+
+
+# ── 8. a safety halt does not expire overnight ─────────────────────────────
+#
+# reset_for_new_day() wrote halted=False unconditionally. That is right for a
+# daily-drawdown halt — a new day genuinely answers it — and wrong for a stop
+# order at the broker that could not be cancelled, which is not less true
+# tomorrow. Those were being lifted overnight.
+print("\n8  a halt that needs a person is not cleared by the calendar")
+from src import risk_manager                                  # noqa: E402
+
+for reason, survives in (("protective order cancel failed", True),
+                         ("unresolved orders after restart", True),
+                         ("broker order query incomplete", True),
+                         ("daily drawdown", False)):
+    clear_halt()
+    db.update_state({"day": "1999-01-01"})
+    risk_manager.halt(reason, "detail")
+    risk_manager.reset_for_new_day(10000.0)
+    still = bool(db.get_state().get("halted"))
+    check(f"{reason!r} {'survives' if survives else 'is cleared by'} the rollover",
+          still is survives)
+
+# The seven-day auto-release re-anchors peak equity, which answers a DRAWDOWN.
+# Applied to an order halt it would resume trading a week after a discrepancy
+# nobody looked at.
+clear_halt()
+risk_manager.halt("protective order cancel failed", "a live stop at the broker")
+old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+db.update_state({"halt_started_at": old})
+risk_manager.check_drawdown_halt(db.get_state()) \
+    if hasattr(risk_manager, "check_drawdown_halt") else None
+check("the 7-day auto-release does not touch an order halt",
+      db.get_state().get("halt_started_at") == old)
+
+# It is cleared by a person, and who did it is recorded.
+res = risk_manager.release_halt("ethan", "cancelled the stray stop by hand")
+check("a person can release it", res["released"] is True)
+check("...and trading resumes", not db.get_state().get("halted"))
+check("...and the release is audited",
+      any(a.get("action") == "halt_released" for a in db.audit_recent(limit=20)))
+
+status = risk_manager.halt_status()
+check("halt_status reports a clean state", status["halted"] is False)
+clear_halt()
+risk_manager.halt("daily drawdown", "6%")
+check("a drawdown halt is not flagged as needing a person",
+      risk_manager.halt_status()["needs_manual_release"] is False)
+clear_halt()
+risk_manager.halt("protective order cancel failed", "x")
+check("an order halt is", 
+      risk_manager.halt_status()["needs_manual_release"] is True)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

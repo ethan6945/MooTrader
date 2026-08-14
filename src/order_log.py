@@ -295,9 +295,20 @@ def reconcile_live(client, *, lookback_days: int = 2) -> dict:
         df = client.history_orders(start.isoformat(), end.isoformat())
     except Exception as e:
         log.error("order recovery could not query the broker: %s", e)
-        return {"checked": len(live), "resolved": 0,
+        return {"checked": len(live), "resolved": 0, "complete": False,
                 "still_unknown": len(live), "error": str(e)[:200],
                 "orders": [o["client_order_id"] for o in live]}
+
+    # A partial answer settles nothing. An order missing from an incomplete
+    # list is missing from the LIST, which says nothing about the order book —
+    # and the caller's next step for an unfound order is to conclude it never
+    # landed. Rows that ARE present are still applied: they are evidence, and
+    # evidence does not become unreliable because a second query failed.
+    complete = bool(df.attrs.get("complete", True))
+    if not complete:
+        log.error("order recovery: the broker's answer was incomplete (%s) — "
+                  "orders absent from it are NOT being written off",
+                  "; ".join(df.attrs.get("failures", []))[:300])
 
     resolved, unresolved = 0, []
     for o in live:
@@ -325,7 +336,7 @@ def reconcile_live(client, *, lookback_days: int = 2) -> dict:
     if unresolved:
         log.warning("order recovery: %d order(s) not found at the broker — %s",
                     len(unresolved), unresolved)
-    return {"checked": len(live), "resolved": resolved,
+    return {"checked": len(live), "resolved": resolved, "complete": complete,
             "still_unknown": len(unresolved), "orders": unresolved}
 
 
