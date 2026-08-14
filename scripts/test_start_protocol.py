@@ -370,6 +370,41 @@ for pid in live:
         pass
 (h / "logs" / "worker.lease").unlink(missing_ok=True)
 
+# The window that let TWO of twenty acquire, reproduced directly.
+#
+# O_EXCL created the file and left it EMPTY until write() finished. A second
+# process hit FileExistsError, read nothing parseable, concluded there was no
+# live holder, and DELETED the winner's lease before taking its own. The
+# twenty-way test above caught this as a ~25% flake — and it was dismissed as
+# timing noise for a round. It was the mutual exclusion actually failing.
+ACQUIRE_PROBE = (
+    "from src import start_lease\n"
+    "try:\n"
+    "    lease = start_lease.acquire(purpose='worker')\n"
+    "    print('ACQUIRED ' + str(lease.fence))\n"
+    "except start_lease.LeaseUnavailable as e:\n"
+    "    print('REFUSED ' + str(e)[:90])\n"
+)
+h = make_home(tmp, "leasegap")
+lease_file = h / "logs" / "worker.lease"
+
+lease_file.write_text("")                      # exactly that window
+r = in_home(h, ACQUIRE_PROBE)
+check("an empty lease file is never broken", "REFUSED" in r.stdout)
+check("...and the refusal says the holder cannot be identified",
+      "unreadable" in r.stdout or "cannot be identified" in r.stdout)
+check("the file is left alone", lease_file.exists())
+
+lease_file.write_text('{"pid": 123, "fen')      # half-written JSON
+r = in_home(h, ACQUIRE_PROBE)
+check("a half-written lease is not broken either", "REFUSED" in r.stdout)
+lease_file.unlink(missing_ok=True)
+
+# And the normal case still works: nothing there, so it is taken.
+r = in_home(h, ACQUIRE_PROBE)
+check("an absent lease is acquired normally", "ACQUIRED" in r.stdout)
+lease_file.unlink(missing_ok=True)
+
 # A dead holder must not block forever; a live one must.
 (h / "logs" / "worker.lease").write_text(json.dumps(
     {"pid": 999999, "host": "x", "fence": 7, "started_at_str": "never"}))

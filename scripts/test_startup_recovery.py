@@ -37,7 +37,7 @@ os.environ["MMT_HOME"] = _TMP
 import pandas as pd                                          # noqa: E402
 from moomoo import RET_OK, TrdSide                           # noqa: E402
 from src import broker_binding as bb, db, identity, order_gate, order_log  # noqa: E402
-from src import moo_client, startup_recovery                 # noqa: E402
+from src import moo_client, risk_manager, startup_recovery   # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -228,6 +228,17 @@ check("...with both sides", r["differences"][0]["broker"] == 25
 # into the risk calculation — the 2026-07 "orphan adopted with fabricated
 # levels" failure.
 check("nothing was adopted", db.load_open_trades() == {})
+# Halting, not warning. Every order has been settled by this point, so a
+# remaining disagreement means shares moved that this software never asked for
+# — and sizing the next position against that is how the difference gets
+# adopted or overwritten by whatever touches it next.
+check("trading is halted", db.get_state().get("halted") is True)
+check("...with a reason a person can act on",
+      db.get_state().get("halt_reason") == "position reconciliation failed")
+check("...naming both sides",
+      "NVDA" in (db.get_state().get("halt_detail") or ""))
+check("...and it needs a person to clear",
+      risk_manager.halt_status()["needs_manual_release"] is True)
 
 
 # ── 7. an incomplete answer settles nothing ────────────────────────────────

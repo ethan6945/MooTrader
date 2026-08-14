@@ -242,30 +242,60 @@ def acquire(*, purpose: str = "worker", break_stale: bool = True) -> Lease:
             "acquired_at": time.time(),
             "started_at_str": _proc_start_time(os.getpid()),
         }
-        try:
-            fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            cur = read()
-            if cur and _holder_alive(cur):
-                raise LeaseUnavailable(
-                    f"worker lease held by pid {cur.get('pid')} on "
-                    f"{cur.get('host')} (fence {cur.get('fence')})")
-            if not break_stale or attempt == 2:
-                raise LeaseUnavailable("lease file present and could not be cleared")
-            # Holder is gone. Remove and retry once; if another process wins the
-            # retry, the O_EXCL on that attempt fails and we report it honestly.
-            log.warning("breaking stale worker lease from pid %s",
-                        (cur or {}).get("pid"))
-            try:
-                p.unlink()
-            except OSError:
-                pass
-            continue
+        # Published by link(), not by open(O_EXCL) then write().
+        #
+        # THE RACE THAT WAS HERE, and it let two of twenty starts both acquire:
+        # O_EXCL creates the file, and for the microseconds until write()
+        # finishes it exists and is EMPTY. A second process hits FileExistsError,
+        # reads it, gets nothing parseable, concludes there is no live holder —
+        # and DELETES the winner's lease before taking its own. Both then
+        # believed they held it, which is the one thing this file exists to
+        # prevent.
+        #
+        # link() is atomic and fails if the target exists, so the lease appears
+        # complete or not at all. There is no moment at which it is readable and
+        # empty.
+        tmp = p.with_suffix(f".claim.{os.getpid()}.{fence}")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, json.dumps(rec).encode())
             os.fsync(fd)
         finally:
             os.close(fd)
+        try:
+            os.link(str(tmp), str(p))
+        except FileExistsError:
+            cur = read()
+            if cur is None:
+                # Present but unreadable. Someone is mid-publish, or it was
+                # truncated. Either way it is NOT evidence of an absent holder,
+                # and breaking it is how two workers end up live. Wait and look
+                # again rather than deciding.
+                time.sleep(0.05 + 0.05 * attempt)
+                cur = read()
+            if cur and _holder_alive(cur):
+                raise LeaseUnavailable(
+                    f"worker lease held by pid {cur.get('pid')} on "
+                    f"{cur.get('host')} (fence {cur.get('fence')})")
+            if cur is None:
+                raise LeaseUnavailable(
+                    "lease file present but unreadable — refusing to break a "
+                    "lease whose holder cannot be identified")
+            if not break_stale or attempt == 2:
+                raise LeaseUnavailable("lease file present and could not be cleared")
+            # Holder is genuinely gone. Remove and retry once; if another
+            # process wins the retry, its link fails and we report that.
+            log.warning("breaking stale worker lease from pid %s", cur.get("pid"))
+            try:
+                p.unlink()
+            except OSError:
+                pass
+            continue
+        finally:
+            try:
+                os.unlink(str(tmp))
+            except OSError:
+                pass
         _remember_high(p, fence)
         return Lease(path=p, holder_pid=rec["pid"], holder_host=rec["host"],
                      fence=fence, acquired_at=rec["acquired_at"])

@@ -181,6 +181,22 @@ def reconcile_positions_from_orders(client) -> dict:
             differences.append({"symbol": sym, "broker": b, "ours": o})
 
     if differences:
-        log.warning("startup recovery: %d position disagreement(s) after "
-                    "settling every order — %s", len(differences), differences)
-    return {"ok": True, "differences": differences}
+        # A halt, not a warning. Every order has been settled by the time this
+        # runs, so a remaining disagreement means shares moved that this
+        # software has no record of asking for. Continuing would size new
+        # positions against a picture known to be wrong, and the difference
+        # would be adopted or overwritten by whatever touched it next.
+        from . import risk_manager
+        risk_manager.halt(
+            "position reconciliation failed",
+            "After settling every order the broker and the local ledger still "
+            "disagree: " + "; ".join(
+                f"{d['symbol']} broker {d['broker']:+.0f} vs ours {d['ours']:+.0f}"
+                for d in differences[:6]) +
+            ". Nothing has been adjusted to fit — a quantity corrected to match "
+            "carries an invented entry price, stop and R-multiple into the risk "
+            "calculation.")
+        log.error("startup recovery: %d position disagreement(s) after "
+                  "settling every order — trading halted", len(differences))
+    return {"ok": True, "differences": differences,
+            "halted": bool(differences)}

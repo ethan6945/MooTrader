@@ -1738,8 +1738,11 @@ def _startup_recover_orders() -> None:
                        if result["unresolved"] else ""))
             pos = startup_recovery.reconcile_positions_from_orders(c)
             if pos.get("differences"):
-                log.warning("startup: broker and local positions disagree "
-                            "after recovery — %s", pos["differences"])
+                notifier.send(
+                    "⛔ Startup: the broker and the local ledger disagree about "
+                    f"{len(pos['differences'])} position(s) after every order "
+                    "was settled. Trading is HALTED until someone reconciles "
+                    "them — nothing has been adjusted to fit.")
     except Exception as e:
         log.error("startup recovery failed: %s — continuing to protective "
                   "exits, but the order picture may be incomplete", e)
