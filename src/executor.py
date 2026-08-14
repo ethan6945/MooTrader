@@ -751,7 +751,32 @@ def cancel_protective(client: MooClient, symbol: str, order_id: str,
     else:
         detail = "" if accepted else "the broker refused the cancellation"
 
+    from . import order_log
     if accepted:
+        # Accepted is not gone. Poll until the broker says what actually became
+        # of it — an order can fill in the moment between the decision to cancel
+        # and the request landing, and a caller that places a replacement on the
+        # strength of "accepted" ends up with two live orders for one position.
+        row = order_log.by_broker_id(order_id) if order_id else None
+        if row is not None:
+            settled = _await_cancel_terminal(client, row["client_order_id"])
+            if settled is None:
+                risk_manager.halt(
+                    "cancel not confirmed",
+                    f"{symbol} {leg} order {order_id}: the cancel was accepted "
+                    f"but the broker never confirmed what became of it. It may "
+                    f"still be working; no replacement order will be placed.")
+                return False
+            if int(settled.get("filled_qty") or 0) > int(
+                    settled.get("applied_qty") or 0):
+                # It filled while we were cancelling. Apply that before anything
+                # else decides what the position is.
+                try:
+                    from . import fill_settler
+                    fill_settler.settle(settled["client_order_id"])
+                except Exception as e:
+                    log.error("%s: could not settle a leg that filled during "
+                              "cancellation: %s", symbol, e)
         return True
 
     residual = {"symbol": symbol, "leg": leg, "broker_order_id": str(order_id),
@@ -770,6 +795,43 @@ def cancel_protective(client: MooClient, symbol: str, order_id: str,
     except Exception as e:
         log.error("could not halt after a failed protective cancel: %s", e)
     return False
+
+
+_CANCEL_CONFIRM_SEC = 10.0
+
+
+def _await_cancel_terminal(client: MooClient, coid: str,
+                           timeout: float = _CANCEL_CONFIRM_SEC) -> dict | None:
+    """Poll a cancelled order until the broker says what became of it.
+
+    Returns the settled row, or None if the broker never said. None is not
+    "cancelled" — it is "unknown", and the caller treats it as a refusal.
+    """
+    from . import order_log
+    deadline = time.time() + timeout
+    while True:
+        row = order_log.get(coid)
+        if row and row["state"] in order_log.TERMINAL_STATES:
+            return row
+        try:
+            oid = (row or {}).get("broker_order_id")
+            fill = client.get_order_fill(oid) if oid else None
+            if fill:
+                order_log.record_fill(
+                    coid, filled_qty=int(fill["qty"]),
+                    avg_price=float(fill["price"]),
+                    state=order_log.map_broker_status(fill.get("status")))
+            elif oid and not client.is_order_filled(oid, include_partial=True):
+                # Not filled and not findable as working: the cancellation took.
+                order_log.record_fill(coid, filled_qty=int(
+                    (row or {}).get("filled_qty") or 0),
+                    avg_price=(row or {}).get("avg_fill_price"),
+                    state="CANCELLED")
+        except Exception as e:
+            log.debug("cancel confirmation poll failed for %s: %s", coid, e)
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
 
 
 def residual_orders() -> list[dict]:
@@ -952,52 +1014,88 @@ def cancel_stale_orders(client: MooClient) -> list[dict]:
 
 
 def _check_bracket_fills(client: MooClient, symbol: str, trade: dict) -> dict | None:
-    """OCO check: if either bracket leg filled, cancel the other and close the trade.
+    """OCO check: settle whatever each leg actually did, and pull the other.
 
-    Returns an action dict if a bracket leg fired (caller pops the trade), else None.
-    Trades without bracket IDs (SIMULATE or REAL-fallback) return None — soft logic
-    handles them downstream."""
+    Returns an action dict if a leg moved shares, else None. Trades without
+    bracket ids (SIMULATE or REAL-fallback) return None — soft logic handles
+    them downstream.
+
+    REWRITTEN because this was the last place still booking whole positions on
+    partial fills. It read `is_order_filled(include_partial=True)`, treated that
+    boolean as "the position is gone", booked trade["qty"] and let the caller
+    remove the trade. A stop that filled 10 of 100 therefore closed the whole
+    holding in the books while 90 shares stayed at the broker — and its own
+    comment said reconcile would re-sync the residual, which is the thing that
+    must not be relied on.
+
+    It also priced the close at the TRIGGER LEVEL when the fill lookup failed.
+    A broker STOP becomes a market order once touched, so in a gap it fills well
+    below the level; booking the level makes every gapped stop-out look like a
+    clean -1R and feeds that fiction to half-Kelly and the optimizer.
+
+    BOTH legs are now settled, every time. They are separate orders and can both
+    have moved shares — that is the OCO race, and the settler's oversell check is
+    what catches it rather than whichever leg happened to be inspected first.
+    """
     stop_id = trade.get("stop_order_id")
     tp_id = trade.get("tp_order_id")
     if not (stop_id and tp_id):
         return None
 
-    # include_partial=True: a partially-filled leg counts as fired so we still
-    # cancel the opposite leg (avoids both legs filling → oversell). reconcile()
-    # re-syncs any residual qty on the next scan. (Bug fix 2026-06-03.)
-    stop_filled = client.is_order_filled(stop_id, include_partial=True)
-    tp_filled = client.is_order_filled(tp_id, include_partial=True)
+    from . import fill_settler, order_log
 
-    if stop_filled:
-        # The OCO race, and the reason this is a halt rather than a warning.
-        # The stop has filled, so the shares are gone; the take-profit is a live
-        # SELL for stock we no longer hold. If it triggers, that is a short —
-        # and it is the broker's order, so nothing here can stop it.
-        if cancel_protective(client, symbol, tp_id, "take-profit"):
-            log.info("OCO: %s STOP filled, cancelled TP %s", symbol, tp_id)
-        # 2026-07-27: book the leg's ACTUAL fill, not its trigger level. A broker
-        # STOP becomes a market order once touched, so in a gap it fills well
-        # below stop_loss — booking the level made every gapped stop-out look
-        # like a clean −1R. (This is the same class of bug as the soft-exit path,
-        # but worse here: the whole point of a stop is that gaps blow through it.)
-        exit_px = _bracket_fill_price(client, stop_id, trade["stop_loss"],
-                                     symbol, "SL_BRACKET")
-        pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "SL_BRACKET")
-        return {"type": "stop_hit_bracket", "symbol": symbol,
-                "price": exit_px, "qty": trade["qty"], "pnl": pnl}
+    # Refresh both legs from the broker, then settle the increments. Order
+    # matters only in that both must happen: settling one and returning would
+    # leave the other's fills unapplied until some later sweep.
+    moved, action = [], None
+    for oid, leg, kind in ((stop_id, "stop", "SL_BRACKET"),
+                           (tp_id, "take-profit", "TP_BRACKET")):
+        row = order_log.by_broker_id(oid)
+        if row is None:
+            continue
+        try:
+            fill = client.get_order_fill(oid)
+        except Exception as e:
+            log.warning("%s: could not read the %s leg (%s) — leaving it for "
+                        "the next pass", symbol, leg, e)
+            continue
+        if fill:
+            order_log.record_fill(row["client_order_id"],
+                                  filled_qty=int(fill["qty"]),
+                                  avg_price=float(fill["price"]),
+                                  state=order_log.map_broker_status(
+                                      fill.get("status")))
+        try:
+            out = fill_settler.settle(row["client_order_id"])
+        except fill_settler.OversoldError:
+            # Both legs sold. The settler has already halted; re-raising here
+            # would look like a manage-loop crash rather than the account-level
+            # problem it is.
+            log.error("%s: both bracket legs moved shares — trading halted",
+                      symbol)
+            return {"type": "bracket_oversold", "symbol": symbol, "qty": 0,
+                    "price": 0.0, "pnl": 0.0}
+        if out["applied"]:
+            moved.append((leg, kind, out))
 
-    if tp_filled:
-        # Same race, other leg: the take-profit sold the shares and the stop is
-        # a live SELL for stock we no longer hold.
-        if cancel_protective(client, symbol, stop_id, "stop"):
-            log.info("OCO: %s TP filled, cancelled STOP %s", symbol, stop_id)
-        exit_px = _bracket_fill_price(client, tp_id, trade["take_profit"],
-                                     symbol, "TP_BRACKET")
-        pnl = _close_and_log(symbol, trade, trade["qty"], exit_px, "TP_BRACKET")
-        return {"type": "tp_hit_bracket", "symbol": symbol,
-                "price": exit_px, "qty": trade["qty"], "pnl": pnl}
+    if not moved:
+        return None
 
-    return None
+    # A leg fired, so the opposite one is a live SELL for shares that are now
+    # gone. cancel_protective halts if it will not cancel.
+    for oid, leg in ((tp_id, "take-profit"), (stop_id, "stop")):
+        other = order_log.by_broker_id(oid)
+        if other and other["state"] not in order_log.TERMINAL_STATES \
+                and not any(m[2].get("kind") == other["kind"] for m in moved):
+            cancel_protective(client, symbol, oid, leg)
+
+    leg, kind, out = moved[-1]
+    log.info("OCO: %s %s leg settled %d share(s) @ $%.4f, %d remain",
+             symbol, leg, out["applied"], out["price"], out["position_qty"])
+    return {"type": "stop_hit_bracket" if kind == "SL_BRACKET"
+                    else "tp_hit_bracket",
+            "symbol": symbol, "price": out["price"], "qty": out["applied"],
+            "partial": out["position_qty"] > 0, "pnl": out.get("pnl", 0.0)}
 
 
 def _bracket_fill_price(client: MooClient, order_id: str, level: float,
@@ -1148,7 +1246,14 @@ def _manage_one(client: MooClient, symbol: str, trade: dict,
         bracket_action = _check_bracket_fills(client, symbol, trade)
         if bracket_action is not None:
             actions.append(bracket_action)
-            trades.pop(symbol)
+            # The settler already removed the position if it went to zero, and
+            # deliberately kept it if a partial fill left shares held. Popping
+            # here unconditionally is what closed a whole holding on a leg that
+            # moved ten shares.
+            if bracket_action.get("partial"):
+                trades[symbol] = db.get_open_trade(symbol) or trade
+            else:
+                trades.pop(symbol, None)
             return
         # Fast-stop loop: the broker owns SL/TP, so the cheap fill-check above is
         # all the protective work needed — skip the housekeeping exits below.

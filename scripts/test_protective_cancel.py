@@ -71,10 +71,23 @@ class FakeTrade:
     def place_order(self, **kw):
         self.placed.append(kw)
         oid = f"BRK{len(self.placed)}"
+        # A protective leg is a WORKING order sitting against a held position,
+        # not a filled one. The first version reported every placement as
+        # FILLED_ALL, which made the settler see a sale with no position behind
+        # it and halt for oversell — the settler being right about a fixture
+        # that could not happen.
+        # A BUY fills (that is how a position comes to exist). A protective
+        # SELL leg is a WORKING order sitting against that position, not a
+        # filled one — reporting every placement as FILLED_ALL made the settler
+        # see a sale with no position behind it and halt for oversell, which was
+        # the settler being right about a fixture that could not happen.
+        is_buy = str(kw.get("trd_side", "")).endswith("BUY")
         self.rows.append({"order_id": oid, "remark": kw.get("remark", ""),
                           "code": kw["code"], "qty": kw["qty"],
-                          "dealt_qty": kw["qty"], "dealt_avg_price": kw["price"],
-                          "order_status": "FILLED_ALL"})
+                          "dealt_qty": kw["qty"] if is_buy else 0,
+                          "dealt_avg_price": kw["price"] if is_buy else 0,
+                          "order_status": "FILLED_ALL" if is_buy
+                                          else "SUBMITTED"})
         return (RET_OK, pd.DataFrame([{"order_id": oid}]))
     def modify_order(self, **kw):
         self.cancels.append(kw.get("order_id"))
@@ -85,6 +98,10 @@ class FakeTrade:
         return (RET_OK, pd.DataFrame())
     def order_list_query(self, **kw):
         return (RET_OK, pd.DataFrame(self.rows))
+    def modify_order_status(self, oid, status):
+        for r in self.rows:
+            if r["order_id"] == oid:
+                r["order_status"] = status
     def history_order_list_query(self, **kw):
         return (RET_OK, pd.DataFrame(self.rows))
     def close(self):
@@ -140,10 +157,39 @@ check("no halt", not db.get_state().get("halted"))
 row = order_log.get(p.client_order_id)
 extra = json.loads(row["extra"]) if row.get("extra") else {}
 check("the attempt is recorded", extra.get("cancel_accepted") is True)
-# The order may have filled between deciding to cancel and the request landing.
-# Nothing may treat "accepted" as "gone" — that is the OCO race.
-check("the order is NOT marked cancelled on the strength of the request",
-      row["state"] != "CANCELLED")
+# "Accepted" is now followed by a poll, so the order does end up CANCELLED —
+# but only once the BROKER said so. The distinction is not cosmetic: between
+# deciding to cancel and the request landing, the order can fill, and a caller
+# that placed a replacement on the strength of acceptance would have two live
+# orders for one position.
+check("the state came from the broker, not from the request",
+      row["state"] == "CANCELLED" and row["last_polled_at"])
+
+
+# A cancel the broker accepts but never confirms is NOT a cancellation.
+print("\n1b  an accepted cancel that is never confirmed is a refusal")
+clear_halt()
+
+
+class NeverConfirms(FakeTrade):
+    """Accepts the cancel and then reports the order as still working."""
+    def get_order_fill(self, *a, **k):
+        return None
+
+
+c = FakeClient("ok")
+c._trade.__class__ = NeverConfirms
+executor._CANCEL_CONFIRM_SEC = 1.0
+p2 = c.place_limit_order("BA", 10, 100.0, TrdSide.SELL, kind="STOP")
+# is_order_filled will say False, so the poll concludes CANCELLED. Make it
+# ambiguous instead: the order is neither confirmed filled nor confirmed gone.
+c.is_order_filled = lambda *a, **k: True
+ok2 = executor.cancel_protective(c, "BA", p2.broker_order_id, "stop")
+check("an unconfirmed cancellation is reported as a failure", ok2 is False)
+check("...and halts", db.get_state().get("halted") is True)
+check("...naming the confirmation, not the cancel",
+      db.get_state().get("halt_reason") == "cancel not confirmed")
+executor._CANCEL_CONFIRM_SEC = 10.0
 
 
 # ── 2. a refused cancel halts, and says why ────────────────────────────────

@@ -214,5 +214,51 @@ check("...and there is still only one live order for it",
       order_log.live_for_intent(order_log.intent_key("TSLA", "BUY", "ENTRY"))
       ["client_order_id"] == reopened)
 
+
+# ── 7. running recovery twice writes nothing the second time ───────────────
+#
+# The acceptance condition: two consecutive recoveries, the second a no-op.
+# If settlement were not idempotent this is where it would show — the same
+# cumulative fill applied again, the PnL counted twice.
+print("\n7  a second recovery pass is a no-op")
+reset()
+a_position("REC", 100, 10.0)
+coid = an_order("REC", "SELL", "EXIT", 100, 100, 12.0, state="FILLED")
+
+first = fill_settler.settle_all()
+pnl_after_first = float(db.get_state().get("realized_pnl_total") or 0)
+closes_after_first = len(db.closed_trades(include_excluded=True))
+check("the first pass applies the fill", first["applied"] == 100)
+check("...and books the PnL", abs(pnl_after_first - 200.0) < 1e-6)
+
+second = fill_settler.settle_all()
+check("the second pass applies nothing", second["applied"] == 0)
+check("...and finds no orders to settle", second["orders"] == 0)
+check("PnL is not counted twice",
+      abs(float(db.get_state().get("realized_pnl_total") or 0)
+          - pnl_after_first) < 1e-9)
+check("no duplicate close row",
+      len(db.closed_trades(include_excluded=True)) == closes_after_first)
+
+
+# ── 8. the two sleeves are closed in code ──────────────────────────────────
+print("\n8  the sleeves that bypass the settler are off")
+from src import cash_yield, inverse_sleeve                    # noqa: E402
+db.update_state({"inverse_sleeve_enabled": True,
+                 "cash_yield_enabled": True})
+# Enabled by configuration and STILL off: they book positions from requested
+# quantity and PnL from theory, and they run before the kill switch. A flag is
+# a thing someone turns on to see what happens.
+check("the inverse sleeve refuses even when enabled",
+      inverse_sleeve.manage(None, "BEAR", 1000.0)["action"] == "disabled")
+check("...and says why",
+      "settle" in inverse_sleeve.manage(None, "BEAR", 1000.0).get("reason", ""))
+check("the cash sleeve refuses even when enabled",
+      cash_yield.manage(None, "BULL", 5000.0, None)["action"] == "disabled")
+check("...and says why",
+      "settle" in cash_yield.manage(None, "BULL", 5000.0, None).get("reason", ""))
+db.update_state({"inverse_sleeve_enabled": False,
+                 "cash_yield_enabled": False})
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

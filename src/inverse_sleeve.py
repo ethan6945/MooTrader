@@ -137,6 +137,19 @@ def manage(client, regime_label: str, budget: float) -> dict:
     if not enabled():
         return {"action": "disabled"}
 
+    # Closed in code, not by a flag.
+    #
+    # This sleeve records a position from the REQUESTED quantity the moment
+    # place_order returns, and books a theoretical PnL when it sells — the exact
+    # pattern the main strategy was moved off. It does not go through
+    # fill_settler, so running it would put positions and PnL into the books
+    # that no fill supports; and it runs BEFORE the kill switch, so nothing
+    # downstream would catch that.
+    #
+    # A flag is a thing someone turns on to see what happens. This comes back
+    # when it settles fills like every other path.
+    return {"action": "disabled", "reason": "not settled through fill_settler"}
+
     sym = symbol()
     from moomoo import KLType, TrdSide
     try:
