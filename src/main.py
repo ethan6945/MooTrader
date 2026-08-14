@@ -958,6 +958,17 @@ def scan_once() -> None:
             # non-binding (heat cap = 20% of account while per-trade risk is also
             # a % of account, so both scale together and it never fires).
             # portfolio.heat_check() is kept as the heat primitive but not called.
+            #
+            # That reasoning holds about RISK and says nothing about NOTIONAL,
+            # which is what decides how much a gap costs. calc_position_size
+            # caps a SINGLE order; nothing capped the total. Five stacks of 36%
+            # were five separate legal decisions adding up to an illegal
+            # position, stopped only by running out of cash.
+            from . import concentration
+            ok_conc, conc_reason = concentration.check(sig, qty, client=c)
+            if not ok_conc:
+                _skip("concentration", conc_reason)
+                continue
 
             # P0-2 (2026-06-26): structural stop — compute a swing-low-based
             # stop and pre-set it on the signal. executor then takes the TIGHTER
@@ -2130,6 +2141,29 @@ def main() -> None:
     # invoke them. Keeping both in one CLI is deliberate — the operator, the web
     # panel and the macOS app then have one implementation between them, and
     # there is no second place for the rules to be almost right.
+    if cmd in ("halt", "release-halt"):
+        from . import risk_manager
+        if cmd == "halt":
+            status = risk_manager.halt_status()
+            for k, v in status.items():
+                print(f"{k}: {v}")
+            return
+        # A halt describing a broker/local discrepancy is cleared by a person
+        # who has been to the account and dealt with it. Requiring a name is
+        # the point: six weeks later the only question about the decision is
+        # who made it.
+        who = sys.argv[2] if len(sys.argv) > 2 else ""
+        if not who:
+            print("usage: release-halt <your-name> [note]", file=sys.stderr)
+            print("(the name is recorded in the audit — a halt of this kind is "
+                  "cleared by someone who has checked the account)",
+                  file=sys.stderr)
+            sys.exit(2)
+        note = " ".join(sys.argv[3:])
+        out = risk_manager.release_halt(who, note)
+        print(out)
+        return
+
     if cmd in ("start", "stop"):
         from . import start_protocol
         # --no-orders starts a worker that does everything except reach the
@@ -2183,8 +2217,8 @@ def main() -> None:
               f"{cmd} {sys.argv[2]}: {'rejected' if ok else 'not found / already resolved'}")
     else:
         print(f"unknown command: {cmd}")
-        print("commands: start | stop | review | approvals | approve <id> "
-              "| reject <id>")
+        print("commands: start | stop | halt | release-halt <who> [note] | "
+              "review | approvals | approve <id> | reject <id>")
         print("(run/scan are the worker role — the protocol invokes them)")
         sys.exit(2)
 

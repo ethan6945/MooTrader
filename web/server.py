@@ -1454,6 +1454,43 @@ def api_scheduler(action):
     return jsonify({"ok": False, "error": "bad action"}), 400
 
 
+@app.route("/api/halt", methods=["GET"])
+def api_halt_status():
+    from src import risk_manager
+    return jsonify({"ok": True, **risk_manager.halt_status()})
+
+
+@app.route("/api/halt/release", methods=["POST"])
+def api_halt_release():
+    """Clear a halt. Requires a name, and records it.
+
+    Halts that describe a discrepancy between what this software believes and
+    what the broker holds cannot be cleared by time — see
+    risk_manager.MANUAL_RELEASE_REASONS. This is the only route that clears
+    them, and it exists so that clearing one is a deliberate act by a person
+    who has looked at the account rather than a side effect of a new day.
+    """
+    from src import risk_manager
+    data = request.get_json(silent=True) or {}
+    who = str(data.get("who") or "").strip()
+    if not who:
+        return jsonify({"ok": False, "code": "who_required",
+                        "error": "name the person releasing this halt — it is "
+                                 "recorded, and a halt of this kind means "
+                                 "someone checked the account"}), 400
+    out = risk_manager.release_halt(who, str(data.get("note") or ""))
+    return jsonify({"ok": True, **out})
+
+
+@app.route("/api/concentration", methods=["GET"])
+def api_concentration():
+    from src import concentration
+    try:
+        return jsonify({"ok": True, **concentration.snapshot()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+
+
 @app.route("/api/trade-env", methods=["GET", "POST"])
 def api_trade_env():
     """SIMULATE ⟷ REAL toggle. The trade env is read from .env when the scheduler
