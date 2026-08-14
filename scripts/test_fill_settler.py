@@ -260,5 +260,98 @@ check("...and says why",
 db.update_state({"inverse_sleeve_enabled": False,
                  "cash_yield_enabled": False})
 
+
+# ── 9. a crash mid-settlement leaves no half-applied fill ──────────────────
+#
+# The atomicity claim is that the position change and the applied counter
+# commit together. A claim like that is only worth its fault injection: kill
+# the process at each write of a settlement, reopen, and require that the fill
+# is either fully applied or not applied at all — never counted once in the
+# position and not in the counter, which the sweep would then apply again.
+print("\n9  killing the process mid-settlement never double-applies")
+
+CRASH_SETTLE = """
+import os, sqlite3, sys
+sys.path.insert(0, {root!r})
+target = int(os.environ["CRASH_AFTER"])
+seen = [0]
+real_connect = sqlite3.connect
+def traced(*a, **kw):
+    conn = real_connect(*a, **kw)
+    def trace(stmt):
+        s = stmt.strip().upper()
+        if s.startswith(("INSERT", "UPDATE", "DELETE", "COMMIT")):
+            seen[0] += 1
+            if seen[0] == target:
+                os._exit(9)          # no unwinding: a real crash
+    conn.set_trace_callback(trace)
+    return conn
+sqlite3.connect = traced
+from src import db, identity, fill_settler
+identity._session = None
+identity.reset_cache()
+identity.start_session("SIMULATE")
+out = fill_settler.settle_all()
+print("SETTLED " + str(out["applied"]))
+"""
+
+import subprocess, shutil, sqlite3 as _sq
+
+def build_case(home):
+    """A 100-share position and an exit order showing 40 filled."""
+    env = dict(os.environ, MMT_HOME=str(home), PYTHONPATH=str(ROOT))
+    subprocess.run([sys.executable, "-c",
+        "from src import db, identity, order_log;"
+        "db._ensure_initialised();"
+        "identity.start_session('SIMULATE');"
+        "db.upsert_open_trade({'symbol':'CR','qty':100,'entry_price':10.0,"
+        "'stop_loss':9.0,'take_profit':12.0});"
+        "coid = order_log.begin(symbol='CR', side='SELL', kind='EXIT',"
+        "  requested_qty=100, limit_price=11.0);"
+        "order_log.submitted(coid, 'BRK1');"
+        "order_log.record_fill(coid, filled_qty=40, avg_price=11.0,"
+        "  state='PARTIAL')"],
+        cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+
+
+def inspect(home):
+    c = _sq.connect(f"file:{home}/data/trader.db?mode=ro", uri=True)
+    c.row_factory = _sq.Row
+    try:
+        o = c.execute("SELECT filled_qty, applied_qty FROM orders").fetchone()
+        pos = c.execute("SELECT qty FROM open_trades WHERE symbol='CR'").fetchone()
+        n_closed = c.execute("SELECT COUNT(*) FROM closed_trades").fetchone()[0]
+        return (int(o["filled_qty"]), int(o["applied_qty"]),
+                int(pos["qty"]) if pos else 0, n_closed)
+    finally:
+        c.close()
+
+
+crashed = 0
+for step in range(1, 9):
+    home = Path(tempfile.mkdtemp(prefix=f"mmt-crash{step}-"))
+    (home / "data").mkdir(parents=True); (home / "logs").mkdir()
+    build_case(home)
+    env = dict(os.environ, MMT_HOME=str(home), PYTHONPATH=str(ROOT),
+               CRASH_AFTER=str(step))
+    r = subprocess.run([sys.executable, "-c", CRASH_SETTLE.format(root=str(ROOT))],
+                       cwd=ROOT, env=env, capture_output=True, text=True)
+    if r.returncode == 9:
+        crashed += 1
+
+    # Whatever happened, reopening and settling again must land on the same
+    # answer: 40 applied, 60 held, one close.
+    env2 = dict(env); env2["CRASH_AFTER"] = "0"
+    subprocess.run([sys.executable, "-c", CRASH_SETTLE.format(root=str(ROOT))],
+                   cwd=ROOT, env=env2, capture_output=True, text=True)
+    filled, applied, held, closed = inspect(home)
+    ok = (filled == 40 and applied == 40 and held == 60 and closed == 1)
+    if not ok:
+        print(f"        filled={filled} applied={applied} held={held} closes={closed}")
+    check(f"crash at write {step}: exactly one application survives", ok)
+    shutil.rmtree(home, ignore_errors=True)
+
+check("the injector actually interrupted something", crashed > 0)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

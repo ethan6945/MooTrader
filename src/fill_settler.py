@@ -175,14 +175,30 @@ def _apply_sell(row: dict, qty: int, price: float,
         entry = float(cur["entry_price"])
         stop = float(cur["stop_loss"])
         pnl = (price - entry) * qty
+
+        # The SAME numbers portfolio.record_close computes, from the same
+        # inputs. There were two close-booking paths — the executor's, with
+        # MFE/MAE and an R-multiple anchored to the ORIGINAL stop, and a
+        # simplified one here — which is exactly the divergence that let the
+        # bracket paths stay wrong for a month after the main exit path was
+        # fixed. One settler means one arithmetic.
+        hw = float(cur["high_water"] or entry) if "high_water" in cur.keys() else entry
+        lw = float(cur["low_water"] or entry) if "low_water" in cur.keys() else entry
+        r_unit = float(cur["init_risk_per_share"] or 0) \
+            if "init_risk_per_share" in cur.keys() else 0.0
+        if r_unit <= 0:
+            r_unit = entry - stop
         db._closed_trade_insert_c(c, {
-            "ts": _now(), "symbol": symbol, "qty": qty, "entry": round(entry, 4),
-            "stop": round(stop, 4), "exit": round(price, 4),
-            "exit_reason": reason, "pnl": round(pnl, 4),
-            "pnl_pct": round((price - entry) / entry * 100, 4) if entry else 0.0,
-            "r_multiple": round((price - entry) / (entry - stop), 4)
-                          if entry > stop else 0.0,
+            "ts": _now(), "symbol": symbol, "qty": qty, "entry": round(entry, 2),
+            "stop": round(stop, 2), "exit": round(price, 2),
+            "exit_reason": reason, "pnl": round(pnl, 2),
+            "pnl_pct": round((price - entry) / entry * 100, 2) if entry else 0.0,
+            "r_multiple": round((price - entry) / r_unit, 2) if r_unit > 0 else 0.0,
             "opened_at": cur["opened_at"],
+            "mfe_pct": round((hw - entry) / entry * 100, 2) if entry else None,
+            "mae_pct": round((lw - entry) / entry * 100, 2) if entry else None,
+            "ml_proba_entry": cur["ml_proba_entry"]
+                              if "ml_proba_entry" in cur.keys() else None,
             "strategy": cur["strategy"] if "strategy" in cur.keys() else None,
         }, row["account_id"], row["session_id"], None)
 
@@ -232,6 +248,35 @@ def _halt_oversold(symbol: str, sold: int, held: int, coid: str) -> None:
             f"check the account.")
     except Exception as e:
         log.error("could not halt after an oversell on %s: %s", symbol, e)
+
+
+def open_position(coid: str, trade: dict, qty: int, price: float) -> dict:
+    """Write a new (or replacement) position AND mark its fill applied, together.
+
+    The entry path cannot use settle(): there is no position row yet, and
+    settle() only extends one. But it has the same requirement — the position
+    and the applied counter must land in one commit, or a crash between them
+    lets the sweep add the same shares again.
+
+    So the entry hands the fully-built trade dict here and this writes both.
+    """
+    from . import identity
+    account_id = db._require_account_id("opening a position")
+    try:
+        session_id = identity.current_session_id()
+    except Exception:
+        session_id = None
+
+    extra = dict(trade.get("extra") or {}) if isinstance(trade.get("extra"), dict) else {}
+    for k, v in trade.items():
+        if k not in db._OPEN_TRADE_COLUMNS:
+            extra[k] = v
+
+    with db.transaction() as c:
+        db._upsert_open_trade_c(c, trade, account_id, session_id, extra)
+        _mark_applied_c(c, coid, int(qty), float(qty) * float(price))
+    return {"applied": int(qty), "symbol": trade["symbol"], "kind": "ENTRY",
+            "price": float(price)}
 
 
 def mark_applied(coid: str, qty: int, price: float) -> None:

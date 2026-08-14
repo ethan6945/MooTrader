@@ -593,16 +593,14 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         }
 
     trades[signal.symbol] = trade
+    # The position and the applied mark commit TOGETHER. Writing the position
+    # and then marking the fill in a second transaction leaves a window where a
+    # crash lets the sweep add the same shares again — small, one-sided, and
+    # avoidable, which is the only reason to have it at all.
+    from . import fill_settler
+    fill_settler.open_position(placement.client_order_id, trade, filled, entry_px)
+    # The JSON mirror is a copy; it follows the write rather than carrying it.
     _save_open_trades(trades)
-    # This fill has now been applied — by creating (or extending) the position
-    # above. Without the mark, the settlement sweep would find filled_qty >
-    # applied_qty and add the same shares a second time.
-    try:
-        from . import fill_settler
-        fill_settler.mark_applied(placement.client_order_id, filled, entry_px)
-    except Exception as e:
-        log.error("%s: position written but the fill was not marked applied "
-                  "(%s) — the settlement sweep may duplicate it", signal.symbol, e)
     return trade
 
 
@@ -887,24 +885,43 @@ def _book_exit(symbol: str, trade: dict, trades: dict, fill: "ExitFill",
     if fill.filled <= 0:
         return 0.0, fill.price, 0
 
+    # Through the settler, not around it.
+    #
+    # This used to book the close itself and then mark the fill applied in a
+    # SEPARATE transaction — a crash between the two re-applied the same shares
+    # on the next sweep. And its arithmetic was the executor's while the
+    # bracket paths used the settler's, which is how the two drifted.
+    #
+    # One writer now: the ledger row, the position change and the applied mark
+    # all commit together, and there is a single definition of what a close
+    # looks like.
+    from . import fill_settler
+    if fill.client_order_id:
+        out = fill_settler.settle(fill.client_order_id)
+        # The settler works on the database; refresh the caller's in-memory map
+        # so it does not save a stale copy over what just committed.
+        fresh = db.get_open_trade(symbol)
+        if fresh:
+            trades[symbol] = fresh
+            log.warning("%s: %d share(s) still held after a partial %s — the "
+                        "position stays open and protected",
+                        symbol, fresh["qty"], reason)
+        else:
+            trades.pop(symbol, None)
+        return out.get("pnl", 0.0), out["price"], out["applied"]
+
+    # No order id: a legacy path that placed without the log. Book it the old
+    # way rather than silently doing nothing, and say so.
+    log.warning("%s: booking a %s close with no order id — the fill cannot be "
+                "settled idempotently", symbol, reason)
     pnl = _close_and_log(symbol, trade, fill.filled, fill.price, reason)
     remaining = int(trade.get("qty", 0)) - fill.filled
     if remaining > 0:
         trade["qty"] = remaining
         trades[symbol] = trade
-        log.warning("%s: %d share(s) still held after a partial %s — the "
-                    "position stays open and protected", symbol, remaining, reason)
     else:
         trades.pop(symbol, None)
     _save_open_trades(trades)
-    if getattr(fill, "client_order_id", None):
-        try:
-            from . import fill_settler
-            fill_settler.mark_applied(fill.client_order_id, fill.filled,
-                                      fill.price)
-        except Exception as e:
-            log.error("%s: close booked but the fill was not marked applied "
-                      "(%s) — the settlement sweep may duplicate it", symbol, e)
     return pnl, fill.price, fill.filled
 
 
