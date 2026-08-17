@@ -525,37 +525,20 @@ def scan_once() -> None:
         # regime kill-switch, but a hard 999 here double-locks. The hysteresis
         # layer (confirmed_label) prevents whipsaw so the threshold doesn't
         # oscillate on a single SPY close grazing the 200-MA.
-        base_thr = entry_thr
-        if effective_label == "BULL":
-            # 2026-07-27: the BULL discount now requires HEALTHY breadth.
-            # effective_label is the HYSTERESIS label (regime.confirmed), which
-            # is what keeps the threshold from oscillating — but it also means
-            # the discount survives well into a deteriorating tape. Live case
-            # 2026-07-27: raw regime NEUTRAL (SPY below its 50-MA) and breadth
-            # UNHEALTHY (A/D 0.40, 42% >50MA), yet confirmed=BULL pulled the bar
-            # from 75 down to 65 and let a 65.2 candidate into the funnel — with
-            # a 17.9% live win rate and a 12% account drawdown. Loosening and
-            # deteriorating must not happen at the same time. Breadth stays
-            # ADVISORY for blocking (BREADTH_BLOCKING=false, deliberate — see
-            # .env); this only withholds a discount, it never blocks a trade,
-            # so it cannot repeat the 2026-07-03 over-blocking regression.
-            if breadth_ok:
-                base_thr = max(55, entry_thr - 5)
-            else:
-                log.info("BULL threshold discount withheld — breadth unhealthy "
-                         "(%s); holding the bar at %.0f", breadth_note, entry_thr)
-        elif effective_label == "NEUTRAL":
-            base_thr = min(85, entry_thr + 5)
-        # BEAR: regime kill_switch already blocks — threshold is moot
-        threshold_floor = base_thr
-        # News-driven mode (2026-08-07, DEFAULT OFF): when news is the selector,
-        # the rule score demotes to a tradeability prefilter, so its bar drops
-        # (delta is negative, clamped at 50 — a headline is not a reason to buy
-        # broken tape). Inert when the switch is off: returns base_thr unchanged.
-        if news_driven.enabled():
-            threshold_floor = news_driven.threshold_floor(base_thr)
-            log.info("%s — rule floor %.0f → %.0f", news_driven.describe(),
-                     base_thr, threshold_floor)
+        # One definition, three engines. This block used to live here and be
+        # partially reimplemented in the sandbox (which omitted the breadth
+        # condition) and not at all in backtest_v3 (which compared against a
+        # flat cfg.threshold) — which is most of why only a quarter of their
+        # trades ever matched. src/entry_threshold.py is now the whole rule.
+        from . import entry_threshold as _et
+        _thr = _et.resolve(
+            base=entry_thr, regime_label=effective_label,
+            breadth_ok=breadth_ok,
+            news_floor=(news_driven.threshold_floor
+                        if news_driven.enabled() else None))
+        threshold_floor = _thr.floor
+        log.info("entry bar %.0f — %s", threshold_floor, _thr.reason)
+
         # P1-2 (2026-06-26): Late-entry risk premium. Entries after 14:00 ET
         # face shrinking liquidity, wider spreads, and immediate overnight gap
         # exposure before the thesis has time to play out. Raise the bar by
@@ -687,10 +670,12 @@ def scan_once() -> None:
             # P1-2: Late-entry gate — new names after 14:00 ET must clear a
             # higher bar (+5 pts). Stacking add-ons skip this (they already
             # survived a session and the thesis was already validated).
-            if _late_cutoff and not is_stack_candidate and sig.score < min(88, threshold_floor + 8):
+            _req = _thr.required(is_stack=is_stack_candidate,
+                                 minutes_into_day=_now_et.hour * 60 + _now_et.minute)
+            if sig.score < _req and _req > threshold_floor:
                 _late_reason = (
                     f"late session ({_now_et:%H:%M} ET) — new-name entry requires score ≥ "
-                    f"{min(88, threshold_floor + 8)} (got {sig.score})"
+                    f"{_req:.0f} (got {sig.score})"
                 )
                 log.info("Skip %s [late_entry]: %s", sig.symbol, _late_reason)
                 audit.record("skip", symbol=sig.symbol, gate="late_entry",

@@ -204,6 +204,7 @@ def simulate_v3(
     """
     from .indicators import (check_gap, daily_trend_bullish, evaluate,
                              relative_strength, sector_regime_bullish)
+    from . import entry_threshold as _entry_threshold
     from . import regime as regime_mod
     from .config import derive_max_positions, settings as _settings
 
@@ -426,7 +427,14 @@ def simulate_v3(
                 sig = max(cands, key=lambda s: s.score)
         except Exception:
             return None
-        if sig.score < cfg.threshold or sig.atr <= 0:
+        # Cheap pre-filter at the LOWEST the bar can ever be. The real
+        # threshold needs the regime and breadth, which are computed below;
+        # this only avoids doing that work for a score no configuration could
+        # ever admit.
+        _abs_floor = min(cfg.threshold,
+                         max(_entry_threshold.BULL_FLOOR,
+                             cfg.threshold - _entry_threshold.BULL_DISCOUNT))
+        if sig.score < _abs_floor or sig.atr <= 0:
             return None
 
         # Trade-phase windows (live kill_switch): new entries only between
@@ -454,14 +462,45 @@ def simulate_v3(
                         return None
 
         # regime gate / scaling input
+        _regime_for_thr = None
+        _breadth_ok_for_thr = None
         regime = None
         if (cfg.apply_regime_gate or cfg.use_regime_scaling) and \
                 spy_daily is not None and not spy_daily.empty:
             s_until = _completed_daily(spy_daily, df.index[i]).tail(250)
             if len(s_until) >= 200:
                 regime = regime_mod.assess(s_until)
+                _regime_for_thr = regime
+                # Same SPY slice, no extra data: breadth is a SPY proxy in live
+                # too, so the threshold's condition costs nothing here.
+                try:
+                    # df.iloc[i], not `bar` — that name is not bound until much
+                    # later in this function, and reading it here was a
+                    # NameError waiting for the first BULL bar.
+                    _v = float(df.iloc[i]["vix"])
+                    _v_real = _v > 0
+                except (KeyError, TypeError, ValueError, IndexError):
+                    _v, _v_real = 0.0, False
+                _breadth_ok_for_thr = _entry_threshold.breadth_ok_from_spy(
+                    s_until, vix=_v, vix_is_real=_v_real)
                 if cfg.apply_regime_gate and regime.block_new_entries:
                     return None
+
+        # The entry bar, from the SHARED definition rather than a flat number.
+        #
+        # v3 compared every score against cfg.threshold while live and the
+        # sandbox applied a regime discount, a breadth condition on it, and a
+        # late-session premium. Three engines, three candidate sets — and v3's
+        # is what the optimizer and the autopilot propose parameters from, so it
+        # was tuning for a strategy nobody runs.
+        _thr = _entry_threshold.resolve(
+            base=cfg.threshold,
+            regime_label=(getattr(_regime_for_thr, "confirmed", None)
+                          or getattr(_regime_for_thr, "label", None)),
+            breadth_ok=_breadth_ok_for_thr)
+        _minutes = df.index[i].hour * 60 + df.index[i].minute
+        if sig.score < _thr.required(is_stack=False, minutes_into_day=_minutes):
+            return None
 
         # Phase 3-A: relative-strength gate — only let in names beating SPY over
         # the lookback. Uses DAILY closes for both (parity with live). Missing

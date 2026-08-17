@@ -49,7 +49,12 @@ class SandboxConfig:
     tickers: list[str] = field(default_factory=list)
     universe_mode: str = "static"
     enable_ai: bool = False
-    scan_interval_min: int = 30
+    # Live's interval, not a number of its own. The sandbox exists to replay
+    # live, and live scans every SCAN_INTERVAL_MIN — 15 since the 2026-07-04
+    # timing audit. Replaying on a 30-minute grid meant half live's decision
+    # points, so the replay could not see entries live would have taken and its
+    # trade count was structurally lower for a reason unrelated to strategy.
+    scan_interval_min: int = 0      # 0 → resolved to settings.scan_interval_min
     data_lookback_days: int = 120
     # Starting capital. 0 → resolved at run time to risk_manager.budget_usd()
     # (db-state budget override, else .env ACCOUNT_USD) — the same deployable
@@ -683,6 +688,11 @@ def run_sandbox(config: SandboxConfig) -> dict:
     # override beats frozen .env) — the same base live sizing/slot math uses.
     if config.account_usd <= 0:
         config.account_usd = risk_manager.budget_usd()
+    # Resolved once, here, so the whole run reports the interval it used.
+    _scan_minutes = config.scan_interval_min or settings.scan_interval_min
+    if config.scan_interval_min and config.scan_interval_min != settings.scan_interval_min:
+        print(f"  NOTE: replaying on a {_scan_minutes}-minute grid while live "
+              f"scans every {settings.scan_interval_min} — decision points differ")
 
     # 1. Initial universe
     tickers = _load_universe(config)
@@ -747,7 +757,7 @@ def run_sandbox(config: SandboxConfig) -> dict:
 
     # 3. Main loop
     while not clock.done():
-        clock.advance(config.scan_interval_min)
+        clock.advance(_scan_minutes)
         now = clock.ny_now()
 
         # Dynamic universe refresh — on the same schedule live uses.
@@ -813,14 +823,18 @@ def run_sandbox(config: SandboxConfig) -> dict:
         if now.weekday() == 4 and now.hour * 60 + now.minute >= 14 * 60:
             broker.process_bar(); continue
 
-        # Adaptive threshold
+        # Adaptive threshold — the SHARED definition, not a second copy.
+        #
+        # This block reimplemented live's rule and left out the breadth
+        # condition on the BULL discount, so the replay took entries live would
+        # have refused: on a deteriorating tape the hysteresis label stays BULL
+        # while breadth is already unhealthy, and live withholds the discount
+        # exactly there.
+        from src import entry_threshold as _et
         entry_thr = runtime_config.entry_threshold()
-        base_thr = entry_thr
-        if effective_label == "BULL":
-            base_thr = max(55, entry_thr - 5)
-        elif effective_label == "NEUTRAL":
-            base_thr = min(85, entry_thr + 5)
-        threshold_floor = base_thr
+        _thr = _et.resolve(base=entry_thr, regime_label=effective_label,
+                           breadth_ok=breadth_ok)
+        threshold_floor = _thr.floor
 
         # Score candidates (same 4 strategies as live)
         ranked = []
@@ -878,7 +892,9 @@ def run_sandbox(config: SandboxConfig) -> dict:
             is_stack = sig.symbol in held
             if not is_stack and new_names >= new_limit:
                 continue
-            if late_cutoff and not is_stack and sig.score < min(88, threshold_floor + 8):
+            _req = _thr.required(is_stack=is_stack,
+                                 minutes_into_day=now.hour * 60 + now.minute)
+            if sig.score < _req and _req > threshold_floor:
                 _skip("late_entry", ""); continue
             if is_stack and sig.score < entry_thr:
                 continue
