@@ -5,7 +5,11 @@ Sandbox v3 — historical replay using the SAME code path as live trading.
 Every gate, every filter, every module imported directly from src/.
 The ONLY differences from live:
   1. SimClock replaces real-time clock
-  2. SimFeed returns no-lookahead historical klines (same OpenD source)
+  2. SimFeed returns historical klines truncated to bars that have CLOSED by
+     the sim clock (same OpenD source). Until 2026-08-15 this truncated on
+     `index <= now` while bars are indexed by their START, so a scan inside a
+     forming bar received that bar's FINISHED close — up to an hour of future
+     price. Every sandbox result before that date was computed with it.
   3. SimBroker simulates fills (limit model against next-bar OHLC)
   4. AI news/veto/sentiment in ADVISORY mode — annotates trades, never blocks
      Results include ai_filtered_pnl so you can measure AI's value-add.
@@ -116,8 +120,14 @@ def _tz_aware(df: pd.DataFrame) -> bool:
         return False
 
 class SimFeed:
-    """Pre-fetched historical klines, clock-truncated for zero lookahead.
-    First run fetches from OpenD → caches to data/sandbox_cache/ as parquet."""
+    """Pre-fetched historical klines, truncated to bars that have CLOSED.
+    First run fetches from OpenD → caches to data/sandbox_cache/ as parquet.
+
+    "Clock-truncated for zero lookahead" is what this used to say and it was
+    not true — see get_kline. Bars carry their START time, so truncating on
+    `index <= now` handed over the bar currently forming, complete, with a
+    close from the future.
+    """
     CACHE_DIR = ROOT / "data" / "sandbox_cache"
 
     def __init__(self, tickers: list[str], start: datetime, end: datetime,
@@ -243,7 +253,33 @@ class SimFeed:
             cutoff = sim_now.replace(tzinfo=getattr(df.index, 'tz', None))
         else:
             cutoff = sim_now
-        df = df[df.index <= cutoff]
+
+        # Only bars that have CLOSED by now.
+        #
+        # This was `df.index <= cutoff`, and bars are indexed by their START
+        # (time_key 10:30 covers 10:30–11:30). So at a sim time of 11:00 the
+        # 10:30 bar was included WITH ITS 11:30 CLOSE — thirty minutes of future
+        # price, on every scan that landed inside a forming bar. At the 15-minute
+        # interval live actually uses, that is three scans in four.
+        #
+        # Live does not get that. Live's get_kline at 11:00 returns the 10:30 bar
+        # with the price AS OF 11:00; the sandbox's cache holds the finished bar
+        # and handed over the finished close. So the replay was not merely
+        # different from live, it was optimistic in a way live cannot reproduce —
+        # in the engine whose docstring promises no lookahead.
+        #
+        # Dropping the forming bar makes the sandbox slightly MORE conservative
+        # than live, which sees partial data for it. That is the right direction
+        # to be wrong in: without intra-hour bars the alternative is inventing a
+        # partial close, and a replay that guesses at prices is not evidence.
+        if len(df.index) >= 2 and cutoff is not None:
+            step = df.index.to_series().diff().median()
+            if pd.notna(step) and step > pd.Timedelta(0):
+                df = df[df.index + step <= cutoff]
+            else:
+                df = df[df.index <= cutoff]
+        else:
+            df = df[df.index <= cutoff]
         return df.tail(bars) if not df.empty else None
 
     def _load_vix(self, fetch_start: datetime, fetch_end: datetime):
