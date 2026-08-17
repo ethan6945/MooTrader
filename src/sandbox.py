@@ -66,14 +66,47 @@ class SandboxConfig:
     # settings.account_usd ignored the GUI/db budget override, so sandbox and
     # the Web backtest could silently replay two different account sizes.
     account_usd: float = 0.0
+    # Which trading sessions this replay may see and trade.
+    #   "RTH"  regular hours only — what the strategy was designed and
+    #          validated on, and the default so nothing changes silently
+    #   "ETH"  adds pre-market and after-hours
+    #   "ALL"  adds the overnight session as well
+    #
+    # Measured before this existed, median hourly volume over 30 days across
+    # AAPL/MSFT/NVDA/HPE: RTH 3.22M, after-hours 1.39M (0.43x), pre-market
+    # 60K (0.019x), overnight 8.5K (0.003x). HPE overnight trades 1,841 shares
+    # an hour — a $3,600 position is 170 shares, nine percent of the hour, from
+    # one order. The volume participation cap in SimBroker is what keeps a
+    # replay of those sessions from inventing fills nobody could get.
+    sessions: str = "RTH"
 
 
 # ── SimClock ───────────────────────────────────────────────
 
+# Session windows in ET, by bar START minute. Pre-market opens at 04:00 and
+# after-hours runs to 20:00; the overnight session is everything else.
+_SESSION_WINDOWS = {
+    "RTH": (9 * 60 + 45, 15 * 60 + 30),
+    "ETH": (4 * 60, 20 * 60),
+    "ALL": (0, 24 * 60),
+}
+
+
+def _normalise_sessions(sessions: str) -> str:
+    """An unrecognised session name means regular hours.
+
+    Failing toward the narrow, validated session is the only safe direction: a
+    typo that opened the overnight book would be a config error that starts
+    trading a session nothing has been tested against.
+    """
+    return sessions if sessions in _SESSION_WINDOWS else "RTH"
+
+
 class SimClock:
-    def __init__(self, start: datetime, end: datetime):
+    def __init__(self, start: datetime, end: datetime, sessions: str = "RTH"):
         self._now = start
         self.end = end
+        self.sessions = _normalise_sessions(sessions)
 
     def ny_now(self) -> datetime:
         return self._now
@@ -82,13 +115,15 @@ class SimClock:
         self._now += timedelta(minutes=minutes)
         while self._now.weekday() >= 5:
             self._now += timedelta(days=1)
-            self._now = self._now.replace(hour=9, minute=30)
+            lo, _ = _SESSION_WINDOWS[self.sessions]
+            self._now = self._now.replace(hour=lo // 60, minute=lo % 60)
 
     def in_trade_phase(self) -> bool:
         if self._now.weekday() >= 5:
             return False
+        lo, hi = _SESSION_WINDOWS[self.sessions]
         m = self._now.hour * 60 + self._now.minute
-        return 9 * 60 + 45 <= m < 15 * 60 + 30
+        return lo <= m < hi
 
     def done(self) -> bool:
         return self._now >= self.end
@@ -131,7 +166,13 @@ class SimFeed:
     CACHE_DIR = ROOT / "data" / "sandbox_cache"
 
     def __init__(self, tickers: list[str], start: datetime, end: datetime,
-                 clock: "SimClock", lookback_days: int = 120):
+                 clock: "SimClock", lookback_days: int = 120,
+                 sessions: str = "RTH"):
+        # Cached PER SESSION. An RTH cache and an all-hours cache are different
+        # series for the same symbol, and sharing one file would let an
+        # extended-hours experiment quietly poison every regular-hours run that
+        # came after it.
+        self.sessions = _normalise_sessions(sessions)
         self._hourly: dict[str, pd.DataFrame] = {}
         self._daily: dict[str, pd.DataFrame] = {}
         self._tickers = tickers
@@ -141,13 +182,53 @@ class SimFeed:
         self._fetch_all(start - timedelta(days=lookback_days), end)
         self._load_vix(start - timedelta(days=lookback_days), end)
 
+    def cache_name(self, sym: str, ktype) -> str:
+        """The parquet filename for this symbol, timeframe and session.
+
+        Session-suffixed for anything but regular hours. A shared file would
+        let an extended-hours experiment overwrite the cache every later
+        regular-hours replay reads — including the parity runs, which is a
+        corruption that outlives the run that caused it and shows up in the
+        output as nothing at all.
+        """
+        tf = "DAY" if ktype == KLType.K_DAY else "60M"
+        # Dailies are session-independent, so they keep one file.
+        suffix = "" if (self.sessions == "RTH" or ktype == KLType.K_DAY) \
+            else f"_{self.sessions}"
+        return f"{sym}_{tf}{suffix}.parquet"
+
+    def _session_arg(self, ktype):
+        """The session to ask the broker for, or None to take its default.
+
+        Daily bars are one row a day in every session, so they are always left
+        alone — asking for extended hours there would change what the row
+        contains rather than how many there are, and every daily-derived
+        indicator in the strategy was fitted on regular-hours dailies.
+        """
+        if ktype == KLType.K_DAY or self.sessions == "RTH":
+            return None
+        return self.sessions
+
+    def _hourly_budget(self) -> tuple[int, int]:
+        """(bars, bars-per-day) for the hourly fetch, scaled to the session.
+
+        500 bars over 7-bar days is about ten weeks of history. The same 500
+        over 24-bar days is three weeks, which is not enough for a 50-day
+        moving average — so the budget grows with the session rather than the
+        lookback silently shrinking.
+        """
+        if self.sessions == "RTH":
+            return 500, 7
+        bpd = 16 if self.sessions == "ETH" else 24
+        return min(500 * bpd // 7, 2400), bpd
+
     def _fetch_all(self, fetch_start: datetime, fetch_end: datetime):
         client = MooClient()
         print(f"  Fetching {len(self._tickers)} tickers + SPY …")
         all_syms = list(self._tickers) + ["SPY"]
         for i, sym in enumerate(all_syms):
-            cache_h = self.CACHE_DIR / f"{sym}_60M.parquet"
-            cache_d = self.CACHE_DIR / f"{sym}_DAY.parquet"
+            cache_h = self.CACHE_DIR / self.cache_name(sym, KLType.K_60M)
+            cache_d = self.CACHE_DIR / self.cache_name(sym, KLType.K_DAY)
             tag = f"[{i+1}/{len(all_syms)}] {sym}"
 
             # Incremental cache (2026-07-07, owner request): the parquet cache
@@ -189,14 +270,16 @@ class SimFeed:
                         return cached, "cached"
                     if stale <= 15:
                         need = min(full_bars, (stale + 3) * bpd + 5)
-                        fresh = client.get_kline(sym, bars=need, ktype=ktype)
+                        fresh = client.get_kline(sym, bars=need, ktype=ktype,
+                                                 session=self._session_arg(ktype))
                         if fresh is not None and not fresh.empty:
                             merged = _merge(cached, fresh).tail(full_bars * 2)
                             merged.to_parquet(cache_path)
                             return merged, f"topped-up +{stale}d"
                         return cached, "cached (top-up failed)"
                 # full refetch
-                fresh = client.get_kline(sym, bars=full_bars, ktype=ktype)
+                fresh = client.get_kline(sym, bars=full_bars, ktype=ktype,
+                                         session=self._session_arg(ktype))
                 if fresh is not None and not fresh.empty:
                     fresh = fresh.sort_index()
                     fresh.to_parquet(cache_path)
@@ -204,7 +287,8 @@ class SimFeed:
                 return cached, "no data"
 
             try:
-                df, how_h = _load_or_topup(cache_h, KLType.K_60M, 500, 7)
+                h_bars, h_bpd = self._hourly_budget()
+                df, how_h = _load_or_topup(cache_h, KLType.K_60M, h_bars, h_bpd)
                 if df is not None:
                     if _tz_aware(df):
                         df.index = df.index.tz_convert("US/Eastern")
@@ -382,6 +466,62 @@ _COMMISSION_PER_SHARE = 0.0049    # $0.0049/share
 _COMMISSION_MIN = 0.99            # min $0.99 per side
 _SLIPPAGE_BPS = 5.0               # 5 bps = 0.05% one-way
 
+# The most of a bar's traded volume one resting order may claim.
+#
+# The fill model says a limit fills when the bar's low touched it. That is a
+# claim about LIQUIDITY, and it was unconditional — the same assumption for a
+# 3.2M-share regular-hours bar and an 8.5K-share overnight one. Measured across
+# AAPL/MSFT/NVDA/HPE over 30 days, median hourly volume by session:
+#
+#     RTH          3,216,097     1.000x
+#     after-hours  1,393,117     0.433x
+#     pre-market      60,011     0.019x
+#     overnight        8,531     0.003x
+#
+# HPE overnight runs 1,841 shares an hour. A $3,600 position at ~$21 is 170
+# shares — nine percent of everything that trades in that hour, from one order.
+# It does not fill at the limit; it moves the price. Ten percent is a standard
+# conservative participation assumption and it binds almost never in RTH, which
+# is the point: it changes nothing where the old assumption was fine and
+# refuses to invent liquidity where it was not.
+_MAX_VOLUME_PARTICIPATION = 0.10
+
+# How often that cap actually bit, by session. Without this the extended-hours
+# result is unreadable: a run can report more trades and better PnL purely
+# because it filled orders no book could absorb, and the two cases look the
+# same from the summary. Counted here rather than inferred afterwards, because
+# a trimmed fill leaves no trace in the trade record — it is just a smaller
+# position that looks deliberate.
+_FILL_STATS = {"attempted": 0, "capped": 0, "blocked": 0, "by_session": {}}
+
+
+def _bar_session(dt) -> str:
+    m = dt.hour * 60 + dt.minute
+    if 9 * 60 + 30 <= m < 16 * 60:
+        return "RTH"
+    if 4 * 60 <= m < 9 * 60 + 30:
+        return "pre-market"
+    if 16 * 60 <= m < 20 * 60:
+        return "after-hours"
+    return "overnight"
+
+
+def _note_fill(sess: str, outcome: str) -> None:
+    _FILL_STATS[outcome] += 1
+    per = _FILL_STATS["by_session"].setdefault(
+        sess, {"attempted": 0, "capped": 0, "blocked": 0})
+    per[outcome] += 1
+
+
+def reset_fill_stats() -> None:
+    _FILL_STATS.update({"attempted": 0, "capped": 0, "blocked": 0, "by_session": {}})
+
+
+def fill_stats() -> dict:
+    import copy
+    return copy.deepcopy(_FILL_STATS)
+
+
 def _trade_cost(qty: int, entry_px: float, exit_px: float) -> tuple[float, float, float]:
     """Return (total_commission, total_slippage, total_cost) for a round-trip.
 
@@ -467,6 +607,25 @@ class SimBroker:
                 # 10-day parity run. Not a modelling difference to tune around;
                 # a fill nobody would receive.
                 q = o["qty"]
+                # Liquidity check. A partial fill here is not a special case —
+                # the position and ledger have handled partials since the fill
+                # settler landed, so the honest answer is simply a smaller fill.
+                try:
+                    bar_vol = float(bar["volume"] if "volume" in bar.index
+                                    else bar.volume)
+                except Exception:
+                    bar_vol = 0.0
+                _sess = _bar_session(self.clock.ny_now())
+                _note_fill(_sess, "attempted")
+                if bar_vol > 0:
+                    fillable = int(bar_vol * _MAX_VOLUME_PARTICIPATION)
+                    if fillable < q:
+                        if fillable <= 0:
+                            _note_fill(_sess, "blocked")
+                            keep.append(o)
+                            continue
+                        _note_fill(_sess, "capped")
+                        q = fillable
                 base_px = min(op, o["limit"]) if op > 0 else o["limit"]
                 # Slippage in the PRICE, not only in the cash. It was deducted
                 # from cash while the recorded entry stayed clean, so the ledger
@@ -753,8 +912,9 @@ def run_sandbox(config: SandboxConfig) -> dict:
     print(f"{'='*60}")
 
     # 2. Init infrastructure
-    clock = SimClock(config.start, config.end)
-    feed = SimFeed(pool_tickers, config.start, config.end, clock, config.data_lookback_days)
+    clock = SimClock(config.start, config.end, sessions=config.sessions)
+    feed = SimFeed(pool_tickers, config.start, config.end, clock,
+                   config.data_lookback_days, sessions=config.sessions)
     broker = SimBroker(feed, clock, config)
 
     # Dynamic universe — select initial Top-N
@@ -1130,6 +1290,9 @@ if __name__ == "__main__":
     ap.add_argument("--universe", choices=["static", "dynamic"], default="static")
     ap.add_argument("--tickers", nargs="*", default=None)
     ap.add_argument("--output", default=None)
+    ap.add_argument("--sessions", choices=["RTH", "ETH", "ALL"], default="RTH",
+                    help="RTH regular hours only (default); ETH adds pre-market "
+                         "and after-hours; ALL adds overnight")
     args = ap.parse_args()
 
     if args.quick:
@@ -1146,6 +1309,7 @@ if __name__ == "__main__":
         tickers=args.tickers or [],
         universe_mode=args.universe,
         enable_ai=ai,
+        sessions=args.sessions,
     )
     result = run_sandbox(cfg)
 

@@ -20,6 +20,9 @@ WHAT IT COVERS
                            through those guards. Unit-testing one function with
                            five different `source` strings did not catch three
                            holes that this found.
+  test_sessions          — extended trading hours: the cache cannot be shared
+                           across sessions, the fetch window is scaled to the
+                           session's length, and regular hours does not move
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -67,6 +70,7 @@ CHECKS = {
     "recovery":   ("scripts/test_startup_recovery.py", True,  True,  240),
     "settler":    ("scripts/test_fill_settler.py",     True,  True,  240),
     "concentr":   ("scripts/test_concentration.py",   True,  True,  180),
+    "sessions":   ("scripts/test_sessions.py",           True,  True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

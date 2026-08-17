@@ -42,6 +42,15 @@ _BARS_PER_TRADING_DAY = {
     KLType.K_15M: 26, KLType.K_30M: 13, KLType.K_60M: 7, KLType.K_DAY: 1,
 }
 
+# How many hours each session spans, so the window maths above can be scaled.
+# This is not cosmetic: request_history_kline returns the OLDEST max_count rows
+# inside [start, end], so a window sized for 6.5-hour days while asking for
+# 24-hour days holds ~3.7x the bars it budgeted for, overflows the 1000-row
+# return limit, and hands back candles from weeks before the end date — the
+# exact stale-candle bug the comment below describes, reintroduced by a session
+# argument rather than by a timeframe.
+_SESSION_HOURS = {"RTH": 6.5, "ETH": 16.0, "ALL": 24.0}
+
 
 # ---------- process-level sliding-window rate limiter ----------
 # the broker's documented limit: 60 history-kline requests per 30 seconds.
@@ -260,7 +269,8 @@ class MooClient:
 
     # ---------- market data ----------
 
-    def get_kline(self, symbol: str, bars: int = 120, ktype: KLType | None = None) -> pd.DataFrame:
+    def get_kline(self, symbol: str, bars: int = 120, ktype: KLType | None = None,
+                  session: str | None = None) -> pd.DataFrame:
         """Return LATEST `bars` candles. Process-level rate-limited (55/30s) +
         auto-retry once on a high-frequency error.
 
@@ -289,6 +299,8 @@ class MooClient:
         # request (≈78 bars/day → >1000 bars in 15 days) returned candles from ~2
         # weeks ago. Fix: a tight, timeframe-aware window + generous max_count.
         bpd = _BARS_PER_TRADING_DAY.get(ktype)
+        if bpd and ktype != KLType.K_DAY and session in ("ETH", "ALL"):
+            bpd = math.ceil(bpd * _SESSION_HOURS[session] / _SESSION_HOURS["RTH"])
         if bpd:
             trading_days = max(1, math.ceil(bars / bpd))
             window_days = math.ceil(trading_days * 7 / 5) + (5 if ktype == KLType.K_DAY else 3)
@@ -317,6 +329,12 @@ class MooClient:
                 ktype=ktype,
                 max_count=max_count,
                 autype="qfq",
+                # Regular hours unless asked otherwise. "RTH" is the broker's
+                # default and the only session the strategy has ever been
+                # designed or validated on; the others exist so an experiment
+                # can ask for them explicitly rather than by changing a default
+                # under everything that already depends on it.
+                **({"session": session} if session else {}),
             )
             if ret == RET_OK:
                 df = df.copy()
