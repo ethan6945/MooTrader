@@ -342,15 +342,20 @@ _COMMISSION_MIN = 0.99            # min $0.99 per side
 _SLIPPAGE_BPS = 5.0               # 5 bps = 0.05% one-way
 
 def _trade_cost(qty: int, entry_px: float, exit_px: float) -> tuple[float, float, float]:
-    """Return (total_commission, total_slippage, total_cost) for a round-trip."""
+    """Return (total_commission, total_slippage, total_cost) for a round-trip.
+
+    ENTRY slippage is NOT charged here. It is carried in the fill price now —
+    process_bar records the entry as `min(open, limit) * (1 + slip)` — and
+    charging it again would take it twice: once through a worse entry in
+    `gross`, once through this total. Exit slippage still belongs here, because
+    the exit price is booked at the level, not slipped.
+    """
     comm_entry = max(_COMMISSION_MIN, _COMMISSION_PER_SHARE * qty)
     comm_exit = max(_COMMISSION_MIN, _COMMISSION_PER_SHARE * qty)
     total_comm = comm_entry + comm_exit
-    slip_entry = entry_px * qty * _SLIPPAGE_BPS / 10000.0
     slip_exit = exit_px * qty * _SLIPPAGE_BPS / 10000.0
-    total_slip = slip_entry + slip_exit
-    total_cost = round(total_comm + total_slip, 2)
-    return round(total_comm, 2), round(total_slip, 2), total_cost
+    total_cost = round(total_comm + slip_exit, 2)
+    return round(total_comm, 2), round(slip_exit, 2), total_cost
 
 
 # ── SimBroker ──────────────────────────────────────────────
@@ -361,9 +366,15 @@ class SimPos:
     entry_time: datetime; strategy: str
     ai_score: float = 0.0; ai_verdict: str = ""
     high_w: float = 0.0; low_w: float = 999999.0
+    # The ORIGINAL stop, kept because the breakeven ratchet MOVES `stop` and the
+    # R unit has to stay measured from where the risk actually was. Live keeps
+    # the same thing as init_risk_per_share for exactly this reason.
+    init_stop: float = 0.0
+    breakeven_set: bool = False
     def __post_init__(self):
         if self.high_w == 0.0: self.high_w = self.entry
         if self.low_w == 999999.0: self.low_w = self.entry
+        if self.init_stop == 0.0: self.init_stop = self.stop
 
 @dataclass
 class SimTrade:
@@ -403,11 +414,26 @@ class SimBroker:
             bar = self._latest(o["sym"])
             if bar is None: keep.append(o); continue
             lo = float(bar["low"] if "low" in bar.index else bar.low)
+            op = float(bar["open"] if "open" in bar.index else bar.open)
             if lo <= o["limit"]:
-                # Deduct entry commission + slippage from cash immediately
-                q = o["qty"]; ep = o["limit"]
+                # Fill at the OPEN when the market is already through the limit.
+                #
+                # This paid the limit price unconditionally, which no real limit
+                # order does: if the bar opens below where you bid, you get the
+                # open. Against v3 — which takes next_open when it is favourable
+                # — that showed up as the sandbox systematically entering worse,
+                # a median 80bps and up to 234bps on matched trades in the
+                # 10-day parity run. Not a modelling difference to tune around;
+                # a fill nobody would receive.
+                q = o["qty"]
+                base_px = min(op, o["limit"]) if op > 0 else o["limit"]
+                # Slippage in the PRICE, not only in the cash. It was deducted
+                # from cash while the recorded entry stayed clean, so the ledger
+                # — and the R-multiple computed from it — described a price that
+                # was never paid.
+                ep = round(base_px * (1 + _SLIPPAGE_BPS / 10000.0), 4)
                 comm_entry = max(_COMMISSION_MIN, _COMMISSION_PER_SHARE * q)
-                slip_entry = ep * q * _SLIPPAGE_BPS / 10000.0
+                slip_entry = 0.0        # now carried in ep
                 self.positions[o["sym"]] = SimPos(
                     o["sym"], ep, o["stop"], o["tp"], q,
                     self.clock.ny_now(), o["strat"],
@@ -426,9 +452,31 @@ class SimBroker:
             pos.high_w = max(pos.high_w, hi)
             pos.low_w = min(pos.low_w, lo)
 
+            # Breakeven ratchet — live has run this since 2026-06-11 with
+            # USE_BREAKEVEN_STOP=true, backtest_v3 models it, and the sandbox
+            # did not implement it at all. A replay engine that omits an exit
+            # rule the live bot applies is not replaying live: it rides trades
+            # to the original stop that live would have closed at entry, which
+            # is where 2 of 3 matched trades in the parity run disagreed on
+            # exit reason.
+            #
+            # Semantics copied from executor: armed off the HIGH-WATER mark so
+            # a spike between ticks still arms it, ratchet only, and the exit
+            # is labelled BREAKEVEN rather than SL once the stop sits at or
+            # above entry — the label drives the SL re-entry cooldown.
+            if settings.use_breakeven_stop and not pos.breakeven_set:
+                be_risk = pos.entry - pos.init_stop
+                if be_risk > 0 and pos.high_w >= pos.entry + \
+                        runtime_config.breakeven_trigger_r() * be_risk:
+                    pos.breakeven_set = True
+                    if pos.entry > pos.stop:
+                        pos.stop = round(pos.entry, 2)
+
             exit_px = reason = None
             if lo <= pos.stop:
-                exit_px = min(op, pos.stop); reason = "SL"
+                exit_px = min(op, pos.stop)
+                reason = ("BREAKEVEN" if pos.breakeven_set
+                          and pos.stop >= pos.entry else "SL")
             elif hi >= pos.tp:
                 exit_px = pos.tp; reason = "TP"
             elif _business_days(pos.entry_time, self.clock.ny_now()) >= runtime_config.max_hold_days():
