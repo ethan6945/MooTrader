@@ -96,6 +96,30 @@ def settle(coid: str, *, allow_oversell_halt: bool = True) -> dict:
     return result
 
 
+def _refresh_mirror() -> None:
+    """Rewrite data/open_trades.json from the database.
+
+    The mirror is a DERIVED file — the database is authoritative — but the
+    start protocol compares the two and refuses to start when they disagree.
+    That check was written when the executor was the only thing that created
+    positions, and the executor rewrote the mirror on every pass.
+
+    This module then became the only place a position is created or changed,
+    and did not take the mirror with it. The result was not subtle: every
+    position opened through the settler left the mirror stale, so the NEXT
+    start refused with position_conflict. In staging that is an annoyance; in
+    production it is the bot declining to come back up after its first fill.
+
+    Never raises. A stale mirror must not be able to undo a settlement that has
+    already committed — the database is the record, and the worst case here is
+    that the file is refreshed on the next settlement instead.
+    """
+    try:
+        db.mirror_open_trades_json(db.load_open_trades())
+    except Exception as e:
+        log.error("position mirror could not be refreshed: %s", e)
+
+
 def _mark_applied_c(c, coid: str, qty: int, notional: float) -> None:
     """Bump the applied counters. MUST run in the caller's transaction.
 
@@ -132,6 +156,7 @@ def _apply_buy(row: dict, qty: int, price: float) -> dict:
                   "WHERE account_id = ? AND symbol = ?",
                   (new_qty, new_entry, row["account_id"], symbol))
         _mark_applied_c(c, coid, qty, qty * price)
+    _refresh_mirror()
     log.info("%s: +%d shares from a late fill → %d @ avg $%.4f",
              symbol, qty, new_qty, new_entry)
     return {"applied": qty, "symbol": symbol, "kind": row["kind"],
@@ -220,6 +245,7 @@ def _apply_sell(row: dict, qty: int, price: float,
     except Exception as e:
         log.error("%s: close booked but PnL state update failed: %s", symbol, e)
 
+    _refresh_mirror()
     log.info("%s: -%d shares booked as %s @ $%.4f (pnl %+.2f), %d remain",
              symbol, qty, reason, price, pnl, remaining)
     return {"applied": qty, "symbol": symbol, "kind": row["kind"],
@@ -275,6 +301,7 @@ def open_position(coid: str, trade: dict, qty: int, price: float) -> dict:
     with db.transaction() as c:
         db._upsert_open_trade_c(c, trade, account_id, session_id, extra)
         _mark_applied_c(c, coid, int(qty), float(qty) * float(price))
+    _refresh_mirror()
     return {"applied": int(qty), "symbol": trade["symbol"], "kind": "ENTRY",
             "price": float(price)}
 

@@ -340,7 +340,12 @@ def reconcile_live(client, *, lookback_days: int = 2) -> dict:
     """
     live = live_orders()
     if not live:
-        return {"checked": 0, "resolved": 0, "still_unknown": 0, "orders": []}
+        # complete=True, explicitly. Nothing outstanding is the HEALTHIEST
+        # outcome this function has, and omitting the key made it the only
+        # outcome a caller checking `complete` reads as a failure. A contract
+        # that inverts on the good path is one every caller gets wrong once.
+        return {"checked": 0, "resolved": 0, "complete": True,
+                "still_unknown": 0, "orders": []}
 
     # One query for the whole window rather than one per order: the history
     # endpoint is rate-limited hard enough that a per-order loop starts failing
