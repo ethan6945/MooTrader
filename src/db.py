@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -398,6 +399,66 @@ def transaction():
         c.close()
 
 
+def _split_schema(script: str) -> tuple[str, str]:
+    """SCHEMA split into (tables, indexes), in dependency order.
+
+    An index can reference a column that a migration is about to add. A table
+    cannot — CREATE TABLE IF NOT EXISTS is a no-op once the table is there.
+    That asymmetry is the whole reason this exists: running all of SCHEMA
+    before the migrations meant
+
+        CREATE UNIQUE INDEX ... ON orders(account_id, intent_key)
+            WHERE intent_key IS NOT NULL AND state IN (...)
+
+    executed against a v6 orders table that has no intent_key, and the upgrade
+    died there — before a single migration ran, with the version untouched and
+    no path forward. The only reason that was ever survivable is that the one
+    database it was tried on (v3) had no orders table at all, so SCHEMA created
+    it complete and the missing migration was never needed.
+
+    The order is: tables → migrations → indexes.
+
+    Split with a scanner rather than `script.split(";")` because SCHEMA's
+    comments contain both semicolons and apostrophes, and a naive split
+    silently produces statement fragments that then fail as syntax errors.
+    """
+    stmts, buf = [], []
+    i, n, in_str = 0, len(script), False
+    while i < n:
+        ch = script[i]
+        if in_str:
+            buf.append(ch)
+            if ch == "'":
+                in_str = False
+            i += 1
+        elif ch == "'":
+            in_str = True
+            buf.append(ch)
+            i += 1
+        elif script.startswith("--", i):
+            j = script.find("\n", i)
+            i = n if j < 0 else j + 1
+            buf.append("\n")
+        elif ch == ";":
+            stmts.append("".join(buf).strip())
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        stmts.append(tail)
+
+    tables, indexes = [], []
+    for s in stmts:
+        if not s:
+            continue
+        (indexes if re.match(r"CREATE\s+(UNIQUE\s+)?INDEX", s, re.I)
+         else tables).append(s + ";")
+    return "\n".join(tables), "\n".join(indexes)
+
+
 def _upgrade_allowed() -> bool:
     """Is this process permitted to change a database's schema?
 
@@ -476,7 +537,11 @@ def _ensure_initialised() -> None:
                 # one, and the next run resumes from a state no migration was
                 # written to expect. Either the whole upgrade happened or none
                 # of it did; there is no useful state in between.
-                c.executescript(SCHEMA)      # idempotent, outside the rebuild
+                # Tables first, migrations next, indexes last — see
+                # _split_schema. Both executescript calls sit outside the
+                # transaction because executescript COMMITs.
+                _tables, _indexes = _split_schema(SCHEMA)
+                c.executescript(_tables)     # idempotent, outside the rebuild
                 c.execute("BEGIN IMMEDIATE")
                 try:
                     if user_v == 0:
@@ -489,6 +554,12 @@ def _ensure_initialised() -> None:
                         _migrate_v4(c)
                     if user_v < 5:
                         _migrate_v5(c)
+                    # v6 added the orders table, which SCHEMA creates above for
+                    # any database that lacks it — so there is no _migrate_v6
+                    # step to run, only the v7 columns on a table v6 already
+                    # had. CREATE TABLE IF NOT EXISTS cannot add those.
+                    if user_v < 7:
+                        _migrate_v7(c)
                     c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 except BaseException:
                     c.execute("ROLLBACK")
@@ -497,6 +568,10 @@ def _ensure_initialised() -> None:
                               user_v, SCHEMA_VERSION, user_v)
                     raise
                 c.execute("COMMIT")
+                # Now that every column exists, the indexes over them can be
+                # built. A failure here leaves the data correct and an index
+                # missing, which the next start heals.
+                c.executescript(_indexes)
                 log.info("SQLite upgraded v%d -> v%d: %s",
                          user_v, SCHEMA_VERSION, DB_FILE)
 
