@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,37 @@ SPREAD_MAX_PCT = 0.5   # refuse entry if bid-ask spread > 0.5% of mid
 # Frames where the last K-line is still forming when we fetch — drop it
 # before scoring to eliminate look-ahead bias.
 _INTRADAY_TFS = {"HOUR_1", "MIN_10", "MIN_30"}
+
+
+# The protective loop says nothing when it has nothing to do, so a log with no
+# fast-stop lines is equally consistent with "checked every minute, all clear"
+# and "has not run since the bell". Under soft exits — which is how both
+# SIMULATE and REAL are configured here (REAL_USE_SOFT_EXITS=true) — no stop
+# order exists at the broker, so this loop is the entire protection and its
+# silence is the one silence that must not be ambiguous.
+#
+# 2026-08-19 is why: three positions ran all session, CVX came within 0.15% of
+# its stop, and the log contained no evidence either way.
+_FAST_STOP_HEARTBEAT_S = 900.0
+_last_fast_stop_log = 0.0
+
+
+def _fast_stop_heartbeat() -> None:
+    """Log that protective management is alive, at most every 15 minutes."""
+    global _last_fast_stop_log
+    now = time.time()
+    if now - _last_fast_stop_log < _FAST_STOP_HEARTBEAT_S:
+        return
+    _last_fast_stop_log = now
+    try:
+        p = executor.last_stop_pass()
+        closest = p.get("closest")
+        where = (f", nearest stop {closest * 100:.2f}% away ({p['closest_symbol']})"
+                 if closest is not None else "")
+        log.info("protective loop alive — %d position(s) checked, %d passes%s",
+                 p.get("positions", 0), p.get("passes", 0), where)
+    except Exception as e:
+        log.warning("protective loop heartbeat failed: %s", e)
 
 
 def _drop_forming_bar(df, timeframe: str):
@@ -1904,6 +1936,7 @@ def run_loop() -> None:
                         notifier.send(notifier.trade_action_msg(a))
                     if actions:
                         _refresh_account_snapshot(c, full=False)
+                _fast_stop_heartbeat()
             except Exception as e:
                 log.exception("fast-stop tick failed: %s", e)
 

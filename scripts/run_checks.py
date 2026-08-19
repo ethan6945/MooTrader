@@ -29,6 +29,9 @@ WHAT IT COVERS
   test_forming_bar       — the live scan scores the freshest CLOSED bar: never
                            one that is still forming (look-ahead), never one
                            period staler than it needs to be
+  test_protective_heartbeat — under soft exits the fast-stop loop IS the
+                           protection; it must be possible to tell from the log
+                           that it ran, and how close the nearest stop came
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -79,6 +82,7 @@ CHECKS = {
     "sessions":   ("scripts/test_sessions.py",           True,  True,  120),
     "migrations": ("scripts/test_migrations.py",         True,  True,  240),
     "formingbar": ("scripts/test_forming_bar.py",        True,  True,  120),
+    "heartbeat":  ("scripts/test_protective_heartbeat.py", True, True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

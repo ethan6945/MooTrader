@@ -1492,6 +1492,44 @@ def manage_open_trades(client: MooClient) -> list[dict]:
         return _manage_open_trades_locked(client)
 
 
+# What the last protective pass saw. The fast-stop loop is silent when it has
+# nothing to do, which makes "ran and correctly did nothing" and "never ran"
+# identical in the log — and under soft exits this loop IS the protection, so
+# that is the one thing an operator must be able to tell apart. main.py reads
+# this to emit a periodic heartbeat.
+_LAST_STOP_PASS: dict = {"at": None, "positions": 0, "closest": None,
+                         "closest_symbol": None, "passes": 0}
+
+
+def last_stop_pass() -> dict:
+    return dict(_LAST_STOP_PASS)
+
+
+def _note_stop_pass(trades: dict) -> None:
+    """Record how close the nearest position came to its stop, as a fraction.
+
+    Uses the marks _manage_one has already written to the trade store, so this
+    costs no extra broker call. Never raises: an observability line must not be
+    able to break the thing it observes.
+    """
+    try:
+        closest, sym = None, None
+        for s, tr in (trades or {}).items():
+            stop = float(tr.get("stop_loss") or 0)
+            mark = float(tr.get("last_price") or tr.get("high_water") or
+                         tr.get("entry_price") or 0)
+            if stop > 0 and mark > 0:
+                margin = (mark - stop) / mark
+                if closest is None or margin < closest:
+                    closest, sym = margin, s
+        _LAST_STOP_PASS.update({
+            "at": time.time(), "positions": len(trades or {}),
+            "closest": closest, "closest_symbol": sym,
+            "passes": _LAST_STOP_PASS["passes"] + 1})
+    except Exception:
+        pass
+
+
 def manage_stops_only(client: MooClient) -> list[dict]:
     """Lightweight protective-exit pass for the fast-stop loop (src/main.py).
 
@@ -1524,6 +1562,7 @@ def manage_stops_only(client: MooClient) -> list[dict]:
                 log.exception("fast-stop manage %s failed (skip this symbol): %s",
                               symbol, e)
         _save_open_trades(trades)
+        _note_stop_pass(trades)
         return actions
 
 
