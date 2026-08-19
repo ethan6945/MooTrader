@@ -74,6 +74,23 @@ def note(msg):
 # ───────────────────────── worker role ─────────────────────────
 
 def worker(phase: str) -> int:
+    try:
+        return _worker(phase)
+    finally:
+        # The SDK's contexts run non-daemon threads. Leaving them open does not
+        # merely leak a socket: the interpreter never exits, so the worker never
+        # releases its lease and the next start is refused with
+        # lease_unavailable by a process that believes it already finished.
+        try:
+            _CLIENT[0].close()
+        except Exception:
+            pass
+
+
+_CLIENT: list = [None]
+
+
+def _worker(phase: str) -> int:
     from src import start_protocol
     ready = start_protocol.worker_verify_and_report()
     start_protocol.wait_for_go()
@@ -91,6 +108,7 @@ def worker(phase: str) -> int:
     # Opening the trade context is what resolves and pins the binding — it is
     # deliberately not a separate step anyone could forget or skip.
     client = MooClient()
+    _CLIENT[0] = client
     client.trade
     binding = broker_binding.require("stage A")
     check("the resolved binding is SIMULATE", binding.trade_env == "SIMULATE",
