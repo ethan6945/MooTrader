@@ -38,19 +38,57 @@ _INTRADAY_TFS = {"HOUR_1", "MIN_10", "MIN_30"}
 
 
 def _drop_forming_bar(df, timeframe: str):
-    """Look-ahead audit: strip the last (currently-forming) intraday bar.
+    """Look-ahead audit: strip the last intraday bar IF it is still forming.
 
-    the broker's `request_history_kline` returns bars up to and including the bar
-    that contains "now" — i.e. the last row of an intraday df is OPEN, not
-    closed. Scoring on an open bar means the close, volume, and indicators
-    all keep moving after we evaluate, so the live signal won't match the
-    backtest's closed-bar signal. We always drop the last intraday row.
+    Scoring on an open bar is look-ahead: its close, volume and every indicator
+    derived from them keep moving after the evaluation, so the live signal can
+    never match the backtest's closed-bar signal. That much has always been
+    right. What was wrong is how the open bar was identified.
 
-    Daily bars are left intact — the daily scan path runs once after close.
+    This used to drop the last row unconditionally, on the premise that
+    request_history_kline "returns bars up to and including the bar that
+    contains now". The broker stamps US intraday bars by their END time — a
+    proof, from 2026-08-18: the day's bars run 10:30, 11:30 … 15:30, 16:00, and
+    the 16:00 row carries the closing auction's 1.96M shares against a typical
+    400K. Under start-stamping that day would read 09:30 … 15:30, and a 16:00
+    bar would begin after the close.
+
+    So a bar stamped T covers (T − period, T] and is CLOSED once now >= T, and
+    dropping it discards real data. Measured live on 2026-08-19 at 10:38 ET:
+    the last bar was stamped 10:30 and had not moved in 75 seconds — closed —
+    while the entry priced off the bar before it, yesterday's 16:00 close of
+    258.92, against a live quote of 263.995. That is +196bps, so executor's
+    20bps chase gate refused every entry of the session. Not one of them was a
+    judgement about the market; all of them were the signal being an extra
+    period stale.
+
+    The rule below is safe whichever way the feed behaves. If it publishes a
+    still-forming bar stamped with the end of its period, now < T and the bar is
+    dropped. If it only publishes completed bars — which is what it did this
+    morning, withholding today's 10:30 bar until 10:30 — now >= T and there was
+    never a forming bar to drop.
+
+    Daily bars are left intact: the daily scan path runs once after close.
     """
-    if timeframe.upper() in _INTRADAY_TFS and len(df) > 1:
+    if timeframe.upper() not in _INTRADAY_TFS or len(df) <= 1:
+        return df
+    try:
+        last = df.index[-1]
+        now = clock.ny_now()
+        # The frame's index is naive Eastern; compare like with like rather
+        # than letting pandas raise on a tz mismatch.
+        if getattr(last, "tzinfo", None) is None:
+            now = now.replace(tzinfo=None)
+        if now < last:
+            return df.iloc[:-1]        # its period has not ended yet
+        return df
+    except Exception as e:
+        # Cannot tell — drop it. Being one bar stale is a worse signal; being
+        # one bar early is look-ahead, and only one of those is a correctness
+        # bug that flatters the results.
+        log.warning("could not tell whether the last bar is closed (%s) — "
+                    "dropping it", e)
         return df.iloc[:-1]
-    return df
 
 logging.basicConfig(
     level=logging.INFO,
