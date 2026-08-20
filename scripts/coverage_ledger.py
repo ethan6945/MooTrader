@@ -100,9 +100,21 @@ def main():
                         "IN ('TP','TAKE_PROFIT','TP_BRACKET') "
                         "ORDER BY ts DESC LIMIT 3")])
 
+    # USE_SCALE_OUT gates the tranche logic entirely. With it off this path
+    # cannot be covered no matter how long the bot runs, and reporting it as
+    # merely "not yet" invites someone to wait for something that will never
+    # arrive.
+    try:
+        from src.config import settings as _s
+        _scale_on = bool(getattr(_s, "use_scale_out", False))
+    except Exception:
+        _scale_on = None
     record(
         "scale-out / partial exit",
-        "a position closed in pieces is where quantity bookkeeping goes wrong",
+        "a position closed in pieces is where quantity bookkeeping goes wrong"
+        + ("" if _scale_on else
+           "  — NOTE: USE_SCALE_OUT is off, so this cannot occur at all until "
+           "it is switched on; this is not a matter of waiting"),
         # Ledger and terminal state only. An earlier version of this also
         # grepped the log for "scale.?out", which matched the line
         # "soft stop ... (scale-out enabled)" — a statement that the FEATURE is
