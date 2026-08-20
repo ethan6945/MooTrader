@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from dataclasses import replace
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -233,7 +234,16 @@ def run_window(days: int, end: datetime | None = None) -> dict:
         max_hold_days=rc.max_hold_days(),
         tp_atr_mult=rc.tp_atr_mult(), sl_atr_mult=rc.sl_atr_mult(),
         max_gap_pct=settings.max_gap_pct)
-    data = prefetch_data(cfg)
+    # Reach back far enough to COVER the fold before truncating to it.
+    #
+    # prefetch sizes its fetch from cfg.days and ends at today, so a 90-day ask
+    # reaches back about 140 calendar days. Cutting that at a fold ending in
+    # April left five days of data, and at one ending in February left none —
+    # which is why folds 4 and 5 still reported v3=0 after the truncation was
+    # added. The fetch has to span the gap to the fold as well as the fold.
+    lag_days = max(0, (datetime.now(ET).date() - end.date()).days)
+    fetch_cfg = replace(cfg, days=days + lag_days) if lag_days else cfg
+    data = prefetch_data(fetch_cfg)
     # Point v3 at a historical window by TRUNCATING what it was given.
     #
     # BacktestConfig carries `days` and no end date, so v3 can only ever run
