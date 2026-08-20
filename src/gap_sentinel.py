@@ -62,11 +62,42 @@ def _ai_gap_risk(symbol: str) -> tuple[bool, str]:
         should_sell, conf, reason = ai_validator.assess_gap_risk(symbol)
     except Exception as e:
         log.warning("sentinel AI layer error for %s: %s — holding", symbol, e)
+        _record_verdict(symbol, None, None, f"error: {e}", acted=False)
         return False, ""
     # Only act on a CONFIDENT sell verdict; everything else holds.
-    if should_sell and conf >= settings.gap_sentinel_ai_min_conf:
+    acted = bool(should_sell and conf >= settings.gap_sentinel_ai_min_conf)
+    # Recorded whether it acted or not — see _record_verdict.
+    _record_verdict(symbol, should_sell, conf, reason, acted=acted)
+    if acted:
         return True, f"AI 跳空预警(信心 {conf}): {reason}"
     return False, ""
+
+
+def _record_verdict(symbol: str, should_sell, conf, reason: str,
+                    *, acted: bool) -> None:
+    """Persist what the sentinel thought, acted on or not. Never raises.
+
+    The entry path learned this on 2026-06-11 — it stores ai_score on every buy
+    precisely so the layer can be judged later against outcomes. This path,
+    which is the only AI in the system that CHANGES anything, kept no record at
+    all: a "hold" verdict was discarded and a "sell" was visible only as the
+    exit it caused.
+
+    That is not merely thin data, it is biased data. Judging the sentinel from
+    the days it sold means judging it on the cases it chose, which says nothing
+    about the days it held something that then gapped down. Both halves have to
+    be written for the comparison to mean anything.
+    """
+    try:
+        from . import db
+        db.audit_insert(
+            "gap_sentinel_verdict", symbol=symbol,
+            reason=str(reason or "")[:300],
+            extra={"should_sell": None if should_sell is None else bool(should_sell),
+                   "confidence": conf, "acted": acted,
+                   "min_conf": settings.gap_sentinel_ai_min_conf})
+    except Exception as e:
+        log.debug("could not record the sentinel verdict for %s: %s", symbol, e)
 
 
 def assess(symbol: str, use_ai: bool = True) -> tuple[bool, str]:

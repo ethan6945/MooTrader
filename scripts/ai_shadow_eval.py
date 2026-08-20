@@ -107,6 +107,43 @@ def describe(rows, label):
             + (f"  avgR {statistics.mean(rs):+.2f}" if rs else ""))
 
 
+def evaluate(db_path=None, min_n: int = MIN_N) -> dict:
+    """The same analysis, as data — for the weekly review to report on its own.
+
+    Returns enough to decide whether anything can be said yet: the sample
+    sizes, the split each way, and `ready`, which is False until there are
+    min_n scored+closed trades. A caller that ignores `ready` and quotes the
+    numbers anyway is quoting noise.
+    """
+    db = Path(db_path or os.path.expanduser(
+        "~/Library/Application Support/MooMooTrader/data/trader.db"))
+    if not db.exists():
+        return {"ready": False, "error": f"no database at {db}"}
+    buys, closes = load(db)
+    matched = join(buys, closes)
+    scored = [r for r in matched
+              if r["ai_score"] is not None and float(r["ai_score"]) != 50.0]
+    out = {"db": str(db), "n_buys": len(buys), "n_matched": len(matched),
+           "n_scored": len(scored), "min_n": min_n,
+           "ready": len(scored) >= min_n}
+    if scored:
+        vals = sorted(float(r["ai_score"]) for r in scored)
+        med = statistics.median(vals)
+        hi = [r for r in scored if float(r["ai_score"]) >= med]
+        lo = [r for r in scored if float(r["ai_score"]) < med]
+
+        def agg(rows):
+            if not rows:
+                return None
+            pnl = [float(r["pnl"] or 0) for r in rows]
+            return {"n": len(rows), "net": round(sum(pnl), 2),
+                    "avg": round(statistics.mean(pnl), 2),
+                    "win_pct": round(sum(1 for p in pnl if p > 0) / len(rows) * 100, 1)}
+        out.update({"median_score": med, "above_median": agg(hi),
+                    "below_median": agg(lo), "all": agg(scored)})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=os.path.expanduser(

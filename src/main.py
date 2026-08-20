@@ -1414,6 +1414,43 @@ def _weekly_self_review_job() -> None:
             notifier.send(f"⚠ Weekly self-review failed: {e}")
         except Exception:
             pass
+    # The AI layer, judged against what actually happened.
+    #
+    # A backtest of it is not possible — no point-in-time news archive, and a
+    # frontier model asked about March knows how March ended. None of that
+    # applies to the verdicts already on disk: each was written before the
+    # outcome existed, by a consult that runs after the order and cannot change
+    # it. No look-ahead, and no selection effect, because it could not veto.
+    #
+    # Reported here rather than left to be run by hand, because the whole point
+    # of a forward test is that nobody has to remember it. It says "not enough
+    # yet" until there are fifty scored, closed trades, and does not offer a
+    # number before then.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from ai_shadow_eval import evaluate as _ai_eval
+        shadow = _ai_eval()
+        if shadow.get("error"):
+            log.info("AI shadow evaluation: %s", shadow["error"])
+        elif not shadow.get("ready"):
+            log.info("AI shadow evaluation: %d/%d scored+closed trades — "
+                     "not enough to say anything",
+                     shadow["n_scored"], shadow["min_n"])
+        else:
+            a, b = shadow.get("above_median"), shadow.get("below_median")
+            msg = (f"🧪 AI advisory layer — {shadow['n_scored']} scored+closed "
+                   f"trades, enough to read:\n"
+                   f"  score ≥ {shadow['median_score']:.0f}: n={a['n']} "
+                   f"avg ${a['avg']:+,.2f} win {a['win_pct']}%\n"
+                   f"  score < {shadow['median_score']:.0f}: n={b['n']} "
+                   f"avg ${b['avg']:+,.2f} win {b['win_pct']}%\n"
+                   f"Advisory only — it has changed no decision. Promote it "
+                   f"only if this split holds up.")
+            log.info("AI shadow evaluation ready: %s", shadow)
+            notifier.send(msg)
+    except Exception as e:
+        log.warning("AI shadow evaluation failed: %s", e)
+
     # Evidence-based self-improvement (half-Kelly risk + universe review) → approval
     # queue. Reads real fills directly, so it's independent of the review/notify above.
     try:

@@ -40,6 +40,10 @@ WHAT IT COVERS
   test_advisory_pin      — news and AI stay advisory: the veto is non-blocking
                            by default, the consult happens AFTER the order, and
                            no engine imports a scorer it cannot backtest
+  test_shadow_eval       — the forward evaluation of the AI layer: a verdict is
+                           joined to its OWN outcome, placeholders are not
+                           counted as opinions, and too small a sample is
+                           reported as such rather than as a result
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -93,6 +97,7 @@ CHECKS = {
     "heartbeat":  ("scripts/test_protective_heartbeat.py", True, True,  120),
     "execp0":     ("scripts/test_exec_p0.py",            True,  True,  240),
     "advisory":   ("scripts/test_advisory_pin.py",       True,  True,  120),
+    "shadow":     ("scripts/test_shadow_eval.py",        True,  True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),
