@@ -13,7 +13,7 @@
 #     2026-07-07 (no logs/cron_optimize.log, no data/params_before_opt.json);
 #   • a crontab is per-machine, so nobody installing the .app ever got the
 #     optimization pipeline at all.
-# REMOVE the two moomoo-trader lines from your crontab (`crontab -e`) or the
+# REMOVE the two MooTrader lines from your crontab (`crontab -e`) or the
 # sweep will run twice. This script is kept only for a manual one-off run.
 #
 # Usage: optimize_and_apply.sh [daily|weekly]

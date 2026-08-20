@@ -8,7 +8,7 @@
 
 <br/>
 
-[![release](https://img.shields.io/github/v/release/ethan6945/moomoo-trader?color=2ea44f&label=release)](https://github.com/ethan6945/moomoo-trader/releases/latest)
+[![release](https://img.shields.io/github/v/release/ethan6945/MooTrader?color=2ea44f&label=release)](https://github.com/ethan6945/MooTrader/releases/latest)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
@@ -151,7 +151,7 @@ When bear-market rules stop new entries, park idle cash in a T-bill ETF (SGOV) f
 
 `macos/` is a **native SwiftUI app** (built with SwiftPM — only Command Line Tools needed, no Xcode). Everyday actions are native UI; the full panel (backtests etc.) opens in your default browser in one click. **One-tap EN/中文 switch, light/dark theme (can follow the system), a persistent menu-bar status icon + approval notifications**; the same backend is reachable from your phone (password required).
 
-Prebuilt and signed ad-hoc on the [latest release](https://github.com/ethan6945/moomoo-trader/releases/latest) (Apple Silicon) — that build bundles the Python backend, so it needs no repo and no venv. To build it yourself:
+Prebuilt and signed ad-hoc on the [latest release](https://github.com/ethan6945/MooTrader/releases/latest) (Apple Silicon) — that build bundles the Python backend, so it needs no repo and no venv. To build it yourself:
 
 ```bash
 macos/build.sh                    # freezes the backend, then builds the app
@@ -218,7 +218,7 @@ Either way you need **OpenD** and the API keys under [Requirements](#requirement
 
 ### 📦 Option A — Download the app
 
-1. Grab **`MooTrader-*-arm64.dmg`** from the [latest release](https://github.com/ethan6945/moomoo-trader/releases/latest)
+1. Grab **`MooTrader-*-arm64.dmg`** from the [latest release](https://github.com/ethan6945/MooTrader/releases/latest)
 2. Open it, drag **MooTrader** into **Applications**
 3. First launch: macOS will say it can't verify the developer. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway**, then confirm
 
@@ -250,7 +250,7 @@ Your `.env`, database, trade history and logs live in `~/Library/Application Sup
 #### 1️⃣ Clone + one-command install
 
 ```bash
-git clone https://github.com/ethan6945/moomoo-trader.git moo-trader
+git clone https://github.com/ethan6945/MooTrader.git moo-trader
 cd moo-trader
 ./setup-macmini.command
 ```

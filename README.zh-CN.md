@@ -8,7 +8,7 @@
 
 <br/>
 
-[![最新版本](https://img.shields.io/github/v/release/ethan6945/moomoo-trader?color=2ea44f&label=release)](https://github.com/ethan6945/moomoo-trader/releases/latest)
+[![最新版本](https://img.shields.io/github/v/release/ethan6945/MooTrader?color=2ea44f&label=release)](https://github.com/ethan6945/MooTrader/releases/latest)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
@@ -151,7 +151,7 @@ Optuna 贝叶斯调参 + AI 优化器 + 每日增量 sweep。护栏内的建议�
 
 `macos/` 下是一个**原生 SwiftUI 应用**（SwiftPM 构建，只需 Command Line Tools、无需 Xcode）。日常操作都做成了原生界面，回测等完整面板一键在默认浏览器打开。**中英一键切换、深/浅色主题（可跟随系统）、菜单栏常驻状态图标 + 审批系统通知**；同一套后端手机也能访问（需设密码）。
 
-[最新 release](https://github.com/ethan6945/moomoo-trader/releases/latest) 上有构建好、ad-hoc 签名的版本（Apple Silicon）—— 那个版本内含 Python 后端，不需要仓库也不需要 venv。想自己构建：
+[最新 release](https://github.com/ethan6945/MooTrader/releases/latest) 上有构建好、ad-hoc 签名的版本（Apple Silicon）—— 那个版本内含 Python 后端，不需要仓库也不需要 venv。想自己构建：
 
 ```bash
 macos/build.sh                    # 先冻结后端，再构建 app
@@ -218,7 +218,7 @@ flowchart TB
 
 ### 📦 方式 A — 下载 app
 
-1. 到 [最新 release](https://github.com/ethan6945/moomoo-trader/releases/latest) 下载 **`MooTrader-*-arm64.dmg`**
+1. 到 [最新 release](https://github.com/ethan6945/MooTrader/releases/latest) 下载 **`MooTrader-*-arm64.dmg`**
 2. 打开，把 **MooTrader** 拖进 **Applications**
 3. 首次打开：macOS 会提示无法验证开发者。打开**系统设置 → 隐私与安全性**，往下滚，点**仍要打开**，再确认一次
 
@@ -250,7 +250,7 @@ flowchart TB
 #### 1️⃣ 克隆 + 一键安装
 
 ```bash
-git clone https://github.com/ethan6945/moomoo-trader.git moo-trader
+git clone https://github.com/ethan6945/MooTrader.git moo-trader
 cd moo-trader
 ./setup-macmini.command
 ```
