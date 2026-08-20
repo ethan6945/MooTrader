@@ -218,6 +218,40 @@ check("the ledger totals the closed trades",
       abs(risk_manager.ledger_realized_pnl() - 115.5) < 1e-9,
       f"{risk_manager.ledger_realized_pnl()}")
 
+# A row that is in the table and is not a trade must not reach the total.
+#
+# The authoritative database holds two: a synthetic TST record at -100.00 and
+# the second copy of an MRK close booked twice at -7.03. They stay in the
+# ledger — deleting evidence to make a number look better is how a ledger stops
+# being one — and db.is_excluded marks them.
+#
+# Summing the raw table read those as a 107.03 drift from a counter that was
+# CORRECT, and a rebuild would then have written the wrong total and
+# re-anchored peak_equity, the denominator of the drawdown breaker, onto a test
+# trade. Found by dry-running the v3->v7 migration, not by this suite.
+with db.conn() as c:
+    c.execute("INSERT INTO closed_trades (ts,symbol,qty,entry,stop,exit,pnl,"
+              "account_id,extra) VALUES ('2026-08-20T10:00:00Z','TST',1,1.0,"
+              "0.9,0.0,-100.0,?,?)",
+              (ACCT, json.dumps({"ledger_quality":
+                                 {"excluded_from_performance": True}})))
+    c.commit()
+check("a row marked excluded_from_performance is not counted",
+      abs(risk_manager.ledger_realized_pnl() - 115.5) < 1e-9,
+      f"{risk_manager.ledger_realized_pnl()}")
+# With the counter holding the EFFECTIVE total, the excluded row must not
+# manufacture a drift — that is the shape the authoritative database was in.
+db.update_state({"realized_pnl_total": 115.5})
+check("...so it does not read as drift against a correct counter",
+      abs(risk_manager.realized_pnl_drift()["drift"]) < 1e-9,
+      str(risk_manager.realized_pnl_drift()))
+check("...and no rebuild is triggered",
+      not risk_manager.rebuild_realized_pnl("test")["rebuilt"])
+with db.conn() as _c:
+    _n = _c.execute("SELECT COUNT(*) FROM closed_trades WHERE symbol='TST'"
+                    ).fetchone()[0]
+check("...while the row is still IN the table", _n == 1, str(_n))
+
 db.update_state({"realized_pnl_total": 115.5})
 d = risk_manager.realized_pnl_drift()
 check("an accurate counter shows no drift", abs(d["drift"]) < 1e-9, str(d))

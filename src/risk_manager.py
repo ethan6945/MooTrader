@@ -782,10 +782,24 @@ def ledger_realized_pnl() -> float:
     """
     acct = db._require_account_id("reading the realized-PnL ledger")
     with db.conn() as c:
-        row = c.execute(
-            "SELECT COALESCE(SUM(pnl), 0.0) FROM closed_trades "
-            "WHERE account_id = ?", (acct,)).fetchone()
-    return float(row[0] or 0.0)
+        rows = c.execute("SELECT pnl, extra FROM closed_trades "
+                         "WHERE account_id = ?", (acct,)).fetchall()
+    # The EFFECTIVE ledger, not the raw table.
+    #
+    # Some rows are in closed_trades and are not trades: a synthetic TST record
+    # and the second copy of an MRK close that was booked twice. They stay —
+    # deleting evidence to make a number look better is how a ledger stops
+    # being one — and db.is_excluded marks them so nothing reasoning about
+    # performance counts them.
+    #
+    # Summing the raw table skipped that. On the authoritative database it gave
+    # -709.585 against a counter of -602.555, and the 107.03 "drift" was
+    # exactly those two rows: a test symbol at -100.00 and a duplicate at
+    # -7.03. The counter was RIGHT. Rebuilding from the raw sum would have
+    # written a wrong total and re-anchored peak_equity — the denominator of
+    # the drawdown breaker — onto a test trade.
+    return float(sum(float(r["pnl"] or 0.0) for r in rows
+                     if not db.is_excluded(dict(r))))
 
 
 def realized_pnl_drift() -> dict:
