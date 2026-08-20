@@ -163,6 +163,17 @@ def main():
                "applied_qty > 0 ORDER BY created_at DESC LIMIT 3")])
 
     record(
+        "position fully closed (the mechanism, whatever triggered it)",
+        "close -> settler -> closed_trades is the same chain a stop uses; only "
+        "what PULLS it differs, so proving the chain and proving the trigger "
+        "are two separate things",
+        [f"closed_trade #{r[0]} {r[1]} {r[2]} qty {r[3]} pnl {r[4]}" for r in
+         q(db, "SELECT id,symbol,exit_reason,qty,round(pnl,2) FROM "
+               "closed_trades ORDER BY ts DESC LIMIT 3")],
+        note="a triggered SL/TP is tracked separately above and is NOT implied "
+             "by this")
+
+    record(
         "stack onto an existing position",
         "extending a position is where the quantity and average-price "
         "arithmetic lives, and 'no broker/local quantity drift' is an "
