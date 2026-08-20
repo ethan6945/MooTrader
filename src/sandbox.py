@@ -92,6 +92,12 @@ _SESSION_WINDOWS = {
 }
 
 
+# The most hourly bars one replay will ask for. Four thousand is about four
+# and a half years of regular hours — past anything backtested here, and a
+# bound so a mis-specified window cannot ask the broker for everything.
+_MAX_HOURLY_BARS = 4000
+
+
 def _normalise_sessions(sessions: str) -> str:
     """An unrecognised session name means regular hours.
 
@@ -179,7 +185,9 @@ class SimFeed:
         self.clock = clock
         self._vix: pd.Series | None = None   # real ^VIX daily closes (shifted +1d)
         self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        self._fetch_all(start - timedelta(days=lookback_days), end)
+        self._fetch_start = start - timedelta(days=lookback_days)
+        self._fetch_end = end
+        self._fetch_all(self._fetch_start, self._fetch_end)
         self._load_vix(start - timedelta(days=lookback_days), end)
 
     def cache_name(self, sym: str, ktype) -> str:
@@ -210,17 +218,35 @@ class SimFeed:
         return self.sessions
 
     def _hourly_budget(self) -> tuple[int, int]:
-        """(bars, bars-per-day) for the hourly fetch, scaled to the session.
+        """(bars, bars-per-day) for the hourly fetch — enough for THIS replay.
 
-        500 bars over 7-bar days is about ten weeks of history. The same 500
-        over 24-bar days is three weeks, which is not enough for a 50-day
-        moving average — so the budget grows with the session rather than the
-        lookback silently shrinking.
+        Scaled two ways, and it needs both.
+
+        By session, because 500 bars over 7-bar days is ten weeks of history
+        and the same 500 over 24-bar days is three, which will not seed a
+        50-day average.
+
+        By WINDOW, because the number used to be a flat 500 whatever range the
+        replay covered. A 500-bar hourly fetch is about a hundred trading days,
+        so a 180-day sandbox run and a 360-day one both replayed the same
+        hundred days and reported it as the window they were asked for. It
+        showed up in a parity sweep as the sandbox freezing at 153 trades while
+        v3 went 127 -> 271 over the same two windows: not two engines
+        disagreeing, one engine answering a question it had not been asked.
         """
-        if self.sessions == "RTH":
-            return 500, 7
-        bpd = 16 if self.sessions == "ETH" else 24
-        return min(500 * bpd // 7, 2400), bpd
+        bpd = {"RTH": 7, "ETH": 16}.get(self.sessions, 24)
+        # Never fetch LESS than this — a short window still needs enough
+        # history to seed a 50-day average.
+        floor = 500 if self.sessions == "RTH" else min(500 * bpd // 7, 2400)
+        start = getattr(self, "_fetch_start", None)
+        end = getattr(self, "_fetch_end", None)
+        if start is None or end is None:
+            return floor, bpd       # no window known: the floor is all we can say
+        # Calendar span of everything this feed was told to cover, warm-up
+        # included, converted to trading days.
+        span_days = max(1, (end - start).days)
+        need = int(span_days * 5 / 7 * bpd) + 5 * bpd
+        return max(floor, min(need, _MAX_HOURLY_BARS)), bpd
 
     def _fetch_all(self, fetch_start: datetime, fetch_end: datetime):
         client = MooClient()

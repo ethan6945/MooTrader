@@ -86,8 +86,22 @@ check("...and passes no session to the broker at all",
       feed_for("RTH")._session_arg(KLType.K_60M) is None)
 check("...keeping the unsuffixed cache name",
       feed_for("RTH").cache_name("AAPL", KLType.K_60M) == "AAPL_60M.parquet")
-check("...and the original 500-bar / 7-per-day budget",
+# The budget is a FLOOR plus whatever the replay's own window needs. It used
+# to be a flat 500 whatever range was asked for — about a hundred trading days
+# — so a 180-day run and a 360-day run replayed the same hundred days and
+# reported them as the window requested.
+check("with no window known, regular hours keeps the 500-bar floor",
       feed_for("RTH")._hourly_budget() == (500, 7))
+_f = feed_for("RTH")
+_f._fetch_start, _f._fetch_end = datetime(2025, 8, 20), datetime(2026, 8, 20)
+_bars, _bpd = _f._hourly_budget()
+# A calendar year is about 252 trading days; asserting a round bar count
+# instead was how the first version of this got it wrong.
+check("...and a year-long window asks for about a year of TRADING days",
+      240 <= _bars / _bpd <= 300 and _bpd == 7)
+_f._fetch_start, _f._fetch_end = datetime(2026, 8, 1), datetime(2026, 8, 20)
+check("...while a short window never drops below the floor",
+      _f._hourly_budget() == (500, 7))
 
 
 # ── 2. the wider sessions actually widen ───────────────────────────────────
@@ -163,6 +177,12 @@ for sess in ("ETH", "ALL"):
     rth_bars, rth_bpd = feed_for("RTH")._hourly_budget()
     check(f"{sess}: history stays ≥ the regular-hours lookback in DAYS",
           bars / bpd >= rth_bars / rth_bpd * 0.95)
+    # And the window scaling applies to every session, not only RTH.
+    _g = feed_for(sess)
+    _g._fetch_start, _g._fetch_end = datetime(2025, 8, 20), datetime(2026, 8, 20)
+    _wide, _ = _g._hourly_budget()
+    check(f"{sess}: a year-long window asks for more than the floor",
+          _wide > bars)
 
 
 # ── 7. an unknown session falls back to regular hours ──────────────────────
