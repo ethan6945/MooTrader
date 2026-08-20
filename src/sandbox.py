@@ -716,6 +716,23 @@ class SimBroker:
 # ── Universe ───────────────────────────────────────────────
 
 def _load_universe(config: SandboxConfig, feed: SimFeed | None = None) -> list[str]:
+    # An explicit ticker list wins, in static mode.
+    #
+    # SandboxConfig has carried a `tickers` field for a long time and this
+    # function never read it: static mode went straight to watchlist.json, so a
+    # caller that passed tickers got the watchlist instead and was told nothing.
+    #
+    # It is a comparison harness that pays for this. Handing the same list to
+    # both engines is the whole premise of a parity run, and the sandbox
+    # quietly substituted its own universe — 38 sandbox trades against 13 v3
+    # trades with two symbols in common, which reads as two engines that agree
+    # about nothing rather than two engines given different work.
+    if config.tickers and config.universe_mode != "dynamic":
+        print(f"  Universe (explicit): {len(config.tickers)} tickers")
+        return list(config.tickers)
+    if config.tickers and config.universe_mode == "dynamic":
+        print("  NOTE: explicit tickers were given AND universe_mode=dynamic; "
+              "dynamic selection wins and the list is ignored")
     if config.universe_mode == "dynamic":
         try:
             from src.universe import Affordability, load_pool, select_universe
