@@ -61,10 +61,21 @@ EXIT_BPS = 50.0         # exits diverge more: ladders, partial closes
 
 
 def head() -> str:
+    """The commit these numbers describe — and whether that is the whole truth.
+
+    A run started from a working tree with uncommitted changes is not described
+    by its HEAD. The first sweep recorded 20aa2fe while running a cache fix that
+    was still unstaged, so the output named a commit that did not contain the
+    code that produced it. A parity number whose provenance is wrong is worse
+    than no parity number.
+    """
     try:
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                              cwd=ROOT, capture_output=True, text=True
-                              ).stdout.strip()
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             cwd=ROOT, capture_output=True, text=True
+                             ).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                               capture_output=True, text=True).stdout.strip()
+        return f"{sha}-dirty" if dirty else sha
     except Exception:
         return "unknown"
 
@@ -165,6 +176,37 @@ def align(sb: list[dict], v3: list[dict], max_busdays: int = 1):
     return pairs, sb_only, [v3[j] for j in free]
 
 
+def _truncate(data: dict, end: datetime) -> dict:
+    """Drop every bar after `end` from a prefetched bundle. Never mutates it."""
+    import pandas as pd
+
+    cut = pd.Timestamp(end.date())
+
+    def clip(df):
+        if df is None or not hasattr(df, "index") or df.empty:
+            return df
+        idx = df.index
+        try:
+            if getattr(idx, "tz", None) is not None:
+                return df[idx <= cut.tz_localize(idx.tz)]
+            return df[idx <= cut]
+        except Exception:
+            return df
+
+    out = dict(data)
+    out["spy_daily"] = clip(data.get("spy_daily"))
+    out["soxx_daily"] = clip(data.get("soxx_daily"))
+    per = {}
+    for sym, bundle in (data.get("per_ticker") or {}).items():
+        b = dict(bundle)
+        for k, v in bundle.items():
+            if hasattr(v, "index"):
+                b[k] = clip(v)
+        per[sym] = b
+    out["per_ticker"] = per
+    return out
+
+
 def run_window(days: int, end: datetime | None = None) -> dict:
     from src import runtime_config as rc
     from src.backtest import BacktestConfig, prefetch_data, _run_live_engine
@@ -192,6 +234,19 @@ def run_window(days: int, end: datetime | None = None) -> dict:
         tp_atr_mult=rc.tp_atr_mult(), sl_atr_mult=rc.sl_atr_mult(),
         max_gap_pct=settings.max_gap_pct)
     data = prefetch_data(cfg)
+    # Point v3 at a historical window by TRUNCATING what it was given.
+    #
+    # BacktestConfig carries `days` and no end date, so v3 can only ever run
+    # "the last N days" — which made every walk-forward fold compare a
+    # historical sandbox window against v3's most recent one. Folds ending
+    # 2026-04-07 and earlier reported v3=0 trades and a 0% match, which is not
+    # a measurement of anything.
+    #
+    # Cutting each frame at the fold's end date makes the engine replay as if
+    # that date were today: it slices the last days*bars-per-day rows of what it
+    # holds, and what it holds now stops there.
+    if end.date() < datetime.now(ET).date():
+        data = _truncate(data, end)
     v3_raw = _run_live_engine(cfg, data)
 
     sb_all = [normalise(t, "sandbox") for t in (sb_raw.get("trades") or [])]
