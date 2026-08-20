@@ -51,6 +51,12 @@ _BARS_PER_TRADING_DAY = {
 # argument rather than by a timeframe.
 _SESSION_HOURS = {"RTH": 6.5, "ETH": 16.0, "ALL": 24.0}
 
+# How many windows a single get_kline may page through. Twelve hourly windows
+# is roughly four and a half years — far past anything this project backtests,
+# and a bound so a symbol the broker has no history for cannot spend the whole
+# rate-limit budget discovering that.
+_MAX_KLINE_CHUNKS = 12
+
 
 # ---------- process-level sliding-window rate limiter ----------
 # the broker's documented limit: 60 history-kline requests per 30 seconds.
@@ -318,6 +324,22 @@ class MooClient:
         start_d = end_d - timedelta(days=window_days)
         code = self._format_code(symbol)
 
+        # When the ask is longer than one request can carry, page backwards.
+        #
+        # window_days is capped at 1000/bpd so a single response cannot overflow
+        # the API's ~1000-row return limit — 142 calendar days for hourly bars.
+        # That cap used to be the end of it: asking for 2590 hourly bars (a
+        # 360-day backtest) returned 686, spanning 141 days, with no error and
+        # no warning. The run completed and reported numbers computed on 40% of
+        # the window it named.
+        #
+        # The data is there. Asking the broker for explicit older windows
+        # returns ~450 hourly bars per three months, back to at least 2025-03.
+        # Only this function's arithmetic stopped at one window.
+        if bpd and bars > window_days * bpd * 5 / 7:
+            return self._get_kline_chunked(code, symbol, bars, ktype, end_d,
+                                           window_days, max_count)
+
         # Try up to 2 times — on rate-limit error wait for the window to clear.
         last_err = None
         for attempt in (1, 2):
@@ -350,6 +372,53 @@ class MooClient:
                 continue
             break
         raise RuntimeError(f"request_history_kline failed for {symbol}: {last_err}")
+
+    def _get_kline_chunked(self, code: str, symbol: str, bars: int, ktype,
+                           end_d, window_days: int, max_count: int):
+        """Fetch a long history as consecutive windows, newest first.
+
+        Stops as soon as it has enough rows or the broker returns an empty
+        window — the second is the real end of the history, and continuing past
+        it would spend the rate-limit budget on nothing.
+        """
+        from datetime import timedelta
+        frames, cursor = [], end_d
+        have = 0
+        for _ in range(_MAX_KLINE_CHUNKS):
+            chunk_start = cursor - timedelta(days=window_days)
+            _kline_rate_acquire()
+            ret, df, _ = self.quote.request_history_kline(
+                code, start=chunk_start.isoformat(), end=cursor.isoformat(),
+                ktype=ktype, max_count=max_count, autype="qfq")
+            if ret != RET_OK:
+                if not frames:
+                    raise RuntimeError(
+                        f"request_history_kline failed for {symbol}: {df}")
+                log.warning("%s: history stops at %s (%s) — returning %d bars",
+                            symbol, chunk_start.isoformat(), str(df)[:80], have)
+                break
+            if df is None or df.empty:
+                break                       # the history genuinely ends here
+            frames.append(df)
+            have += len(df)
+            if have >= bars:
+                break
+            # One day of overlap so a bar on the boundary is never dropped;
+            # duplicates are removed below.
+            cursor = chunk_start + timedelta(days=1)
+
+        if not frames:
+            raise RuntimeError(f"no kline history returned for {symbol}")
+        out = pd.concat(frames)
+        out["time_key"] = pd.to_datetime(out["time_key"])
+        out = (out.set_index("time_key")
+                  .sort_index())
+        out = out[~out.index.duplicated(keep="last")]
+        if len(out) < bars:
+            log.info("%s: asked for %d bars, the broker's history holds %d "
+                     "(from %s)", symbol, bars, len(out),
+                     str(out.index[0])[:10])
+        return out.tail(bars)
 
     def get_vix(self) -> float:
         """Fetch current VIX level from broker snapshot.
