@@ -292,9 +292,24 @@ class SimFeed:
                         stale = _staleness_days(cached)
                     except Exception:
                         stale = 999
-                    if stale <= 3:
+                    # Fresh by DATE is not the same as deep enough. This asked
+                    # only "how old is the newest bar", so a 497-bar cache
+                    # satisfied a request for 2435 and the replay silently ran
+                    # on a hundred days of a three-hundred-day window — the
+                    # same truncation as the flat bar budget and the get_kline
+                    # window cap, one layer further down, and the reason fixing
+                    # those two did not move the numbers.
+                    deep_enough = len(cached) >= full_bars * 0.95
+                    if not deep_enough:
+                        # Straight to the full refetch below. A top-up asks for
+                        # the last few DAYS and merges — it answers staleness,
+                        # not depth, so routing a shallow cache through it
+                        # returned the same 504 bars with a fresher last row.
+                        print(f"    {tag}: cache holds {len(cached)} bars, this "
+                              f"run needs {full_bars} — refetching in full")
+                    elif stale <= 3:
                         return cached, "cached"
-                    if stale <= 15:
+                    elif stale <= 15:
                         need = min(full_bars, (stale + 3) * bpd + 5)
                         fresh = client.get_kline(sym, bars=need, ktype=ktype,
                                                  session=self._session_arg(ktype))
