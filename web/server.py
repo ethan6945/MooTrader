@@ -76,9 +76,8 @@ def _worker_cmd(module: str, *args: str) -> list[str]:
     runpy, giving the module the same argv it would see under `python -m`.
     sys.executable is the bundled backend binary under PyInstaller.
     """
-    if IS_FROZEN:
-        return [sys.executable, "--worker", module, *args]
-    return [str(VENV_PY), "-m", module, *args]
+    from src.config import worker_cmd as _shared
+    return _shared(module, *args)
 
 
 app = Flask(__name__, static_folder=None)

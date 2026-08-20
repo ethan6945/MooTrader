@@ -13,6 +13,33 @@ from dotenv import load_dotenv
 # read-only bundled resources (web/static, config templates) come from the
 # bundle via BUNDLE_DIR. MMT_HOME overrides for tests / secondary instances.
 IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def worker_cmd(module: str, *args: str) -> list[str]:
+    """The command that runs `<module>.main()` as its own detached process.
+
+    Dev: `.venv/bin/python -m <module> <args…>` — the repo venv sits beside the
+    code.
+
+    Frozen: there is no venv. The interpreter exists only inside the .app, so
+    the app re-execs its own binary with `--worker`, and packaging/entry.py
+    routes that through runpy so the module sees the argv it would get from
+    `python -m`.
+
+    This lives here because there were two of it. web/server.py had the frozen
+    branch right; start_protocol.commit() built its own default —
+    `[sys.executable, "-m", module, "run"]` — which under PyInstaller becomes
+    `MooTraderBackend -m src.main run`. entry.py recognises `--import-check`
+    and `--worker` and nothing else, so `-m` fell through to the default branch
+    and booted a SECOND web server, which lost the race for port 8770 and
+    exited 1. The audit recorded `worker_exited: the worker exited with code 1
+    before reporting ready`, and the scheduler never started — on 2.5.0, the
+    first build to ship start_protocol, because every test of it ran under a
+    real Python interpreter where the wrong branch is also the right one.
+    """
+    if IS_FROZEN:
+        return [sys.executable, "--worker", module, *args]
+    return [str(ROOT / ".venv" / "bin" / "python"), "-m", module, *args]
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 
 

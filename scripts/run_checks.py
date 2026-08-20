@@ -44,6 +44,9 @@ WHAT IT COVERS
                            joined to its OWN outcome, placeholders are not
                            counted as opinions, and too small a sample is
                            reported as such rather than as a result
+  test_worker_cmd        — how the app launches its own worker. The frozen
+                           shape takes --worker, not -m; getting it wrong
+                           starts a second web server instead of a trading loop
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -98,6 +101,7 @@ CHECKS = {
     "execp0":     ("scripts/test_exec_p0.py",            True,  True,  240),
     "advisory":   ("scripts/test_advisory_pin.py",       True,  True,  120),
     "shadow":     ("scripts/test_shadow_eval.py",        True,  True,  120),
+    "workercmd":  ("scripts/test_worker_cmd.py",         True,  True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

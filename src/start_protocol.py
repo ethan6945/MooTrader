@@ -425,7 +425,11 @@ def commit(req: StartRequest, *, home: Path | None = None,
     if req.account_id:
         env["MMT_ACCOUNT_ID"] = req.account_id
 
-    cmd = worker_cmd or [sys.executable, "-m", "src.main", "run"]
+    # Never `[sys.executable, "-m", ...]` — see config.worker_cmd. Under
+    # PyInstaller sys.executable is the app's own binary, which does not take
+    # -m, and the fallthrough starts a web server instead of a trading loop.
+    from .config import worker_cmd as _build_worker_cmd
+    cmd = worker_cmd or _build_worker_cmd("src.main", "run")
     proc = None
     try:
         logf = (home / "logs" / "scheduler.log").open("a")
