@@ -130,15 +130,26 @@ def evaluate(regime_block_new: bool, regime_label: str, regime_note: str,
 
 
 def reset_for_new_day(current_cash: float) -> None:
-    """Idempotent daily rollover. Safe to call at the top of every scan."""
-    today_str = clock.ny_now().strftime("%Y-%m-%d")
-    def _apply(s: dict) -> dict:
-        if s.get("day") != today_str:
-            return {
-                "day": today_str,
-                "starting_cash": current_cash,
-                "realized_pnl_today": 0.0,
-                "halted": False,
-            }
-        return {}
-    db.atomic_state(_apply)
+    """Idempotent daily rollover. Safe to call at the top of every scan.
+
+    Delegates. There were two implementations of this writing the same
+    kv_state 'day' key — this one and risk_manager's — and they had already
+    caused one P0 (2026-07-07: different date sources, ping-ponging every scan,
+    realized_pnl_today wiped and `halted` cleared mid-session). That was fixed
+    by aligning the dates, which left the deeper fault untouched: two functions,
+    one key.
+
+    The half that mattered was never copied across. risk_manager's version
+    learned to preserve a halt that a new day does not answer — an uncancelled
+    protective order, an unresolved fill, an oversold position. This one kept
+    writing `halted: False` unconditionally, and main calls THIS one on every
+    scan, so it won the race: at the first scan after midnight a manual-release
+    halt was lifted by the clock and the bot resumed into the exact situation
+    the halt existed to prevent. It also left halt_reason behind, so the state
+    read "not halted, because: oversold position".
+
+    One implementation now. This is the caller-facing name, kept so main and
+    the tests do not have to care which module owns the rollover.
+    """
+    from . import risk_manager
+    risk_manager.reset_for_new_day(current_cash)

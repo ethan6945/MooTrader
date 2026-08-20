@@ -680,6 +680,15 @@ MANUAL_RELEASE_REASONS = (
     # trade placed by hand — the books and the account disagree about what is
     # owned, and no amount of waiting settles that.
     "oversold position",
+    # A fill the broker made that this software could not book. The shares are
+    # in the account and not in the ledger; tomorrow does not change that.
+    "fill settlement failed",
+    # A position created from a late fill whose order carried no protective
+    # levels. It exists, it is real, and nothing is watching it.
+    "late fill without protection",
+    # Startup could not establish what the broker holds. Trading from an
+    # unknown starting picture is how a duplicate position gets opened.
+    "startup recovery failed",
 )
 
 
@@ -754,6 +763,70 @@ def halt(reason: str, detail: str = "") -> None:
         notifier.send(f"🛑 TRADING HALTED — {reason}\n{detail[:300]}")
     except Exception as e:
         log.warning("could not notify about the halt: %s", e)
+
+
+def ledger_realized_pnl() -> float:
+    """Total realized PnL as the CLOSED-TRADE LEDGER reports it, for this account.
+
+    The authority for what was earned is the set of closed trades, not a
+    running counter. `realized_pnl_total` is incremented by record_trade_close
+    and never recomputed, so every way that increment can be missed or repeated
+    is permanent: a close booked while the counter update raised (it is a
+    separate write, and the settler logs and continues when it fails), a
+    restore from a backup, a hand-edited row.
+
+    That number is not cosmetic. equity = equity_baseline() + realized_pnl_total
+    feeds peak_equity, which is the denominator of the drawdown breaker — so a
+    counter that has drifted high makes the breaker fire early, and one that has
+    drifted low makes it unable to fire at all.
+    """
+    acct = db._require_account_id("reading the realized-PnL ledger")
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(pnl), 0.0) FROM closed_trades "
+            "WHERE account_id = ?", (acct,)).fetchone()
+    return float(row[0] or 0.0)
+
+
+def realized_pnl_drift() -> dict:
+    """How far the counter has drifted from the ledger."""
+    counter = float(db.get_state().get("realized_pnl_total") or 0.0)
+    ledger = ledger_realized_pnl()
+    return {"counter": counter, "ledger": ledger,
+            "drift": round(counter - ledger, 6)}
+
+
+def rebuild_realized_pnl(source: str, *, tolerance: float = 0.01) -> dict:
+    """Recompute realized PnL from the ledger, and re-anchor the peak with it.
+
+    Returns what it found and whether it changed anything. Audited, because a
+    silent correction to the number the drawdown breaker measures against is
+    indistinguishable from the drift it is correcting.
+
+    The peak moves WITH the total, for the reason set_budget documents: leaving
+    a peak recorded under a different PnL base either fabricates a drawdown or
+    hides one.
+    """
+    d = realized_pnl_drift()
+    if abs(d["drift"]) <= tolerance:
+        return {**d, "rebuilt": False}
+
+    def _apply(s: dict) -> dict:
+        base = equity_baseline()
+        return {"realized_pnl_total": d["ledger"],
+                "peak_equity": compute_peak_equity(
+                    base, d["ledger"], prior_peak=0.0)}
+
+    db.atomic_state(_apply)
+    log.warning("realized PnL rebuilt from the ledger by %s: counter was "
+                "%.2f, ledger says %.2f (drift %.2f)",
+                source, d["counter"], d["ledger"], d["drift"])
+    try:
+        db.audit_insert("pnl_rebuilt", reason="counter drifted from ledger",
+                        extra={"by": source, **d})
+    except Exception as e:
+        log.warning("could not audit the PnL rebuild: %s", e)
+    return {**d, "rebuilt": True}
 
 
 def record_trade_close(realized_pnl: float, account_usd: float | None = None) -> None:

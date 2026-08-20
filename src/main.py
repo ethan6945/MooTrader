@@ -1810,13 +1810,43 @@ def _startup_recover_orders() -> None:
                     "was settled. Trading is HALTED until someone reconciles "
                     "them — nothing has been adjusted to fit.")
     except Exception as e:
-        log.error("startup recovery failed: %s — continuing to protective "
-                  "exits, but the order picture may be incomplete", e)
+        # Fail CLOSED. This used to log and carry on, in as many words:
+        # "continuing to protective exits, but the order picture may be
+        # incomplete". An incomplete order picture at startup is precisely the
+        # state in which the bot re-buys something it already owns, or writes a
+        # stop for a position whose size it has wrong — the recovery pass exists
+        # to rule that out, and a pass that threw has ruled out nothing.
+        #
+        # Protective management still runs: the halt blocks new positions, not
+        # the exits that limit an existing one.
+        log.exception("startup recovery failed: %s", e)
+        try:
+            risk_manager.halt(
+                "startup recovery failed",
+                f"the order and position picture could not be established at "
+                f"startup: {str(e)[:300]}")
+        except Exception as e2:
+            log.error("could not halt after a failed startup recovery: %s", e2)
 
 
 def run_loop() -> None:
     # What the last run left working is settled before anything is decided.
     _startup_recover_orders()
+
+    # Then check that the number the drawdown breaker measures against still
+    # matches the trades it is supposed to summarise. Startup is the moment for
+    # it: whatever went wrong happened in a process that is gone, and the ledger
+    # is the only account of it that survived.
+    try:
+        out = risk_manager.rebuild_realized_pnl("startup")
+        if out.get("rebuilt"):
+            notifier.send(
+                f"⚠️ Realized PnL was rebuilt from the closed-trade ledger at "
+                f"startup: the counter said ${out['counter']:,.2f}, the ledger "
+                f"says ${out['ledger']:,.2f} (drift ${out['drift']:,.2f}). The "
+                f"drawdown high-water mark has been re-anchored with it.")
+    except Exception as e:
+        log.error("realized-PnL rebuild failed at startup: %s", e)
 
     # Protective exits come FIRST — before catchup, before the scheduler.
     #

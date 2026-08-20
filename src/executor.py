@@ -218,6 +218,38 @@ def place_bracket(
                  symbol, qty, tp_price, tp_id)
     except Exception as e:
         log.error("Bracket TP failed for %s: %s", symbol, e)
+
+    # Both legs or neither.
+    #
+    # A half-placed bracket is worse than no bracket. The caller's fallback on
+    # an incomplete pair is soft tracking — and soft tracking sells the whole
+    # position when its level is breached, while the surviving broker leg sells
+    # it again. That is the "oversold position" halt, arrived at by a path that
+    # logged nothing but "Bracket incomplete".
+    #
+    # So the survivor is withdrawn. If the withdrawal itself fails there IS a
+    # live order this software cannot account for, which is the one thing that
+    # must never be inferred away: halt, and say which order.
+    if bool(stop_id) != bool(tp_id):
+        orphan = stop_id or tp_id
+        leg = "STOP" if stop_id else "TP"
+        log.error("Bracket half-placed for %s (%s=%s, the other failed) — "
+                  "withdrawing the leg that landed", symbol, leg, orphan)
+        cancelled = False
+        try:
+            cancelled = bool(client.cancel_order(orphan))
+        except Exception as e:
+            log.error("could not cancel the orphaned %s leg %s for %s: %s",
+                      leg, orphan, symbol, e)
+        if cancelled:
+            return None, None
+        from . import risk_manager
+        risk_manager.halt(
+            "protective order cancel failed",
+            f"{symbol}: a bracket {leg} order ({orphan}) is live at the broker "
+            f"for {qty} shares, its opposite leg never placed, and it could not "
+            f"be cancelled. Soft tracking would sell the same shares twice.")
+        return stop_id, tp_id
     return stop_id, tp_id
 
 log = logging.getLogger(__name__)
@@ -432,6 +464,22 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         signal.symbol, qty, limit_px, TrdSide.BUY,
         kind="STACK" if is_stack else "ENTRY",
         intent=f"score {getattr(signal, 'score', '?')}",
+        # The protection this entry intends, recorded ON the order.
+        #
+        # An entry that stops waiting and fills afterwards leaves the settler
+        # holding shares and no position row, and the settler cannot invent a
+        # stop — it has no ATR and no signal. Without this the late first fill
+        # could not be booked at all: _apply_buy raised, the sweep logged a
+        # failure, and it retried every tick forever while the shares sat at
+        # the broker in nothing.
+        #
+        # These numbers already exist here, twenty lines above the call. Putting
+        # them on the order makes the row self-sufficient, so a fill can be
+        # settled by a process that knows nothing about the scan that caused it.
+        extra={"intended_stop": stop_px, "intended_tp": tp_px,
+               "atr": float(getattr(signal, "atr", 0) or 0),
+               "strategy": getattr(signal, "strategy", None),
+               "score": getattr(signal, "score", None)},
     )
     buy_order_id = placement.broker_order_id
 

@@ -32,6 +32,11 @@ WHAT IT COVERS
   test_protective_heartbeat — under soft exits the fast-stop loop IS the
                            protection; it must be possible to tell from the log
                            that it ran, and how close the nearest stop came
+  test_exec_p0           — the seven execution P0s, each exercised through its
+                           FAILURE: late first fill, settlement failure, fail-
+                           closed startup, halts that midnight must not clear,
+                           PnL rebuilt from the ledger, half-placed bracket,
+                           broker identity before READY
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -83,6 +88,7 @@ CHECKS = {
     "migrations": ("scripts/test_migrations.py",         True,  True,  240),
     "formingbar": ("scripts/test_forming_bar.py",        True,  True,  120),
     "heartbeat":  ("scripts/test_protective_heartbeat.py", True, True,  120),
+    "execp0":     ("scripts/test_exec_p0.py",            True,  True,  240),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

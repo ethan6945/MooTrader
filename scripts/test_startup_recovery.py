@@ -130,7 +130,12 @@ check("no halt", not db.get_state().get("halted"))
 print("\n2  an order that filled during the downtime is settled from the broker")
 clear_halt(); drop_all_orders()
 c = FakeClient()
-p = c.place_limit_order("AAPL", 100, 190.0, TrdSide.BUY)
+# Placed the way executor places a real entry: the protective levels it
+# intends are recorded ON the order, so a fill settled by a later process —
+# one that knows nothing about the scan — can still be given a stop.
+p = c.place_limit_order("AAPL", 100, 190.0, TrdSide.BUY,
+                        extra={"intended_stop": 180.5, "intended_tp": 209.0,
+                               "atr": 3.2, "strategy": "trend"})
 # The process died here. The broker went on and filled it.
 c._trade.rows[-1].update({"order_status": "FILLED_ALL", "dealt_qty": 100,
                           "dealt_avg_price": 189.80})
@@ -143,6 +148,36 @@ check("...at the quantity the broker filled", row["filled_qty"] == 100)
 check("...and the price it filled at", abs(row["avg_fill_price"] - 189.80) < 1e-9)
 check("it is no longer live", not order_log.live_orders())
 check("no halt — everything is accounted for", not db.get_state().get("halted"))
+# The fill created the position, and it carries the entry's intended stop
+# rather than none: a recovered position that nothing is watching is the case
+# the halt below exists for, and this is not it.
+_pos = db.load_open_trades().get("AAPL")
+check("...the position was created from the recovered fill", _pos is not None)
+check("...at the filled quantity", bool(_pos) and _pos["qty"] == 100)
+check("...with the stop the entry intended",
+      bool(_pos) and abs(_pos["stop_loss"] - 180.5) < 1e-9)
+
+
+# ── 2b. the same recovery, for an order that recorded no protection ────────
+print("\n2b an order from before protection was recorded halts on recovery")
+clear_halt(); drop_all_orders()
+for s in list(db.load_open_trades()):
+    db.delete_open_trade(s)
+c = FakeClient()
+p2 = c.place_limit_order("GOOG", 20, 150.0, TrdSide.BUY)     # no extra
+c._trade.rows[-1].update({"order_status": "FILLED_ALL", "dealt_qty": 20,
+                          "dealt_avg_price": 150.0})
+age_order(p2.client_order_id, 30)
+startup_recovery.recover(c)
+check("the shares are still booked — they exist either way",
+      db.load_open_trades().get("GOOG", {}).get("qty") == 20)
+check("...and trading halts, because nothing is watching them",
+      bool(db.get_state().get("halted")))
+check("...naming the missing protection",
+      db.get_state().get("halt_reason") == "late fill without protection")
+clear_halt()
+for s in list(db.load_open_trades()):
+    db.delete_open_trade(s)
 check("the summary counts it", r["resolved"] >= 1)
 
 

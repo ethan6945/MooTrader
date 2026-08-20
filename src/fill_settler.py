@@ -72,6 +72,28 @@ def unapplied(row: dict) -> tuple[int, float]:
     return delta, (delta_notional / delta if delta else 0.0)
 
 
+# Halts raised from inside a settlement transaction, fired once it has
+# committed. halt() writes kv_state, and calling it while a transaction is open
+# would nest one inside another — so the reason is parked here and flushed
+# after the commit. The order matters: the position must be on disk BEFORE
+# anything announces that it is unprotected.
+_HALT_AFTER_COMMIT: list[tuple[str, str]] = []
+
+
+def _flush_halts() -> None:
+    """Raise any halt the committed transaction asked for. Never raises."""
+    while _NEEDS_MIRROR:
+        _NEEDS_MIRROR.pop()
+        _refresh_mirror()
+    while _HALT_AFTER_COMMIT:
+        reason, detail = _HALT_AFTER_COMMIT.pop(0)
+        try:
+            from . import risk_manager
+            risk_manager.halt(reason, detail)
+        except Exception as e:
+            log.error("could not halt after settlement (%s): %s", reason, e)
+
+
 def settle(coid: str, *, allow_oversell_halt: bool = True) -> dict:
     """Apply whatever of this order has filled and not yet been applied.
 
@@ -87,10 +109,13 @@ def settle(coid: str, *, allow_oversell_halt: bool = True) -> dict:
         return {"applied": 0, "symbol": row["symbol"], "kind": row["kind"]}
 
     side, kind, symbol = row["side"], row["kind"], row["symbol"]
-    if side == "BUY":
-        result = _apply_buy(row, qty, price)
-    else:
-        result = _apply_sell(row, qty, price, allow_oversell_halt)
+    try:
+        if side == "BUY":
+            result = _apply_buy(row, qty, price)
+        else:
+            result = _apply_sell(row, qty, price, allow_oversell_halt)
+    finally:
+        _flush_halts()
     log.info("settled %s: %s %d %s @ $%.4f (order %s)",
              coid, side, qty, symbol, price, kind)
     return result
@@ -145,9 +170,17 @@ def _apply_buy(row: dict, qty: int, price: float) -> dict:
         cur = c.execute("SELECT * FROM open_trades WHERE account_id = ? AND "
                         "symbol = ?", (row["account_id"], symbol)).fetchone()
         if cur is None:
-            raise order_log.OrderLogError(
-                f"{symbol}: a BUY settled with no position row to add it to. "
-                f"The entry path creates the position; this only extends it.")
+            # A late FIRST fill: the entry stopped waiting, the fill arrived
+            # afterwards, and there is no position to extend.
+            #
+            # This used to raise. The shares were at the broker, in nothing, and
+            # the sweep retried the same failure on every tick forever — the one
+            # case where "we own something the books do not know about" was
+            # guaranteed to persist. Booking it is the only outcome that makes
+            # the ledger describe the account.
+            out = _open_from_order(c, row, qty, price)
+            _NEEDS_MIRROR.append(True)
+            return out
         old_qty = int(cur["qty"])
         old_entry = float(cur["entry_price"])
         new_qty = old_qty + qty
@@ -161,6 +194,60 @@ def _apply_buy(row: dict, qty: int, price: float) -> dict:
              symbol, qty, new_qty, new_entry)
     return {"applied": qty, "symbol": symbol, "kind": row["kind"],
             "price": price, "position_qty": new_qty}
+
+
+_NEEDS_MIRROR: list = []
+
+
+def _open_from_order(c, row: dict, qty: int, price: float) -> dict:
+    """Create the position a late first fill belongs to, inside the caller's
+    transaction, with the protection the entry intended.
+
+    The stop is not invented here. executor records intended_stop/intended_tp on
+    the order before it is sent, precisely so a fill can be settled by something
+    that knows nothing about the scan that caused it. When they are absent — an
+    order written before that existed, or one placed by a path that does not set
+    them — the position is still created, because shares at the broker must
+    appear in the ledger either way, and then trading HALTS: an unprotected
+    position is exactly the thing that must never exist quietly.
+    """
+    from . import identity, risk_manager
+    symbol, coid = row["symbol"], row["client_order_id"]
+    try:
+        meta = json.loads(row.get("extra") or "{}") or {}
+    except (json.JSONDecodeError, TypeError):
+        meta = {}
+    stop = meta.get("intended_stop")
+    tp = meta.get("intended_tp")
+
+    try:
+        session_id = identity.current_session_id()
+    except Exception:
+        session_id = None
+
+    trade = {"symbol": symbol, "qty": int(qty), "entry_price": float(price),
+             "stop_loss": float(stop) if stop else 0.0,
+             "take_profit": float(tp) if tp else 0.0,
+             "atr": float(meta.get("atr") or 0.0),
+             "strategy": meta.get("strategy") or "late_fill"}
+    db._upsert_open_trade_c(c, trade, row["account_id"], session_id,
+                            {"opened_by": "late_fill_settlement",
+                             "source_order": coid})
+    _mark_applied_c(c, coid, int(qty), float(qty) * float(price))
+
+    if stop and tp and 0 < float(stop) < float(price):
+        log.warning("%s: late first fill booked — %d @ $%.4f, stop $%.2f, "
+                    "tp $%.2f (from the order's recorded intent)",
+                    symbol, qty, price, float(stop), float(tp))
+    else:
+        log.error("%s: late first fill booked WITHOUT protective levels "
+                  "(order %s carries none) — halting", symbol, coid)
+        _HALT_AFTER_COMMIT.append(
+            ("late fill without protection",
+             f"{symbol}: {qty} shares settled from order {coid}, which records "
+             f"no intended stop. The position exists and is UNPROTECTED."))
+    return {"applied": int(qty), "symbol": symbol, "kind": row["kind"],
+            "price": float(price), "position_qty": int(qty)}
 
 
 def _apply_sell(row: dict, qty: int, price: float,
@@ -350,4 +437,20 @@ def settle_all(*, limit: int = 200) -> dict:
     if rows:
         log.info("fill settlement: %d order(s) with unapplied fills, %d shares "
                  "applied, %d failed", len(rows), applied, len(failures))
+    if failures:
+        # A fill the broker made and this software could not book means the
+        # account holds something the ledger does not describe. Every later
+        # decision — position sizing, concentration, the drawdown breaker, the
+        # stop distance — is computed from that ledger, so continuing is not
+        # "carrying on despite a warning", it is trading on numbers already
+        # known to be wrong.
+        #
+        # This used to collect the failures into the return value and carry on.
+        # Nothing read them.
+        from . import risk_manager
+        first = failures[0]
+        risk_manager.halt(
+            "fill settlement failed",
+            f"{len(failures)} fill(s) could not be applied to the ledger; "
+            f"first: {first['order']} — {first['error']}")
     return {"orders": len(rows), "applied": applied, "failures": failures}

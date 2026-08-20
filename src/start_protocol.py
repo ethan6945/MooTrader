@@ -733,10 +733,55 @@ def worker_verify_and_report() -> dict:
             "account_mismatch",
             "the worker resolved a different account than the parent validated")
 
+    # The broker is asked WHO THIS IS before READY is written.
+    #
+    # Everything above this line is the worker checking its own files: its
+    # config hash, its lease, its local account row. None of it has touched the
+    # gateway. The binding used to be resolved lazily, the first time something
+    # reached for MooClient.trade — which is after GO, inside trading. So a
+    # worker could report "I have checked myself and I am consistent", be
+    # cleared to trade, and only then discover that the gateway presents a
+    # different account, or a different environment, than the one the parent
+    # validated. By then it holds the lease and the order gate is open.
+    #
+    # READY is supposed to mean the worker verified its world. The broker is
+    # the half of that world that matters most, and it was the half nobody
+    # checked.
+    broker_ref = None
+    _probe = None
+    try:
+        from . import broker_binding
+        from .moo_client import MooClient
+        _probe = MooClient()
+        _probe.trade                      # opening the context resolves + pins
+        binding = broker_binding.require("verifying broker identity for READY")
+        if binding.trade_env != effective:
+            raise StartRefused(
+                "broker_env_mismatch",
+                f"the gateway serves a {binding.trade_env} account but this "
+                f"worker was started as {effective}")
+        broker_ref = binding.account_ref
+    except StartRefused:
+        identity.end_session("broker_identity_mismatch")
+        raise
+    except Exception as e:
+        identity.end_session("broker_unreachable")
+        raise StartRefused(
+            "broker_unreachable",
+            f"the broker could not confirm this run's account before READY: "
+            f"{str(e)[:200]}") from e
+    finally:
+        try:
+            if _probe is not None:
+                _probe.close()
+        except Exception:
+            pass
+
     payload = {"pid": os.getpid(), "host": socket.gethostname(),
                "session_id": session["session_id"], "fence": fence,
                "config_sha256": sha, "effective_env": effective,
                "account_id": session["account_id"],
+               "broker_ref": broker_ref,
                "lease_pid": held.holder_pid,
                "reported_at": time.time()}
     p = Path(ready_file)

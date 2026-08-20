@@ -690,7 +690,8 @@ class MooClient:
 
     def _place(self, *, symbol: str, qty: int, price: float, side: TrdSide,
                kind: str, order_type=OrderType.NORMAL,
-               aux_price: float | None = None, intent: str = "") -> "Placement":
+               aux_price: float | None = None, intent: str = "",
+               extra: dict | None = None) -> "Placement":
         """Place one order, recorded before it is sent.
 
         The order of operations is the point. order_log.begin() commits a row
@@ -711,7 +712,7 @@ class MooClient:
             coid = order_log.begin(symbol=symbol, side=str(side).split(".")[-1],
                                    kind=kind, requested_qty=int(qty),
                                    limit_price=rounded, aux_price=aux,
-                                   intent=intent)
+                                   intent=intent, extra=extra)
         except order_log.DuplicateIntent as e:
             # A live order already serves this intent. Sending a second one is
             # how the same shares get bought — or sold — twice; the first has to
@@ -881,11 +882,12 @@ class MooClient:
 
     def place_limit_order(
         self, symbol: str, qty: int, price: float, side: TrdSide,
-        *, kind: str | None = None, intent: str = ""
+        *, kind: str | None = None, intent: str = "",
+        extra: dict | None = None
     ) -> Placement:
         return self._place(symbol=symbol, qty=qty, price=price, side=side,
                            kind=kind or ("ENTRY" if side == TrdSide.BUY else "EXIT"),
-                           intent=intent)
+                           intent=intent, extra=extra)
 
     def place_stop_loss(self, symbol: str, qty: int, stop_price: float,
                         *, intent: str = "") -> Placement:
