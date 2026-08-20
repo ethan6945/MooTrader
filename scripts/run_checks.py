@@ -37,6 +37,9 @@ WHAT IT COVERS
                            closed startup, halts that midnight must not clear,
                            PnL rebuilt from the ledger, half-placed bracket,
                            broker identity before READY
+  test_advisory_pin      — news and AI stay advisory: the veto is non-blocking
+                           by default, the consult happens AFTER the order, and
+                           no engine imports a scorer it cannot backtest
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -89,6 +92,7 @@ CHECKS = {
     "formingbar": ("scripts/test_forming_bar.py",        True,  True,  120),
     "heartbeat":  ("scripts/test_protective_heartbeat.py", True, True,  120),
     "execp0":     ("scripts/test_exec_p0.py",            True,  True,  240),
+    "advisory":   ("scripts/test_advisory_pin.py",       True,  True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),
