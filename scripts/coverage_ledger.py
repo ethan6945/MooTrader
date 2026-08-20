@@ -163,6 +163,17 @@ def main():
                "applied_qty > 0 ORDER BY created_at DESC LIMIT 3")])
 
     record(
+        "stack onto an existing position",
+        "extending a position is where the quantity and average-price "
+        "arithmetic lives, and 'no broker/local quantity drift' is an "
+        "acceptance criterion",
+        [f"order {r[0][:12]} {r[1]} +{r[2]} @ {r[3]}" for r in
+         q(db, "SELECT client_order_id,symbol,filled_qty,round(avg_fill_price,2)"
+               " FROM orders WHERE kind='STACK' AND filled_qty > 0 "
+               "ORDER BY created_at DESC LIMIT 3")]
+        + grep(log, r"STACK #\d+ on"))
+
+    record(
         "halt raised by the code",
         "every acceptance criterion below assumes halts actually fire",
         grep(log, r"TRADING HALTED"))
