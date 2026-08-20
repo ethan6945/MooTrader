@@ -45,6 +45,18 @@ _CRITICAL = (
     # graph walk cannot see them; they are in the spec's hiddenimports, and
     # this is what proves the spec entry actually worked.
     "onnxruntime", "tokenizers",
+    # The execution-safety layer (2026-08-21). Most of these are reached
+    # through in-function imports — main.py imports start_protocol inside
+    # _enter_trading_command, moo_client imports order_log inside _place — so
+    # the graph walk sees them only through paths that are easy to lose in a
+    # refactor. Shipping a build without fill_settler would not be a mode that
+    # silently never fires; it would be an order that fills and is never
+    # applied to the ledger.
+    "src.start_protocol", "src.start_lease", "src.order_gate",
+    "src.broker_binding", "src.order_log", "src.fill_settler",
+    "src.startup_recovery", "src.identity", "src.entry_threshold",
+    "src.concentration", "src.risk_manager", "src.kill_switch",
+    "src.gap_sentinel",
 )
 
 
