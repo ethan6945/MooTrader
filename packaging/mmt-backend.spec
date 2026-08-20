@@ -54,12 +54,10 @@ hiddenimports = [
     # nothing statically imports them and the graph walk would miss the entire
     # trading engine. Collecting the whole package also covers the lazy
     # in-function imports (src.optimize_system, src.sandbox, src.optimizer).
-    *collect_submodules(
-        "src",
-        # matplotlib's only importer in the repo; excluded below. Nothing
-        # imports pattern_vision itself, so dropping it costs no behaviour.
-        filter=lambda name: name != "src.pattern_vision",
-    ),
+    # src/pattern_vision.py was deleted 2026-08-21 — it was matplotlib's only
+    # importer and nothing imported it, so the filter that used to exclude it
+    # here now names a module that does not exist.
+    *collect_submodules("src"),
     # pandas_ta_classic imports its indicator categories dynamically by name.
     *collect_submodules("pandas_ta_classic"),
     # Broker SDK — protobuf message modules are resolved at runtime.
