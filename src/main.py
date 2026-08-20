@@ -700,9 +700,6 @@ def scan_once() -> None:
         # scans/day (trade-phase only) × budget=5 = 60 calls/day → well under
         # quota. Previous budget=2 was leaving most candidates unchecked.
         ai_budget = 10
-        # Per-scan budget for the pattern-vision Gemini calls (cost control, same
-        # idea as ai_budget). Only pattern signals consume it.
-        vision_budget = settings.pattern_vision_budget
         # Per-scan budget for the Phase 2B sentiment Gemini calls.
         sentiment_budget = settings.sentiment_budget
         # News-driven mode gets its own, larger budget: here a name that doesn't
@@ -861,12 +858,12 @@ def scan_once() -> None:
                      sig.symbol, sig.score,
                      "pass" if ai_pass else "veto", conviction, ai_reason)
 
-            # P0-5 (2026-06-26): pattern_vision removed from live path.
-            # Geometric detection (pattern_detect.py) is deterministic, fast,
-            # and works in both live + backtest. AI chart-image confirmation
-            # was slow, expensive, and added latency without verified edge.
-            # The module stays for future opt-in, but the live path skips it.
-            vision_conf = vision_label = vision_reason = None
+            # pattern_vision came off the live path on 2026-06-26 — chart-image
+            # confirmation was slow, dear, and showed no edge — and the module
+            # itself was deleted on 2026-08-21. What survived until then were
+            # three locals pinned to None and written into every pattern audit
+            # row as if a vision layer had declined to answer. It had not been
+            # asked. The fields are gone with it.
 
             # --- broker-style sentiment read (Phase 2B; advisory) ---
             # 看好/中性/看空 multi-factor score. ADVISORY — never changes which
@@ -1114,10 +1111,7 @@ def scan_once() -> None:
                                     # it and we can calibrate vision-vs-outcome.
                                     **({"pattern_type": sig.meta.get("pattern_type"),
                                         "pattern_confidence": sig.meta.get("pattern_confidence"),
-                                        "key_levels": sig.meta.get("key_levels"),
-                                        "vision_confidence": vision_conf,
-                                        "vision_label": vision_label,
-                                        "vision_reason": vision_reason}
+                                        "key_levels": sig.meta.get("key_levels")}
                                        if sig.strategy == "pattern" else {})})
                 notifier.send(notifier.signal_msg(sig, ai_reason, qty))
                 cash -= qty * sig.price

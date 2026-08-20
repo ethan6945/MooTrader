@@ -78,8 +78,13 @@ check("the AI veto is non-blocking by default",
 print("\n2  with the veto off, the consult happens after the order")
 # A setting can be flipped in one file. The ORDER of operations is the thing
 # that makes the flip safe, and it is what a refactor silently loses.
+# Bounded by the AI branch's own last statement, not by whatever happened to
+# follow it. The previous anchor was "vision_conf" — a local that was deleted
+# with the pattern-vision remnants, which broke this test for a reason that had
+# nothing to do with what it checks.
 blk = MAIN[MAIN.index("ai_deferred = False"):]
-blk = blk[:blk.index("vision_conf")]
+_END = 'log.info("%s rule=%.1f ai=%s'
+blk = blk[:blk.index(_END) + len(_END)]
 check("the blocking branch is gated on ai_veto_blocking",
       "elif settings.ai_veto_blocking:" in blk)
 check("...and only that branch can skip an entry",

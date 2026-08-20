@@ -120,16 +120,37 @@ class Affordability:
 
 
 def _day_atr(d: pd.DataFrame, n: int = 14) -> float | None:
-    """Wilder-style ATR (simple rolling mean of true range) on daily bars."""
+    """Daily ATR, by the SAME definition the position sizer uses.
+
+    can_size() exists to answer one question — will the sizer be able to buy at
+    least one share of this inside the risk budget — so it has to compute the
+    stop distance the way the sizer will. It did not. This was a simple rolling
+    mean of true range while indicators.py takes ta.atr(), which is Wilder's
+    RMA, and the two are not the same number: measured across twelve names, the
+    simple mean runs about 5% lower, from 16% low on MU to 6% high on HPE.
+
+    Lower ATR means a shorter stop, which means more shares fit the risk budget,
+    which means the gate was systematically MORE permissive than the sizer it
+    predicts — so a name could clear the universe filter and then be unsizeable
+    at entry.
+
+    The old docstring said "Wilder-style ATR (simple rolling mean of true
+    range)". Wilder's ATR is not a simple rolling mean. The prose named one
+    thing and the code did another, and only the code was load-bearing.
+
+    Measured before changing it: across the pool at $10k, $25k, $50k, $100k and
+    $1M of capital, the two definitions produce IDENTICAL pass/fail decisions —
+    zero flips at every level. This is closing a latent inconsistency, not
+    fixing a live misjudgement, and it should not move universe selection.
+    """
     if "high" not in d or "low" not in d or len(d) < n + 1:
         return None
     try:
-        h, l, c = d["high"].astype(float), d["low"].astype(float), d["close"].astype(float)
-        pc = c.shift(1)
-        tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
-        v = float(tr.rolling(n).mean().iloc[-1])
+        import pandas_ta_classic as _ta
+        v = float(_ta.atr(d["high"].astype(float), d["low"].astype(float),
+                          d["close"].astype(float), length=n).iloc[-1])
         return v if v > 0 else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, IndexError, KeyError):
         return None
 
 

@@ -301,7 +301,7 @@ def assess_exit(symbol: str, tech_summary: str, entry: float = 0.0,
 
     Same machinery + FAIL-SAFE policy as assess_gap_risk: no key / no fresh news /
     quota / error → (False, 0, ...) i.e. HOLD. We never liquidate on AI doubt.
-    Uses the dedicated smart_exit_model (≥3.5-flash), one fixed model, key-cycled.
+    Runs on the one global model, like every other AI call here.
     """
     if not ai.has_key():
         return False, 0, "no AI key — smart-exit AI inert (hold)"
@@ -532,7 +532,7 @@ def assess_news(signal) -> tuple[str, int, bool, str, bool]:
 def assess_sentiment(signal, options_summary: str = "") -> tuple[str, int, str]:
     """Phase 2B broker-style sentiment read for a BUY candidate. Returns
     (verdict, score_0_100, reason). ADVISORY — never vetoes. FAIL-SAFE → neutral
-    ('neutral', 50, ...) on no key / quota / error. Uses sentiment_model (≥3.5).
+    ('neutral', 50, ...) on no key / quota / error. Runs on the one global model.
     options_summary (optional) injects the options-flow read as a 4th factor."""
     if not ai.has_key():
         return "neutral", 50, "no AI key — sentiment inert (neutral)"

@@ -359,14 +359,6 @@ class Settings:
     gap_exit_earnings_days: int = _int("GAP_EXIT_EARNINGS_DAYS", 1)
     gap_sentinel_ai: bool = os.getenv("GAP_SENTINEL_AI", "true").lower() in ("1", "true", "yes")
     gap_sentinel_ai_min_conf: int = _int("GAP_SENTINEL_AI_MIN_CONF", 70)
-    # Cost control: the AI gap layer uses ONE fixed model (not the entry cascade),
-    # runs at PRE-MARKET only by default (gap_sentinel_ai_intraday=False skips the
-    # ~11 per-scan AI calls/day — the deterministic earnings layer still runs every
-    # scan for free), and skips the Gemini call entirely when there's no fresh news.
-    # Owner wants Gemini ≥ 3.5-flash everywhere (no lite tiers) — default bumped
-    # from gemini-2.5-flash-lite (2026-06-22). Gap sentinel is OFF by default, so
-    # this only costs anything once GAP_SENTINEL_ENABLED is armed.
-    gap_sentinel_model: str = os.getenv("GAP_SENTINEL_MODEL", "gemini-3.5-flash")
     gap_sentinel_ai_intraday: bool = os.getenv("GAP_SENTINEL_AI_INTRADAY", "false").lower() in ("1", "true", "yes")
 
     # ── Smart exit (Phase 2A, 2026-06-23): AI/algo intraday early-exit ──
@@ -388,7 +380,6 @@ class Settings:
     # doesn't cut a position that hasn't earned anything. The AI news path ignores
     # this (concrete bad news should exit even at a loss).
     smart_exit_min_profit_r: float = _float("SMART_EXIT_MIN_PROFIT_R", 1.0)
-    smart_exit_model: str = os.getenv("SMART_EXIT_MODEL", "gemini-3.5-flash")
 
     # ── Sentiment scoring (Phase 2B, 2026-06-23): broker-style 看好/看空 ──
     # For each buy candidate, Gemini fuses news + analyst-target direction + the
@@ -399,7 +390,6 @@ class Settings:
     # existing conviction → position-size channel (still never changes selection).
     sentiment_scoring_enabled: bool = os.getenv("SENTIMENT_SCORING_ENABLED", "false").lower() in ("1", "true", "yes")
     sentiment_sizing: bool = os.getenv("SENTIMENT_SIZING", "false").lower() in ("1", "true", "yes")
-    sentiment_model: str = os.getenv("SENTIMENT_MODEL", "gemini-3.5-flash")
     sentiment_budget: int = _int("SENTIMENT_BUDGET", 8)
 
     # ── News search quality (2026-08-07, src/news_fetcher.py) ─────────────
@@ -769,23 +759,6 @@ class Settings:
     pattern_allowed_types: tuple = tuple(
         t.strip() for t in os.getenv("PATTERN_ALLOWED_TYPES", "").split(",") if t.strip()
     )
-    # AI vision confirmation (src/pattern_vision.py) — render the candle chart and
-    # ask Gemini to confirm the algo-detected pattern. The "AI" half of the
-    # algorithm+vision design. OFF by default; live-only (skipped in backtest) and
-    # FAIL-SAFE (vision unavailable → pass), so it never silently kills a signal.
-    pattern_vision_enabled: bool = os.getenv("PATTERN_VISION_ENABLED", "false").lower() in ("1", "true", "yes")
-    # When true, a high-confidence vision 'reject' BLOCKS the entry. Default false
-    # = advisory (logged + shown in the buy card) so live ↔ backtest signal sets
-    # stay aligned (same reasoning as ai_veto_blocking below).
-    pattern_vision_blocking: bool = os.getenv("PATTERN_VISION_BLOCKING", "false").lower() in ("1", "true", "yes")
-    # A vision 'reject' only blocks if its confidence ≥ this (avoids killing
-    # entries on a low-conviction maybe). Only used when pattern_vision_blocking.
-    pattern_vision_reject_conf: int = _int("PATTERN_VISION_REJECT_CONF", 60)
-    # Vision model — owner wants Gemini ≥ 3.5-flash everywhere (no lite tiers), so
-    # this defaults to gemini-3.5-flash (multimodal; verified to read the rendered
-    # candle chart). A per-scan call budget keeps cost bounded.
-    pattern_vision_model: str = os.getenv("PATTERN_VISION_MODEL", "gemini-3.5-flash")
-    pattern_vision_budget: int = _int("PATTERN_VISION_BUDGET", 8)
 
     # Fidelity fix (2026-06-03): when REAL, use the SAME soft-managed exits as
     # SIMULATE (scale-out + trailing + soft stop) instead of a broker OCO
