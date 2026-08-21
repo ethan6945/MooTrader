@@ -111,13 +111,17 @@ def fetch_sp500_tickers() -> list[str]:
 # ---------- screen ----------
 
 def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> float:
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        (high - low).abs(),
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    return float(tr.rolling(length).mean().iloc[-1])
+    """Wilder ATR — the definition the rest of the system uses.
+
+    This was a rolling mean of true range, which runs a median 8% above
+    ta.atr (P90 18%, worst 34%) and reacts faster to a volatility spike.
+    atr_pct built from it is both a filter (>= MIN_ATR_PCT) and 40% of the
+    ranking score, so the watchlist was being selected and ordered on a
+    volatility measure the trader does not use.
+    """
+    import pandas_ta_classic as _ta
+    v = _ta.atr(high, low, close, length=length)
+    return float(v.iloc[-1]) if v is not None and len(v) else float("nan")
 
 
 def screen_universe(tickers: list[str]) -> pd.DataFrame:

@@ -102,6 +102,7 @@ CHECKS = {
     "advisory":   ("scripts/test_advisory_pin.py",       True,  True,  120),
     "shadow":     ("scripts/test_shadow_eval.py",        True,  True,  120),
     "workercmd":  ("scripts/test_worker_cmd.py",         True,  True,  120),
+    "atr":        ("scripts/test_atr_agreement.py",       True,  True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

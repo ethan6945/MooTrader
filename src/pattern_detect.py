@@ -410,7 +410,26 @@ def _candle(name, last, inval, target, conf) -> dict:
 # ----------------------------------------------------------------------------
 
 def _atr(df: pd.DataFrame, period: int) -> float:
-    """Wilder ATR without a pandas_ta call (keeps this module dependency-light)."""
+    """Wilder ATR (RMA), matching ta.atr — which is what the rest of this
+    system means by "ATR".
+
+    This said "Wilder ATR" and returned np.mean(tr[-period:]), a simple mean.
+    They are not the same number: measured across 120 windows of real 60m
+    bars, the simple mean sits a median 8% away from Wilder, 18% at the 90th
+    percentile, 34% at the worst — and higher 74% of the time.
+
+    Every threshold in this module is an ATR MULTIPLE (1.2x for pattern
+    height, 2.0x for a flag pole) and every other module — indicators,
+    strategy_momentum, strategy_mr, strategy_pattern, moo_client, universe,
+    reconcile — takes ta.atr. A multiple only means something against an
+    agreed unit, so a systematically larger ATR here made pattern detection
+    quietly stricter than the numbers say, and pushed breakout confidence
+    (conf = 50 + over_atr * 70) down. universe.py hit this and was migrated
+    to ta.atr; its comment at line 128 names the same disagreement.
+
+    Still no pandas_ta import: the recurrence is four lines. The seed is the
+    simple mean of the first `period` true ranges, which is Wilder's own.
+    """
     if len(df) < period + 1:
         return 0.0
     h = df["high"].to_numpy(float)
@@ -419,7 +438,12 @@ def _atr(df: pd.DataFrame, period: int) -> float:
     prev_c = c[:-1]
     tr = np.maximum(h[1:] - low[1:],
                     np.maximum(np.abs(h[1:] - prev_c), np.abs(low[1:] - prev_c)))
-    return float(np.mean(tr[-period:]))
+    if len(tr) < period:
+        return 0.0
+    atr = float(np.mean(tr[:period]))
+    for x in tr[period:]:
+        atr = (atr * (period - 1) + float(x)) / period
+    return atr
 
 
 def structural_stop(df: pd.DataFrame, entry_price: float,

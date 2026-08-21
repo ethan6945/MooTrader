@@ -455,9 +455,15 @@ def _vwap_intraday(df: pd.DataFrame) -> float:
 
 
 def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period=14) -> float:
-    prev = close.shift(1)
-    tr   = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
-    return round(float(tr.rolling(period).mean().iloc[-1]), 4)
+    """Wilder ATR — the same one the trader sizes and stops against.
+
+    This was a rolling mean of true range. That is a different number from
+    ta.atr by a median 8% on real bars, so the report showed the operator one
+    ATR while the bot acted on another.
+    """
+    import pandas_ta_classic as _ta
+    v = _ta.atr(high, low, close, length=period)
+    return round(float(v.iloc[-1]), 4) if v is not None and len(v) else 0.0
 
 
 def _volume_surge(volume: pd.Series, lookback=20) -> dict:

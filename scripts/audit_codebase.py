@@ -262,6 +262,16 @@ def check_swallow(trees):
             crit = bool(CRITICAL.search(attempted))
             if not crit and not STATEFUL.search(attempted):
                 continue
+            # Handing the caller a failure VALUE is handling it, not swallowing
+            # it — `return jsonify({"ok": False}), 400` and `return False` both
+            # say so plainly. A bare `return` (or `return None`) does not: that
+            # is the degrade-quietly shape, and it stays flagged.
+            if any(isinstance(st, ast.Return)
+                   and st.value is not None
+                   and not (isinstance(st.value, ast.Constant)
+                            and st.value.value is None)
+                   for st in h.body):
+                continue
             func = _enclosing_func(tree, h)
             finding("swallow", "high" if crit else "medium", path, h.lineno,
                     f"except in {func or '<module>'}() logs and continues over "
