@@ -30,6 +30,7 @@ WHY THIS AND NOT AN ABLATION
   and an unvalidated model starts choosing trades without anything failing.
   These checks pin the structure, so that change cannot be quiet.
 """
+import ast
 import os
 import re
 import sys
@@ -76,38 +77,118 @@ check("the AI veto is non-blocking by default",
 
 # ── 2. the structure, not just the setting ─────────────────────────────────
 print("\n2  with the veto off, the consult happens after the order")
-# A setting can be flipped in one file. The ORDER of operations is the thing
-# that makes the flip safe, and it is what a refactor silently loses.
-# Bounded by the AI branch's own last statement, not by whatever happened to
-# follow it. The previous anchor was "vision_conf" — a local that was deleted
-# with the pattern-vision remnants, which broke this test for a reason that had
-# nothing to do with what it checks.
-blk = MAIN[MAIN.index("ai_deferred = False"):]
-_END = 'log.info("%s rule=%.1f ai=%s'
-blk = blk[:blk.index(_END) + len(_END)]
-check("the blocking branch is gated on ai_veto_blocking",
-      "elif settings.ai_veto_blocking:" in blk)
-check("...and only that branch can skip an entry",
-      blk.count('_skip("ai_veto"') == 1, str(blk.count('_skip("ai_veto"')))
-# Slice the non-blocking branch by its OWN first statement, not by the first
-# "else:" in the region — that one belongs to `if ai_budget <= 0:` INSIDE the
-# blocking branch, so slicing there swept the blocking branch's _skip into the
-# text and reported a failure against code that was correct.
-_marker = "ai_deferred = True"
-non_blocking = blk[blk.index(_marker):]
-non_blocking = non_blocking[:non_blocking.index("log.info")]
-check("the non-blocking branch passes unconditionally",
-      "ai_pass, ai_score, ai_reason = True, None" in non_blocking)
-check("...and never skips", "_skip(" not in non_blocking,
-      repr(non_blocking.strip()[:60]))
-check("...and says so in the reason it records",
-      "advisory — consulted post-order" in non_blocking)
+# A setting can be flipped in one file. The ORDER of operations is what makes
+# the flip safe, and it is what a refactor silently loses.
+#
+# This used to slice main.py as TEXT between two anchor strings. It broke
+# twice against code that was correct: once when "vision_conf" was deleted
+# with the pattern-vision remnants and took the end anchor with it, once when
+# the slice ran to the first "else:" — which belonged to `if ai_budget <= 0:`
+# INSIDE the blocking branch — and swept that branch's _skip into the region.
+# Both failures were about the anchors, not about the property.
+#
+# Worse than either: a positive text assertion is satisfied by a COMMENT. A
+# line reading `# never write elif settings.ai_veto_blocking:` would have
+# passed "the blocking branch is gated on ai_veto_blocking" while the branch
+# itself was gone. So this parses instead, and asks the tree.
+MAIN_TREE = ast.parse(MAIN)
+
+
+def _fn(tree, name):
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
+            return n
+    return None
+
+
+def _is_attr(node, obj, attr):
+    return (isinstance(node, ast.Attribute) and node.attr == attr
+            and isinstance(node.value, ast.Name) and node.value.id == obj)
+
+
+def _skips(nodes) -> list[str]:
+    """Every _skip("reason", ...) reachable in these statements."""
+    out = []
+    for n in nodes:
+        for sub in ast.walk(n):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "_skip" and sub.args
+                    and isinstance(sub.args[0], ast.Constant)):
+                out.append(sub.args[0].value)
+    return out
+
+
+def _assigns_true(nodes, target: str) -> bool:
+    """`target` is assigned the literal True, tuple-unpacked or not."""
+    for n in nodes:
+        for sub in ast.walk(n):
+            if not isinstance(sub, ast.Assign):
+                continue
+            for tgt in sub.targets:
+                names = tgt.elts if isinstance(tgt, ast.Tuple) else [tgt]
+                vals = (sub.value.elts if isinstance(sub.value, ast.Tuple)
+                        else [sub.value])
+                for nm, v in zip(names, vals):
+                    if (isinstance(nm, ast.Name) and nm.id == target
+                            and isinstance(v, ast.Constant) and v.value is True):
+                        return True
+    return False
+
+
+SCAN = _fn(MAIN_TREE, "scan_once")
+check("scan_once is still the function that decides entries", SCAN is not None)
+
+veto_ifs = [n for n in ast.walk(SCAN)
+            if isinstance(n, ast.If) and _is_attr(n.test, "settings", "ai_veto_blocking")]
+check("exactly one branch is gated on settings.ai_veto_blocking",
+      len(veto_ifs) == 1, f"found {len(veto_ifs)}")
+
+if veto_ifs:
+    veto = veto_ifs[0]
+    # The whole scan may only refuse an entry for ai_veto from inside it.
+    check("only the blocking branch can skip for ai_veto",
+          _skips(veto.body).count("ai_veto") == 1
+          and _skips(SCAN.body).count("ai_veto") == 1,
+          f"in branch {_skips(veto.body).count('ai_veto')}, "
+          f"in scan_once {_skips(SCAN.body).count('ai_veto')}")
+
+    # The else of that If is the advisory path.
+    adv = veto.orelse
+    check("the advisory path exists as that branch's else", bool(adv))
+    check("...it passes the trade unconditionally", _assigns_true(adv, "ai_pass"))
+    check("...it marks the consult deferred", _assigns_true(adv, "ai_deferred"))
+    check("...and it can refuse nothing at all", _skips(adv) == [],
+          str(_skips(adv)))
+    check("...and cannot skip the entry by continuing either",
+          not any(isinstance(x, ast.Continue) for n in adv for x in ast.walk(n)))
+    # The reason recorded is a string in the code, not a comment about one.
+    adv_strings = [x.value for n in adv for x in ast.walk(n)
+                   if isinstance(x, ast.Constant) and isinstance(x.value, str)]
+    check("...and records that it was consulted post-order",
+          any("advisory" in v and "post-order" in v for v in adv_strings),
+          str(adv_strings))
 
 
 # ── 3. a stack is not re-judged by a model ─────────────────────────────────
 print("\n3  adding to a position already held does not consult a model")
-check("stack candidates short-circuit the AI branch entirely",
-      "stack — AI re-check skipped" in blk)
+# The stack branch is the one the veto branch is the else OF, so find it by
+# structure: the If whose orelse contains the veto If.
+stack_ifs = [n for n in ast.walk(SCAN)
+             if isinstance(n, ast.If) and veto_ifs and veto_ifs[0] in n.orelse]
+check("the stack branch short-circuits before the AI branch", len(stack_ifs) == 1,
+      f"found {len(stack_ifs)}")
+if stack_ifs:
+    st = stack_ifs[0]
+    check("...and it is gated on the stack candidate itself",
+          isinstance(st.test, ast.Name) and "stack" in st.test.id.lower(),
+          ast.unparse(st.test))
+    check("...it passes without consulting anything",
+          _assigns_true(st.body, "ai_pass"))
+    check("...it calls no validator",
+          not any(isinstance(x, ast.Call)
+                  and "validate" in ast.unparse(x.func)
+                  for n in st.body for x in ast.walk(n)))
+    check("...and refuses nothing", _skips(st.body) == [], str(_skips(st.body)))
 
 
 # ── 4. the backtest does not model what it cannot model ────────────────────

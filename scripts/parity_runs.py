@@ -323,9 +323,39 @@ def main():
     ap.add_argument("--output", default=str(ROOT / "data" / "parity_runs.json"))
     args = ap.parse_args()
 
+    # The universe, recorded — because two runs at two HEADs on two watchlists
+    # are not a before and an after. The 2026-08-21 sweep dropped 30d trades
+    # from 44 to 13 against a baseline taken five days earlier, which read as
+    # a code regression; five of the fifteen tickers had been swapped by the
+    # migration that made the repo the home (GS INTC MRK MU SNDK out, ABBV
+    # MRVL SMH SOXX XLE in). Nothing in the output said so, because the output
+    # recorded the commit and not the inputs.
+    #
+    # This is SandboxConfig.tickers one level up: that bug compared two
+    # universes inside one run, this compared two universes across runs.
+    _universe = json.loads(
+        (ROOT / "config" / "watchlist.json").read_text())["tickers"]
     out = {"head": head(), "run_at": datetime.now(ET).isoformat(),
            "entry_bps": ENTRY_BPS, "exit_bps": EXIT_BPS,
+           "universe": sorted(_universe), "n_universe": len(_universe),
            "windows": [], "walk_forward": []}
+
+    # Say it out loud when the previous run used a different one.
+    _prev = ROOT / "data" / "parity_full.json"
+    if _prev.exists():
+        try:
+            _old = json.loads(_prev.read_text()).get("universe")
+        except Exception:
+            _old = None
+        if _old is None:
+            print("  note: the previous run recorded no universe — these "
+                  "numbers cannot be compared to it.", flush=True)
+        elif sorted(_old) != sorted(_universe):
+            _gone = sorted(set(_old) - set(_universe))
+            _new = sorted(set(_universe) - set(_old))
+            print(f"  note: the universe CHANGED since the last run "
+                  f"(-{_gone} +{_new}). Trade counts are not comparable.",
+                  flush=True)
 
     for d in args.windows:
         print(f"\n=== window {d}d ===", flush=True)
