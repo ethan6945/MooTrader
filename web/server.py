@@ -59,7 +59,6 @@ SIGNAL_WL_FILE = ROOT / "config" / "signal_watchlist.json"
 SIGNAL_MONITOR_FILE = ROOT / "data" / "signal_monitor_state.json"
 SIGNAL_ALERTS_FILE = ROOT / "data" / "signal_alerts.json"
 SELF_REVIEW_FILE = ROOT / "data" / "self_review_last.json"
-SCHED_PID = ROOT / "logs" / "scheduler.pid"
 OPEND_PID = ROOT / "logs" / "opend.pid"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
 
@@ -259,6 +258,17 @@ def _pid_running(pid_file: Path) -> int | None:
         if out.stdout.strip().startswith("Z"):
             return None   # zombie — process is dead, entry not yet reaped
         return pid
+    except Exception:
+        return None
+
+
+def _scheduler_pid() -> int | None:
+    """The worker's pid, from the lease that grants it the right to trade."""
+    try:
+        from src import start_lease
+        rec = start_lease.read() or {}
+        pid = rec.get("pid")
+        return pid if isinstance(pid, int) else None
     except Exception:
         return None
 
@@ -545,6 +555,13 @@ def api_status():
     acct = _read_json(ACCOUNT_FILE, {})
     sched = _scheduler_running()
     acct["scheduler_running"] = sched
+    # The pid too, from the same record. The native panel used to read it out
+    # of logs/scheduler.pid — a file the spawn path that wrote it took with it
+    # when it was replaced. Nothing has written it since, so alivePID() found
+    # nothing and the menu bar said "scheduler stopped" while a worker was
+    # holding the lease and trading. _scheduler_running fixed exactly this on
+    # the Python side and the Swift side never got the fix.
+    acct["scheduler_pid"] = _scheduler_pid() if sched else None
     acct["opend_status"], acct["opend_label"] = _opend_status(acct, sched)
     # Build identity. `version` is what the settings panels show; `running_from`
     # and `home` are here because a version alone cannot tell you WHICH copy is
@@ -1827,7 +1844,17 @@ def api_exit():
     then kills this web server. The browser will show a brief confirmation
     before the connection drops."""
     _stop_opend()
-    _stop_pid(SCHED_PID)
+    # Through the protocol, like every other stop. This used to call
+    # _stop_pid(SCHED_PID), which reads logs/scheduler.pid — the file nothing
+    # has written since the spawn path that wrote it was replaced. So "Exit"
+    # signalled a pid it never found and left the worker running, holding its
+    # lease, with an open session and no ended_at. Same dead file, second
+    # consequence.
+    try:
+        from src import start_protocol
+        start_protocol.stop("web")
+    except Exception as e:
+        log.warning("exit: could not stop the worker through the protocol: %s", e)
 
     def _shutdown():
         time.sleep(0.5)
