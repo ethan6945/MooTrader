@@ -35,6 +35,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# A row carried in from the previous schema is not evidence that THIS code
+# ran. All 37 closed trades in the authoritative database arrived through the
+# v3 -> v7 migration: migrated_from set, session_id null, written by an
+# execution path that no longer exists in this form. Counting them reported
+# stop-loss, take-profit and full-close as COVERED — 3/12 — when the current
+# executor had never closed a position at all. The honest number was 0/12.
+#
+# The same principle the scale-out entry already states: a coverage tool that
+# accepts configuration as evidence is worse than no coverage tool. History
+# inherited from another program is the same mistake wearing a timestamp.
+THIS_ERA = ("(coalesce(migrated_from,'') = '' "
+            "AND coalesce(session_id,'') <> '')")
+
 
 def q(db: Path, sql: str, args=()) -> list[tuple]:
     if not db.exists():
@@ -62,15 +75,42 @@ def grep(log: Path, pattern: str, limit: int = 3) -> list[str]:
     return hits[-limit:]
 
 
+def _default_home() -> Path:
+    """Where the bot actually keeps its data — asked, not assumed.
+
+    This defaulted to a hardcoded ~/MooTraderStaging. That directory was
+    deleted when the repo became the home, and the ledger went on reporting
+    "0/12 paths have real runtime evidence" against a path that did not
+    exist. To a reader that is indistinguishable from "nothing has run yet",
+    which is the one thing a coverage report must never be ambiguous about.
+    Against the real home the same code said 3/12.
+    """
+    env = os.getenv("MMT_HOME", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return ROOT
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--home", default=os.path.expanduser("~/MooTraderStaging"))
+    ap.add_argument("--home", default=None)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
-    home = Path(args.home)
+    home = Path(args.home).expanduser() if args.home else _default_home()
     db = home / "data" / "trader.db"
     log = home / "logs" / "trader.log"
+
+    # Refuse rather than measure nothing and call it zero. An absent home is a
+    # question about the invocation; an empty one is a fact about the bot.
+    if not home.is_dir():
+        sys.exit(f"coverage ledger: no such home {home}\n"
+                 f"  Nothing was measured. This is NOT the same as 0/12.\n"
+                 f"  Pass --home, or set MMT_HOME.")
+    if not db.exists():
+        sys.exit(f"coverage ledger: {home} has no data/trader.db\n"
+                 f"  Nothing was measured. This is NOT the same as 0/12.\n"
+                 f"  Is this the home the bot actually writes to?")
 
     paths = []
 
@@ -85,7 +125,8 @@ def main():
         "under soft exits this is the only thing limiting a loss",
         [f"closed_trade #{r[0]} {r[1]} {r[2]} pnl {r[3]}"
          for r in q(db, "SELECT id,symbol,exit_reason,round(pnl,2) FROM "
-                        "closed_trades WHERE upper(coalesce(exit_reason,'')) "
+                        "closed_trades WHERE " + THIS_ERA + " AND "
+                        "upper(coalesce(exit_reason,'')) "
                         "LIKE '%SL%' ORDER BY ts DESC LIMIT 3")])
 
     record(
@@ -96,7 +137,8 @@ def main():
         # both paths covered on one event.
         [f"closed_trade #{r[0]} {r[1]} {r[2]} pnl {r[3]}"
          for r in q(db, "SELECT id,symbol,exit_reason,round(pnl,2) FROM "
-                        "closed_trades WHERE upper(coalesce(exit_reason,'')) "
+                        "closed_trades WHERE " + THIS_ERA + " AND "
+                        "upper(coalesce(exit_reason,'')) "
                         "IN ('TP','TAKE_PROFIT','TP_BRACKET') "
                         "ORDER BY ts DESC LIMIT 3")])
 
@@ -123,6 +165,7 @@ def main():
         # configuration as evidence is worse than no coverage tool.
         [f"closed_trade #{r[0]} {r[1]} {r[2]} (tranche)"
          for r in q(db, "SELECT id,symbol,exit_reason FROM closed_trades WHERE "
+                        + THIS_ERA + " AND "
                         "upper(coalesce(exit_reason,'')) IN ('TP1','TP2') "
                         "ORDER BY ts DESC LIMIT 3")]
         + [f"order {r[0][:12]} {r[1]} sold {r[2]} as {r[3]}"
@@ -181,7 +224,7 @@ def main():
         "are two separate things",
         [f"closed_trade #{r[0]} {r[1]} {r[2]} qty {r[3]} pnl {r[4]}" for r in
          q(db, "SELECT id,symbol,exit_reason,qty,round(pnl,2) FROM "
-               "closed_trades ORDER BY ts DESC LIMIT 3")],
+               "closed_trades WHERE " + THIS_ERA + " ORDER BY ts DESC LIMIT 3")],
         note="a triggered SL/TP is tracked separately above and is NOT implied "
              "by this")
 
@@ -212,10 +255,12 @@ def main():
                   "('FILLED','CANCELLED','EXPIRED','REJECTED','FAILED_LOCAL')")
     unexplained = q(db, "SELECT client_order_id,symbol FROM orders WHERE "
                         "filled_qty > 0 AND applied_qty = 0")
-    closed = q(db, "SELECT COUNT(*) FROM closed_trades")
+    closed = q(db, "SELECT COUNT(*) FROM closed_trades WHERE " + THIS_ERA)
+    inherited = q(db, "SELECT COUNT(*) FROM closed_trades WHERE NOT " + THIS_ERA)
 
     invariants = {
         "closed_trades": closed[0][0] if closed else 0,
+        "closed_trades_inherited": inherited[0][0] if inherited else 0,
         "orders_with_applied_qty_mismatch": len(drift),
         "fills_never_applied": len(unexplained),
         "mismatch_detail": [f"{r[0][:12]} {r[1]} filled={r[2]} applied={r[3]}"
@@ -225,6 +270,11 @@ def main():
     covered = [p for p in paths if p["covered"]]
     print(f"\ncoverage ledger — {home}")
     print("=" * 66)
+    if invariants["closed_trades_inherited"]:
+        print(f"  {invariants['closed_trades_inherited']} closed trade(s) came "
+              f"in through a schema migration and are NOT counted: they were\n"
+              f"  written by the previous execution path, so they say nothing "
+              f"about this one.\n")
     for p in paths:
         mark = "COVERED " if p["covered"] else "  not yet"
         print(f"  {mark}  {p['path']}")
