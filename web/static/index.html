@@ -944,7 +944,42 @@ $('#btnStart').onclick=async()=>{const b=$('#btnStart');b.disabled=true;b.innerH
   try{await api('/api/scheduler/start',{method:'POST'});}
   catch(e){alert('未启动 — '+(e.message||e));}
   pollStatus();};
-$('#btnStop').onclick=async()=>{if(!confirm('Stop the trading bot?'))return;const b=$('#btnStop');b.disabled=true;b.innerHTML='■ Stopping…';try{await api('/api/scheduler/stop',{method:'POST'});}catch(e){}pollStatus();};
+// Stop asks WHICH stop. The two are not the same thing and the difference
+// matters: stopping the scheduler leaves the panel up so positions and the
+// ledger stay visible, while quitting takes the whole thing down and the only
+// way back is double-clicking "Start Web.command". A single button had to mean
+// one of them, and whichever it meant was wrong half the time.
+$('#btnStop').onclick=async()=>{
+  const zh=(localStorage.getItem('lang')||'zh')==='zh';
+  const dlg=$('#stopChoice'); if(dlg){dlg.style.display='flex';return;}
+  if(!confirm(zh?'停止调度器？':'Stop the scheduler?'))return;
+  await doStop('scheduler');
+};
+async function doStop(kind){
+  const b=$('#btnStop'); const zh=(localStorage.getItem('lang')||'zh')==='zh';
+  const dlg=$('#stopChoice'); if(dlg)dlg.style.display='none';
+  b.disabled=true; b.innerHTML=zh?'■ 停止中…':'■ Stopping…';
+  try{
+    if(kind==='all'){
+      await api('/api/exit',{method:'POST'});
+      // The server is going down, so nothing will answer the next poll. Say so
+      // rather than letting the panel look merely broken.
+      document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;'
+        +'justify-content:center;font:15px -apple-system,sans-serif;color:#8b949e;'
+        +'text-align:center;line-height:1.9">'
+        +(zh?'<div>已停止 —— 调度器、网页面板全部关闭。<br>'
+             +'要再次启动，双击项目文件夹里的 <b>Start Web.command</b>。<br>'
+             +'<span style="opacity:.6">这个标签页可以关掉了。</span></div>'
+            :'<div>Stopped — scheduler and web panel are both down.<br>'
+             +'To start again, double-click <b>Start Web.command</b> in the project folder.<br>'
+             +'<span style="opacity:.6">You can close this tab.</span></div>')
+        +'</div>';
+      return;
+    }
+    await api('/api/scheduler/stop',{method:'POST'});
+  }catch(e){}
+  pollStatus();
+}
 
 // ── i18n ──
 const I18N={
@@ -956,7 +991,14 @@ const I18N={
       no_pos:'🌙 当前无持仓',notrades:'暂无平仓记录',noappr:'暂无待批准建议',appr_note:'✅ 批准后约 5 分钟内自动执行(后台每 5 分钟同步一次;盘中扫描也会触发)',
       sig_title:'盯盘信号台',sig_desc:'像盯盘助手一样工作：盘中每 5 分钟扫描信号 watchlist，突破 / 放量 / VWAP 翻转 / RSI 极值 / 技术面转向即时推 Telegram，无事件保持静默（同类信号有冷却期，不轰炸）。',
       sig_stopped:'已停止',sig_scan:'立即扫描',sig_grid:'盯盘行情',sig_feed:'警报流',sig_brief:'盘前简报',sig_review:'盘中复盘',sig_close:'收盘对账',sig_wl:'信号 Watchlist',sig_add:'添加',sig_save:'保存',sig_reload:'刷新日志'},
-  en:{t_dash:'Dashboard',t_hist:'History',t_sig:'Signal',t_bt:'Backtest',positions:'Open Positions',equity:'Equity · cumulative realized',sectors:'US Sectors · Live',
+  en:{
+      stop_title:'Stop what?',
+      stop_desc:'Positions are not closed — both options only stop the software.',
+      stop_sched:'■ Scheduler only',
+      stop_sched_d:'No more scanning or orders. The panel stays up; positions and the ledger remain visible.',
+      stop_all:'■ Stop and quit everything',
+      stop_all_d:'Scheduler and web panel both shut down. Double-click Start Web.command to come back.',
+      stop_cancel:'Cancel',t_dash:'Dashboard',t_hist:'History',t_sig:'Signal',t_bt:'Backtest',positions:'Open Positions',equity:'Equity · cumulative realized',sectors:'US Sectors · Live',
       activity:'Recent Activity',record:'Trade Record',approvals:'Pending Approvals',deployed:'Deployed / Budget',today:"Today P&L · realized",total:'Total P&L · cum. realized',
       unreal:'Unrealized P&L · open',pos_unit:'position(s)',
       trades:'Total Trades',winrate:'Win rate',pf:'Profit factor',net:'Net P&L',cash:'Cash',openrisk:'Open risk / cap',lastscan:'Last scan',
@@ -1411,5 +1453,32 @@ setInterval(()=>{if(CURTAB!=='sig')return;refreshSigLog(false);
  if(t==='settings'||t==='access'){loadSettings().then(()=>{$('#settingsModal').classList.remove('hidden');
    if(t==='access')setTimeout(()=>$('#secAccess').scrollIntoView({block:'start'}),150);});}}
 </script>
+
+<!-- Stop: which stop. Two buttons because the two outcomes differ, and a
+     confirm() cannot express "and this one also closes the server". -->
+<div id="stopChoice" style="display:none;position:fixed;inset:0;z-index:9999;
+     background:rgba(0,0,0,.62);align-items:center;justify-content:center">
+  <div style="background:var(--card,#161b22);border:1px solid var(--border,#30363d);
+       border-radius:10px;padding:22px 24px;max-width:430px;width:90%;
+       font:14px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;color:#c9d1d9">
+    <div style="font-size:16px;font-weight:650;margin-bottom:4px" data-i18n="stop_title">停止什么？</div>
+    <div style="color:#8b949e;line-height:1.7;margin-bottom:16px" data-i18n="stop_desc">
+      持仓不会被平掉 —— 两个选项都只是停止软件。</div>
+    <button class="danger" style="width:100%;margin-bottom:8px;text-align:left;padding:10px 12px"
+            onclick="doStop('scheduler')">
+      <b data-i18n="stop_sched">■ 只停调度器</b>
+      <div style="font-weight:400;color:#8b949e;font-size:12.5px;margin-top:2px"
+           data-i18n="stop_sched_d">不再扫描或下单。面板留着，持仓和账本照常可看。</div>
+    </button>
+    <button class="danger" style="width:100%;margin-bottom:12px;text-align:left;padding:10px 12px"
+            onclick="doStop('all')">
+      <b data-i18n="stop_all">■ 停止并退出整个软件</b>
+      <div style="font-weight:400;color:#8b949e;font-size:12.5px;margin-top:2px"
+           data-i18n="stop_all_d">调度器 + 网页面板全部关闭。要再开得双击 Start Web.command。</div>
+    </button>
+    <button class="sm" style="width:100%" onclick="document.getElementById('stopChoice').style.display='none'"
+            data-i18n="stop_cancel">取消</button>
+  </div>
+</div>
 </body>
 </html>
