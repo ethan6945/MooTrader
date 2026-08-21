@@ -25,8 +25,25 @@ WHY THIS EXISTS, SEPARATELY FROM test_param_freeze.py
   recompute_and_apply(), record_trade_close(), and the two Flask endpoints —
   and assert on the observable outcome, not on the guard being called.
 """
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+# Its own home, before src.config is imported.
+#
+# This file used to run against the repository itself, which worked only
+# because the checkout's .env happened to have no WEB_PASSWORD. The moment a
+# real one arrived — it did, when the installed app's .env became this folder's
+# — web/server's auth gate switched on, every endpoint returned 401, and the
+# failure read as "POST /api/budget succeeds: FAIL" with nothing to say why.
+#
+# A suite that passes because of what is in the developer's .env is not
+# testing the thing it names.
+_TMP = tempfile.mkdtemp(prefix="mmt-freeze-")
+os.environ["MMT_HOME"] = _TMP
+for _d in ("data", "logs", "config"):
+    (Path(_TMP) / _d).mkdir(parents=True, exist_ok=True)
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:

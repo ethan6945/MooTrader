@@ -19,6 +19,7 @@ WHY THIS EXISTS
   parity is reconciled (data/sandbox_vs_backtest.json currently: verdict BREACH,
   20% signal match, 83.5% net-PnL gap).
 """
+import json
 import sys
 import threading
 
@@ -77,32 +78,58 @@ try:
     check("revert_param refused", False)
 except rc.ParamsFrozen:
     check("revert_param refused", True)
-check("rollback left db-state alone", _STATE["param_sl_atr_mult"] == 3.0)
+check("rollback left the stored value alone", _STATE["param_sl_atr_mult"] == 3.0)
 
 # ── 3. force=True is the human re-baselining escape hatch ────────────────────
+# Parameters live in config/parameters.json now, not as param_* rows in
+# db-state. They used to live in BOTH that and .env, and db-state won silently:
+# SL_ATR_MULT=2.8 sat in .env while the bot traded 3.5. These assertions read
+# the file because the file is where the value is.
+# Snapshot first: earlier sections put param_* keys into the db fake by hand,
+# so "the key is absent" would be asserting about their setup rather than about
+# what set_param did. What matters is that this write does not ADD to it.
+_db_before = {k: v for k, v in _STATE.items() if k.startswith("param_")}
 rec = rc.set_param("entry_threshold", 72.0, "human-baseline", force=True)
-check("force=True applies", _STATE["param_entry_threshold"] == 72.0)
-check("force=True records provenance in param_history",
-      any(h.get("source") == "human-baseline" for h in _STATE["param_history"]))
+check("force=True applies", rc.entry_threshold() == 72.0)
+_doc = json.loads(rc.params_file().read_text())
+check("...to the parameter file",
+      float(_doc["params"]["ENTRY_SCORE_THRESHOLD"]) == 72.0)
+check("...and db-state gained nothing",
+      {k: v for k, v in _STATE.items() if k.startswith("param_")} == _db_before)
+_jl = rc.params_file().parent / "parameters_history.jsonl"
+_hist = [json.loads(l) for l in _jl.read_text().splitlines()] if _jl.exists() else []
+check("force=True records provenance in the journal",
+      any(h.get("source") == "human-baseline" for h in _hist))
+check("...naming the parameter and both values",
+      any(h.get("key") == "entry_threshold" and h.get("new") == 72.0
+          for h in _hist))
 
 # ── 4. sweep overrides never reach db-state ──────────────────────────────────
 # This is the regression guard for optimize_system._inject. It used to write
 # param_* into live db-state once per combo and rely on a finally block to put
 # them back — a finally block that does not run on SIGKILL.
+# The baseline is established in the FILE, because that is where a parameter
+# lives now. Setting param_* keys in the db fake — which is what this did —
+# stopped describing anything the readers consult.
 _STATE.clear()
-_STATE["param_entry_threshold"] = 70.0
-_STATE["param_tp_atr_mult"] = 8.0
-_STATE["param_sl_atr_mult"] = 3.0
+for _k, _v in (("entry_threshold", 70.0), ("tp_atr_mult", 8.0), ("sl_atr_mult", 3.0)):
+    rc.set_param(_k, _v, "test-baseline", force=True)
+_baseline = json.loads(rc.params_file().read_text())["params"]
 
 from src import optimize_system                # noqa: E402
 optimize_system._inject(55.0, 14.0, 4.5)
 
 check("_inject: reader sees the combo", rc.entry_threshold() == 55.0)
 check("_inject: tp/sl too", rc.tp_atr_mult() == 14.0 and rc.sl_atr_mult() == 4.5)
-check("_inject: db param_entry_threshold untouched", _STATE["param_entry_threshold"] == 70.0)
-check("_inject: db param_tp_atr_mult untouched", _STATE["param_tp_atr_mult"] == 8.0)
-check("_inject: db param_sl_atr_mult untouched", _STATE["param_sl_atr_mult"] == 3.0)
-check("_inject: no param_history pollution", "param_history" not in _STATE)
+# The point of the thread-local: a sweep combo must never be PERSISTED. It used
+# to be written into live db-state once per combo and restored in a finally
+# block — a finally block that does not run on SIGKILL, which is the most
+# likely origin of the 2026-08-10 param divergence. The store it must not touch
+# is the file now.
+_after = json.loads(rc.params_file().read_text())["params"]
+check("_inject: the parameter FILE is untouched", _after == _baseline)
+check("_inject: nothing written to db-state either",
+      not any(k.startswith("param_") for k in _STATE))
 
 # The live scan runs on a different thread from a sweep. Mid-sweep it must
 # still see the real params — this is what makes a killed sweep harmless.
@@ -111,7 +138,8 @@ t = threading.Thread(target=lambda: seen.update(
     th=rc.entry_threshold(), tp=rc.tp_atr_mult(), sl=rc.sl_atr_mult()))
 t.start(); t.join()
 check("_inject: another thread sees real params, not the combo",
-      (seen["th"], seen["tp"], seen["sl"]) == (70.0, 8.0, 3.0))
+      (seen["th"], seen["tp"], seen["sl"]) == (70.0, 8.0, 3.0),
+      )
 
 rc.clear_overrides()
 check("clear_overrides restores this thread", rc.entry_threshold() == 70.0)

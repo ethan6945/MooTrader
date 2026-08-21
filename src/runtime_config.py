@@ -24,10 +24,13 @@ Two Phase-0 additions (2026-08-10):
 """
 from __future__ import annotations
 
+import logging
 import threading
 
 from . import db
 from .config import settings
+
+log = logging.getLogger(__name__)
 
 
 class ParamsFrozen(ValueError):
@@ -63,14 +66,46 @@ def frozen() -> bool:
     return bool(settings.params_frozen)
 
 
+# runtime_config's snake_case names, and the parameter file's env-shaped keys.
+# Two spellings of one parameter is how this went wrong before; the mapping
+# lives here so there is exactly one place that knows both.
+_FILE_KEY = {
+    "entry_threshold": "ENTRY_SCORE_THRESHOLD", "sl_atr_mult": "SL_ATR_MULT",
+    "tp_atr_mult": "TP_ATR_MULT", "risk_per_trade": "RISK_PER_TRADE",
+    "max_position_pct": "MAX_POSITION_PCT", "max_hold_days": "MAX_HOLD_DAYS",
+    "max_positions": "MAX_POSITIONS", "universe_top_n": "UNIVERSE_TOP_N",
+    "tp1_r": "TP1_R", "tp2_r": "TP2_R", "max_gap_pct": "MAX_GAP_PCT",
+    "scan_interval_min": "SCAN_INTERVAL_MIN",
+}
+
+
+def params_file():
+    from .config import ROOT
+    return ROOT / "config" / "parameters.json"
+
+
+def _read_file() -> dict:
+    import json
+    try:
+        return json.loads(params_file().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def _param(key: str):
+    """The live value of one parameter, or None to fall back to the default.
+
+    Reads config/parameters.json, not db-state. Parameters lived in BOTH for a
+    long time — .env plus a param_<key> row — and the row won silently, so
+    SL_ATR_MULT=2.8 in .env while the bot traded 3.5. One store now.
+    """
     ov = _overrides()
     if key in ov:
         return ov[key]
-    try:
-        return db.get_state().get(f"param_{key}")
-    except Exception:
+    fk = _FILE_KEY.get(key)
+    if not fk:
         return None
+    return (_read_file().get("params") or {}).get(fk)
 
 
 def entry_threshold() -> float:
@@ -191,6 +226,56 @@ def current(key: str):
     }[key]()
 
 
+def _write_param(key: str, value: float, rec: dict) -> None:
+    """Persist one parameter to the file, and journal the change beside it.
+
+    Written whole and atomically — a half-written parameters.json would take
+    every parameter with it, not just the one being changed.
+
+    The journal is a separate append-only file rather than a list inside the
+    same document. param_history used to live in db-state next to the values it
+    described, capped at fifty entries, and the two drifted: two parameters were
+    live with no active record at all, which is two of the four contradictions
+    config_baseline reports. A log that cannot be rewritten by the thing it
+    audits is worth more than one that can.
+    """
+    import json, os as _os, tempfile
+    from .config import ROOT
+    f = params_file()
+    # The directory may not exist yet — a fresh checkout, or a run pointed at a
+    # new MMT_HOME. The atomic write needs its temp file as a SIBLING (rename
+    # is only atomic within one filesystem), so the directory has to be there
+    # before the temp file, not after.
+    f.parent.mkdir(parents=True, exist_ok=True)
+    doc = _read_file() or {"version": 1, "params": {}}
+    fk = _FILE_KEY.get(key, key.upper())
+    doc.setdefault("params", {})[fk] = str(value)
+    tmp = tempfile.NamedTemporaryFile("w", dir=str(f.parent), delete=False,
+                                      suffix=".tmp", encoding="utf-8")
+    try:
+        json.dump(doc, tmp, indent=2, ensure_ascii=False)
+        tmp.write("\n")
+        tmp.flush()
+        _os.fsync(tmp.fileno())
+        tmp.close()
+        _os.replace(tmp.name, f)
+    except BaseException:
+        try:
+            _os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    # The environment Settings was built from, so a change lands on this scan
+    # rather than at the next restart.
+    _os.environ[fk] = str(value)
+    try:
+        with open(ROOT / "config" / "parameters_history.jsonl", "a",
+                  encoding="utf-8") as h:
+            h.write(json.dumps({**rec, "file_key": fk}, default=str) + "\n")
+    except OSError as e:
+        log.warning("parameter change applied but not journalled: %s", e)
+
+
 def set_param(key: str, value: float, source: str, force: bool = False) -> dict:
     """Single write path for runtime param changes (approval executor AND the
     bounded-autonomy auto-apply both come through here). Validates against
@@ -213,14 +298,7 @@ def set_param(key: str, value: float, source: str, force: bool = False) -> dict:
     rec = {"key": key, "old": old, "new": float(value), "source": source,
            "applied_at": datetime.now(timezone.utc).isoformat(),
            "active": True}
-    state = db.get_state()
-    hist = list(state.get("param_history", []))
-    # Supersede any still-active record for the same key.
-    for h in hist:
-        if h.get("key") == key:
-            h["active"] = False
-    hist.append(rec)
-    db.update_state({f"param_{key}": float(value), "param_history": hist[-50:]})
+    _write_param(key, float(value), rec)
     # 2026-07-06: re-validate scale-out guard with runtime SL/TP values
     # (the module-level guard in config.py uses static .env values and
     # can't see runtime overrides — this plugs the gap).

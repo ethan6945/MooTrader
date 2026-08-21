@@ -87,6 +87,48 @@ except OSError as _e:      # unreadable, a directory, a broken symlink…
         "start protocol will refuse with config_unreadable", ROOT / ".env", _e)
 
 
+def _load_parameters() -> int:
+    """Overlay config/parameters.json onto the environment. Returns how many.
+
+    Parameters used to live in .env AND as param_* rows in the database, and
+    the database won. SL_ATR_MULT=2.8 sat in .env while the bot traded 3.5 —
+    editing .env looked like it worked and changed nothing, and two of the four
+    contradictions config_baseline reported were that split.
+
+    One file now. It is applied AFTER load_dotenv and overwrites, so a leftover
+    parameter in .env cannot quietly win; credentials and connection settings
+    stay in .env and are never touched here.
+
+    Into os.environ rather than into Settings because Settings evaluates its
+    fields from os.getenv at class-definition time. Overlaying the environment
+    means every one of the fifty-odd fields and every `settings.x` reader keeps
+    working unchanged — a migration that needed all of them edited would be a
+    migration nobody could verify.
+    """
+    import json as _json
+    f = ROOT / "config" / "parameters.json"
+    try:
+        doc = _json.loads(f.read_text())
+    except FileNotFoundError:
+        return 0                       # first run, or a checkout without one
+    except (OSError, ValueError) as e:
+        import logging as _lg
+        _lg.getLogger(__name__).error(
+            "config/parameters.json is unreadable (%s) — falling back to .env "
+            "and code defaults. FIX THIS: the bot is not running the "
+            "parameters you think it is.", e)
+        return 0
+    params = doc.get("params") or {}
+    for k, v in params.items():
+        if v is None:
+            continue
+        os.environ[str(k)] = str(v)
+    return len(params)
+
+
+_N_PARAMS = _load_parameters()
+
+
 def app_version() -> str:
     """The build's version string, from the ONE place it is declared —
     macos/Resources/Info.plist (frozen: the copy at MooTrader.app/Contents).

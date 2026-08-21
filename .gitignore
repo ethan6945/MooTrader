@@ -66,3 +66,8 @@ config/watchlist.json.bak
 # ============== Compiled / temp ==============
 *.tmp
 *.temp
+
+# Parameter change journal — per-install runtime record, like logs/. The
+# parameters themselves (config/parameters.json) ARE tracked: seeing what a
+# value changed to, and when, is the point of keeping them in one file.
+config/parameters_history.jsonl

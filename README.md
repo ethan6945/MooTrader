@@ -586,7 +586,7 @@ All config lives in `.env` (the template [`.env.example`](.env.example) document
 | Param | Value | Param | Value |
 |------|----|------|----|
 | `ENTRY_SCORE_THRESHOLD` | 70 | `TP_ATR_MULT` | 10.0 |
-| `SCAN_INTERVAL_MIN` | 15 | `SL_ATR_MULT` | 2.8 |
+| `SCAN_INTERVAL_MIN` | 15 | `SL_ATR_MULT` | 3.5 |
 | `TIMEFRAME` | HOUR_1 | `MAX_GAP_PCT` | 4.0 |
 | `MAX_HOLD_DAYS` | 4 | `RISK_PER_TRADE` | 0.05 |
 | `MAX_POSITIONS` | 5 | `MAX_POSITION_PCT` | 0.10 |
