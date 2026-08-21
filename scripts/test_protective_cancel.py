@@ -288,5 +288,85 @@ check("nothing was sold", not any(
     for k in c2._trade.placed))
 check("and trading is halted", db.get_state().get("halted") is True)
 
+# ── 6. a fill that lands during the cancel must be applied, or nothing ─────
+# The window is real: between deciding to cancel and the request landing, the
+# protective order can fill. cancel_protective polls for that and settles it,
+# with the comment "apply that before anything else decides what the position
+# is" — and then used to log-and-return-True when the settle failed. True means
+# "the cancel request was accepted"; the caller reads it and goes on to decide
+# what the position is, from the very record that was supposed to be updated
+# first. The shares had moved at the broker. The ledger did not say so.
+print("\n6  a fill during cancellation that cannot be settled is a refusal")
+clear_halt()
+
+from src import fill_settler                                  # noqa: E402
+_real_settle = fill_settler.settle
+_real_await = executor._await_cancel_terminal
+
+c6 = FakeClient("ok")
+p6 = c6.place_limit_order("NKE", 10, 100.0, TrdSide.SELL, kind="STOP")
+# The broker says: terminal, and 10 shares filled that the ledger has not
+# applied. This is the branch under test.
+executor._await_cancel_terminal = lambda *a, **k: {
+    "client_order_id": p6.client_order_id, "filled_qty": 10, "applied_qty": 0}
+fill_settler.settle = lambda coid: (_ for _ in ()).throw(
+    RuntimeError("ledger write failed"))
+try:
+    ok6 = executor.cancel_protective(c6, "NKE", p6.broker_order_id, "stop")
+finally:
+    fill_settler.settle = _real_settle
+
+check("a failed settle is reported as a failure, not as an accepted cancel",
+      ok6 is False)
+check("...and halts", db.get_state().get("halted") is True)
+check("...naming the unsettled fill",
+      db.get_state().get("halt_reason") == "fill during cancel not settled")
+check("...and the detail names the symbol and the leg",
+      "NKE" in str(db.get_state().get("halt_detail"))
+      and "stop" in str(db.get_state().get("halt_detail")))
+
+# The settler halts itself on an oversell, with a reason that describes the
+# account better than this one does. halt() keeps the FIRST reason, so that one
+# must survive — a second, vaguer halt must not paper over it.
+clear_halt()
+risk_manager.halt("oversold on settle", "both legs of the bracket filled")
+c6b = FakeClient("ok")
+p6b = c6b.place_limit_order("SBUX", 10, 100.0, TrdSide.SELL, kind="STOP")
+executor._await_cancel_terminal = lambda *a, **k: {
+    "client_order_id": p6b.client_order_id, "filled_qty": 10, "applied_qty": 0}
+fill_settler.settle = lambda coid: (_ for _ in ()).throw(
+    fill_settler.OversoldError("both legs moved shares"))
+try:
+    ok6b = executor.cancel_protective(c6b, "SBUX", p6b.broker_order_id, "stop")
+finally:
+    fill_settler.settle = _real_settle
+    executor._await_cancel_terminal = _real_await
+
+check("an already-halted account still reports the refusal", ok6b is False)
+check("...and the settler's more specific reason is the one kept",
+      db.get_state().get("halt_reason") == "oversold on settle")
+
+# And the success path must be untouched: a settle that works still returns
+# True. Without this the test above would pass on a function that always
+# returned False.
+clear_halt()
+_settled = []
+c6c = FakeClient("ok")
+p6c = c6c.place_limit_order("KO", 10, 100.0, TrdSide.SELL, kind="STOP")
+executor._await_cancel_terminal = lambda *a, **k: {
+    "client_order_id": p6c.client_order_id, "filled_qty": 10, "applied_qty": 0}
+fill_settler.settle = lambda coid: _settled.append(coid)
+try:
+    ok6c = executor.cancel_protective(c6c, "KO", p6c.broker_order_id, "stop")
+finally:
+    fill_settler.settle = _real_settle
+    executor._await_cancel_terminal = _real_await
+
+check("a fill that DOES settle still reports the cancel as accepted",
+      ok6c is True)
+check("...and the settler was actually called", _settled == [p6c.client_order_id])
+check("...with no halt", not db.get_state().get("halted"))
+
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

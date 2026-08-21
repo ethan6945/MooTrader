@@ -821,8 +821,26 @@ def cancel_protective(client: MooClient, symbol: str, order_id: str,
                     from . import fill_settler
                     fill_settler.settle(settled["client_order_id"])
                 except Exception as e:
+                    # This used to log and return True — telling the caller the
+                    # cancel was accepted and nothing else had happened, while
+                    # shares had just moved and the ledger did not know. The
+                    # caller then decided what the position was, from the very
+                    # record the comment above says must be updated first.
+                    #
+                    # The other two failures in this function halt and return
+                    # False. So does this one now. halt() is idempotent and
+                    # keeps the first reason, so when the settler has already
+                    # halted (OversoldError) its more specific reason survives.
                     log.error("%s: could not settle a leg that filled during "
                               "cancellation: %s", symbol, e)
+                    risk_manager.halt(
+                        "fill during cancel not settled",
+                        f"{symbol} {leg} order {order_id} filled while it was "
+                        f"being cancelled, and applying that fill failed "
+                        f"({type(e).__name__}: {e}). The shares moved at the "
+                        f"broker; the ledger does not show it. Reconcile by "
+                        f"hand before releasing.")
+                    return False
         return True
 
     residual = {"symbol": symbol, "leg": leg, "broker_order_id": str(order_id),

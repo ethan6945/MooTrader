@@ -218,10 +218,22 @@ def check_twins(trees):
 # ── swallow ────────────────────────────────────────────────────────────────
 
 BENIGN = (ast.Pass, ast.Continue, ast.Break)
+# Touching one of these means the account, the ledger or the broker moved.
+# A swallowed exception here is the shape all seven execution P0s had.
+CRITICAL = re.compile(
+    r'\b(place_|cancel_|modify_order|settle|halt|'
+    r'update_state|atomic_state|set_param|set_budget|record_trade)\b')
+
+# Persistent, but not money: a swallowed failure here loses data or leaves a
+# file half-written. Worth reading, rarely urgent.
 STATEFUL = re.compile(
-    r'\b(execute|commit|write_text|to_parquet|place_|cancel_|modify_order|'
-    r'update_state|atomic_state|upsert|insert|delete|save_|halt|settle|'
-    r'record_|unlink|rename|replace)\b')
+    r'\b(execute|commit|write_text|to_parquet|upsert|save_|'
+    r'record_|unlink|rename)\b')
+
+# Deliberately NOT in either list: `replace` (str.replace and
+# dataclasses.replace both RETURN a new value and mutate nothing), `insert`
+# (list.insert is in-memory), `delete` (dict/attr deletion is too). They were
+# in STATEFUL and produced false positives that buried the real ones.
 
 
 def check_swallow(trees):
@@ -247,12 +259,14 @@ def check_swallow(trees):
             try_node = _enclosing_try(tree, h)
             attempted = ast.unparse(ast.Module(
                 body=try_node.body, type_ignores=[])) if try_node else ""
-            if not STATEFUL.search(attempted):
+            crit = bool(CRITICAL.search(attempted))
+            if not crit and not STATEFUL.search(attempted):
                 continue
             func = _enclosing_func(tree, h)
-            finding("swallow", "medium", path, h.lineno,
+            finding("swallow", "high" if crit else "medium", path, h.lineno,
                     f"except in {func or '<module>'}() logs and continues over "
-                    f"a state change",
+                    + ("an account/ledger/broker write" if crit
+                       else "a state change"),
                     "the seven execution P0s were all this shape: the write "
                     "half-happened, nothing raised, and the next decision was "
                     "made on a record that no longer described the account")
