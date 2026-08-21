@@ -313,7 +313,24 @@ def revert_param(key: str, reason: str, force: bool = False) -> dict | None:
     None if there was nothing active to revert).
 
     Also frozen in Phase 0: an automated rollback is still an automated write,
-    and with the freeze on there is nothing for it to roll back anyway."""
+    and with the freeze on there is nothing for it to roll back anyway.
+
+    WHERE THE VALUE GOES
+      This wrote db-state `param_<key>` — the store parameters lived in before
+      they moved to config/parameters.json. Nothing reads that store any more:
+      the only param_* row left in the live database is param_history, which
+      is the audit log, not a value.
+
+      So a rollback marked its history record rolled_back, returned the record,
+      and left the bot trading the value it had just reported reverting. On the
+      safety net for a bad automated change. It could not fire while
+      PARAMS_FROZEN is on, which is the only reason this was not already true
+      in production — and lifting that freeze is the plan.
+
+      Same fault as the settings panel writing .env: a write aimed at the store
+      that no longer decides. It goes through _write_param now, the way
+      set_param does, so there is one writer for one file.
+    """
     if frozen() and not force:
         raise ParamsFrozen(
             f"param freeze active (PARAMS_FROZEN) — refused rollback of {key}"
@@ -325,8 +342,15 @@ def revert_param(key: str, reason: str, force: bool = False) -> dict | None:
             h["active"] = False
             h["rolled_back"] = True
             h["rollback_reason"] = reason
-            db.update_state({f"param_{key}": h.get("old"),
-                             "param_history": hist})
+            db.update_state({"param_history": hist})
+            old = h.get("old")
+            if old is not None:
+                from datetime import datetime, timezone
+                _write_param(key, float(old), {
+                    "key": key, "old": h.get("new"), "new": float(old),
+                    "source": f"rollback: {reason}"[:200],
+                    "applied_at": datetime.now(timezone.utc).isoformat(),
+                    "active": True})
             return h
     return None
 

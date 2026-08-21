@@ -80,6 +80,32 @@ except rc.ParamsFrozen:
     check("revert_param refused", True)
 check("rollback left the stored value alone", _STATE["param_sl_atr_mult"] == 3.0)
 
+# ── 2b. an ALLOWED rollback must move the value the bot reads ───────────────
+# revert_param wrote db-state `param_<key>`. Parameters live in
+# config/parameters.json now and nothing reads that store any more — the only
+# param_* row left in the live database is param_history, the audit log. So a
+# rollback marked its record rolled_back, returned it, and left the bot
+# trading the value it had just reported reverting. On the safety net for a
+# bad automated change. PARAMS_FROZEN is the only reason it was not already
+# true in production, and lifting that freeze is the plan.
+#
+# So this asserts on the READER, not on where the write landed.
+rc.set_param("sl_atr_mult", 3.5, "test-baseline", force=True)
+_STATE["param_history"] = [{"key": "sl_atr_mult", "old": 2.8, "new": 3.5,
+                            "source": "auto-optimizer", "active": True}]
+_before = rc.sl_atr_mult()
+_rec = rc.revert_param("sl_atr_mult", "test rollback", force=True)
+check("a permitted rollback returns the record it reverted",
+      _rec is not None and _rec.get("rolled_back") is True)
+check("...and the value the strategy READS actually moved",
+      _before == 3.5 and rc.sl_atr_mult() == 2.8)
+check("...in the file that decides it",
+      float(json.loads(rc.params_file().read_text())["params"]["SL_ATR_MULT"]) == 2.8)
+check("...and it is journalled as a rollback",
+      any("rollback" in str(json.loads(l).get("source", ""))
+          for l in (rc.params_file().parent / "parameters_history.jsonl")
+          .read_text().splitlines()))
+
 # ── 3. force=True is the human re-baselining escape hatch ────────────────────
 # Parameters live in config/parameters.json now, not as param_* rows in
 # db-state. They used to live in BOTH that and .env, and db-state won silently:
