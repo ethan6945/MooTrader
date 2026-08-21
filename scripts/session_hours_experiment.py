@@ -101,9 +101,10 @@ WHAT THE PARTICIPATION CAP ACTUALLY CAUGHT
 import collections
 import json
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta
 
-sys.path.insert(0, "/Users/ethan/Desktop/moomoo trader")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import sandbox                                    # noqa: E402
 from src.sandbox import SandboxConfig, run_sandbox         # noqa: E402

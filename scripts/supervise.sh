@@ -27,7 +27,7 @@
 set -u
 
 HOME_DIR="${1:-$HOME/MooTraderStaging}"
-REPO="/Users/ethan/Desktop/moomoo trader"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$REPO/.venv/bin/python3"
 LOG="$HOME_DIR/logs/supervisor.log"
 LEASE="$HOME_DIR/logs/worker.lease"

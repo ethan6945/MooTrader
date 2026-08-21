@@ -1,7 +1,11 @@
 # ============== Secrets — NEVER commit these ==============
+# Anything env-shaped, not just the two names that were listed. A migration
+# backup called .env.repo-before-migration matched neither `.env` nor
+# `.env.*.local`, so it was a tracked path holding four live credentials —
+# caught by check_no_secrets before it reached a commit, which is luck rather
+# than design. The old repository was deleted over exactly this kind of leak.
 .env
-.env.local
-.env.*.local
+.env.*
 *.pem
 *.key
 # (.env.example IS tracked — it's the template, no real values)

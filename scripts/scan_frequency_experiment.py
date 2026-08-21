@@ -31,7 +31,7 @@ FIRST CLEAN RESULT (45 days to 2026-08-17, 15 tickers)
 """
 import json, sys, collections
 from datetime import datetime, timedelta
-sys.path.insert(0, "/Users/ethan/Desktop/moomoo trader")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.sandbox import SandboxConfig, run_sandbox
 from src.config import ROOT
