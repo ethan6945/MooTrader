@@ -112,4 +112,4 @@ fi
 
 echo
 sleep 2
-osascript -e 'tell application "Terminal" to close (every window whose name contains "Stop Web")' >/dev/null 2>&1 &
+osascript -e 'tell application "Terminal" to close (every window whose name contains "stop-web")' >/dev/null 2>&1 &

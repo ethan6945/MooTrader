@@ -1,74 +1,95 @@
 #!/bin/bash
-# Double-click to (re)launch the web dashboard + official OpenD app.
-# - Starts moomoo_OpenD.app automatically if not already running
-# - Unlocks US stock trading
-# - RESTARTS cleanly so the latest backend code is always loaded (Flask doesn't
-#   auto-reload). Runs detached — survives closing the Terminal AND the browser.
-# - The trading scheduler is a SEPARATE process; click ▶ Start in the web UI to
-#   launch it. Click ■ Stop to stop both scheduler + OpenD.
-# - To stop everything including the web UI: Settings → Exit UI.
+# Double-click to run MooTrader.
 #
-#   Stop the web server manually:  kill $(cat logs/web.pid)
+#   OpenD (launch + wait for 11111) → web panel (detached) → browser → close
+#   this window.
+#
+# The trading scheduler is a SEPARATE process: press ▶ in the panel to start
+# it. ■ Stop there asks whether to stop just the scheduler or quit everything.
+# To stop from the Finder instead, double-click stop-web.command.
+#
+# Restarts the web server rather than reusing a running one. Flask does not
+# reload changed code, so "already running" would silently serve whatever was
+# current when it started — and the whole reason to run from this folder is
+# that edits here take effect.
 
-cd "$(dirname "$0")"
-
-# ── Load .env ──────────────────────────────────────────────────────
-if [ -f .env ]; then
-    set -a; source .env; set +a
-fi
-
-# ── OpenD auto-start ────────────────────────────────────────────────
-# 2026-07-09: back to the OFFICIAL moomoo_OpenD.app. The headless OpenD-rs
-# gateway (v1.4.122) silently dropped every order (need_op_confirm stub with
-# order_id=0, purged after ~30s) → each buy became a fake MANUAL_SELL ghost
-# + re-buy loop. The official app keeps its own login session; we just launch
-# it and wait for port 11111.
+cd "$(dirname "$0")" || exit 1
 mkdir -p logs
 
+PORT=${WEB_PORT:-8770}
+PY=".venv/bin/python3"
+say() { printf '  %s\n' "$*"; }
+
+echo
+echo "  MooTrader"
+echo "  ─────────"
+
+[ -x "$PY" ] || { say "✗ no interpreter at $PY"; say "  run:  uv venv && uv pip install -r requirements.txt"; echo; read -r -p "  Press return to close. "; exit 1; }
+[ -f .env ]  || { say "✗ no .env — copy .env.example and fill it in"; echo; read -r -p "  Press return to close. "; exit 1; }
+
+set -a; . ./.env; set +a
+
+# ── OpenD ───────────────────────────────────────────────────────────────────
+# 2026-07-09: the OFFICIAL moomoo_OpenD.app, deliberately. The headless
+# OpenD-rs gateway (v1.4.122) silently dropped every order — need_op_confirm
+# stub with order_id=0, purged after ~30s — so each buy became a fake
+# MANUAL_SELL ghost and a re-buy loop. The official app keeps its own login
+# session; this only launches it and waits for the port.
 if nc -z 127.0.0.1 11111 2>/dev/null; then
-    echo "✓ OpenD already reachable on 127.0.0.1:11111"
+    say "✓ OpenD already up on 127.0.0.1:11111"
 else
-    echo "→ Launching official moomoo_OpenD.app ..."
-    open -a moomoo_OpenD
+    say "→ launching moomoo_OpenD…"
+    open -a moomoo_OpenD 2>/dev/null
+    ok=0
     for i in $(seq 1 60); do
-        if nc -z 127.0.0.1 11111 2>/dev/null; then
-            echo "✓ OpenD ready on 127.0.0.1:11111 (${i}s)"
-            break
-        fi
-        if [ $i -eq 60 ]; then
-            echo "✘ OpenD 端口 11111 未就绪 — 请到 OpenD 窗口完成登录后重试"
-        fi
+        if nc -z 127.0.0.1 11111 2>/dev/null; then say "✓ OpenD ready (${i}s)"; ok=1; break; fi
         sleep 1
     done
-fi
-
-# ── Web server ──────────────────────────────────────────────────────
-PORT=${WEB_PORT:-8770}
-
-# Kill any existing web server so we always start fresh on the new code.
-if [ -f logs/web.pid ] && kill -0 "$(cat logs/web.pid)" 2>/dev/null; then
-    kill "$(cat logs/web.pid)" 2>/dev/null
-    sleep 1
-fi
-# Belt-and-suspenders: kill any stray server on this port's script.
-pkill -f "web/server.py" 2>/dev/null
-sleep 1
-
-nohup .venv/bin/python web/server.py > logs/web.log 2>&1 &
-echo $! > logs/web.pid
-disown
-
-# Wait until the server actually responds before opening the browser.
-# Flask imports (src.ai, src.db, etc.) can take 3-6 seconds on a cold start.
-echo -n "Waiting for web server..."
-for i in $(seq 1 20); do
-    if curl -s -o /dev/null -w '' --max-time 1 "http://127.0.0.1:$PORT/login" 2>/dev/null; then
-        echo " ready (${i}s)"
-        break
+    if [ "$ok" -eq 0 ]; then
+        say "✗ OpenD did not open port 11111 within 60s"
+        say "  finish the login in the OpenD window, then run this again."
+        echo; read -r -p "  Press return to close. "; exit 1
     fi
-    echo -n "."
-    sleep 1
+fi
+
+# ── web panel ───────────────────────────────────────────────────────────────
+if [ -f logs/web.pid ] && kill -0 "$(cat logs/web.pid 2>/dev/null)" 2>/dev/null; then
+    kill "$(cat logs/web.pid)" 2>/dev/null; sleep 1
+fi
+pkill -f "web/server.py" 2>/dev/null; sleep 1
+
+say "→ starting the panel…"
+# setsid where available, so closing this window (two steps below, on purpose)
+# cannot take the server with it. nohup alone survives too.
+if command -v setsid >/dev/null 2>&1; then
+    setsid nohup "$PY" web/server.py >> logs/web.log 2>&1 &
+else
+    nohup "$PY" web/server.py >> logs/web.log 2>&1 &
+fi
+WEB_PID=$!
+echo "$WEB_PID" > logs/web.pid
+disown "$WEB_PID" 2>/dev/null || true
+
+# Wait for it to ANSWER. A pid that is about to die of a port conflict or a bad
+# .env looks exactly like a healthy one for the first second, and imports
+# (src.ai, src.db) take 3–6s cold.
+for i in $(seq 1 40); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/favicon.ico" >/dev/null 2>&1; then
+        say "✓ panel on http://127.0.0.1:$PORT  (pid $WEB_PID)"
+        open "http://127.0.0.1:$PORT"
+        sleep 1
+        osascript -e 'tell application "Terminal" to close (every window whose name contains "start-web")' >/dev/null 2>&1 &
+        exit 0
+    fi
+    kill -0 "$WEB_PID" 2>/dev/null || break
+    sleep 0.5
 done
 
-open "http://127.0.0.1:$PORT"
-echo "✓ Web dashboard launched (PID $(cat logs/web.pid)) on http://127.0.0.1:$PORT"
+# Failed. Keep the window — showing why is the only reason it exists.
+say "✗ the panel did not come up within 20s"
+echo
+say "last lines of logs/web.log:"
+tail -n 15 logs/web.log 2>/dev/null | sed 's/^/      /'
+rm -f logs/web.pid
+echo
+read -r -p "  Press return to close. "
