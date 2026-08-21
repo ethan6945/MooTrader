@@ -264,6 +264,52 @@ def check_budget_baseline(state: dict, env: dict) -> list[dict]:
     return out
 
 
+def check_one_store_per_key(env: dict) -> list[dict]:
+    """No key may live in both .env and config/parameters.json.
+
+    config._load_parameters overlays the parameter file onto os.environ AFTER
+    load_dotenv and OVERWRITES. A key in both files therefore has a winner and
+    a decoration, and nothing on either line says which is which.
+
+    This is not hypothetical and it is not old. On 2026-08-21 the settings
+    panel wrote STRATEGY_MODE=technical and NEWS_DRIVEN_ENABLED=false into
+    .env while parameters.json held news/true. The panel reported success and
+    said "restart to apply". The restart applied nothing, the bot went on
+    selecting trades from news, and the banner explaining the discrepancy
+    could never clear because the file it compared against was the losing one.
+
+    It is the same split the parameter migration existed to end — .env said
+    SL_ATR_MULT=2.8 while the bot traded 3.5 — reintroduced by that migration
+    between a new pair of files. Which is why this asserts the invariant
+    rather than any particular key.
+    """
+    try:
+        params = json.loads(
+            (ROOT / "config" / "parameters.json").read_text()).get("params") or {}
+    except (OSError, json.JSONDecodeError):
+        return []
+    out = []
+    for key in sorted(set(env) & set(params)):
+        same = str(env[key]).strip().lower() == str(params[key]).strip().lower()
+        out.append({
+            "severity": "medium" if same else "high", "key": key,
+            "what": (f"{key} is in BOTH .env ({env[key]}) and parameters.json "
+                     f"({params[key]})" + ("" if same else " — AND THEY DISAGREE")),
+            "why": ("parameters.json is overlaid after load_dotenv and wins. "
+                    + ("The values agree today, so nothing is broken yet — but "
+                       "editing the .env line will look like it worked and do "
+                       "nothing."
+                       if same else
+                       "The bot is running the parameters.json value. Anyone "
+                       "reading .env to find out what it does is being told "
+                       "the wrong thing.")),
+            "action": (f"remove {key} from .env — runtime_config.write_setting "
+                       f"routes writes to the owning store, so the panel will "
+                       f"keep working"),
+        })
+    return out
+
+
 def check_parameter_file_is_live(_env: dict) -> list[dict]:
     """Every key in config/parameters.json must be read by something.
 
@@ -336,6 +382,7 @@ def collect() -> dict:
     findings += check_budget_baseline(state, env)
     findings += check_risk_switches(env, example)
     findings += check_parameter_file_is_live(env)
+    findings += check_one_store_per_key(env)
 
     for key in EXAMPLE_MUST_MATCH:
         have, want = env.get(key), example.get(key)

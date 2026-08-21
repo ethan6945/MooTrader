@@ -1035,8 +1035,19 @@ async function loadSettings(){
        <button class="sm" onclick="saveKey('${k.key}')">保存</button></span></div>`).join('');
   }catch(e){}
   try{const m=await api('/api/strategy-mode');
+    // m.mode is what the WORKER published at startup (null when none is
+    // running); m.pending is the configured value a restart would apply. The
+    // radio follows the configured value — it is what the user last chose —
+    // and the banner distinguishes three states that used to read as one.
     const cur=m.pending||m.mode;
-    const warn=(cur!==m.mode)?`<div class="setdesc" style="color:#d29922">⚠️ 已保存但未生效 — 当前进程仍在跑「${m.mode}」，重启交易循环后才切换。</div>`:'';
+    let warn='';
+    if(!m.mode){
+      warn=`<div class="setdesc" style="color:#8b949e">交易循环未在运行 — 已保存「${cur}」，启动后生效。</div>`;
+    }else if(m.mode!==cur){
+      warn=`<div class="setdesc" style="color:#d29922">⚠️ 已保存但未生效 — 交易循环仍在跑「${m.mode}」，重启交易循环后才切换。</div>`;
+    }else{
+      warn=`<div class="setdesc" style="color:#3fb950">✓ 交易循环正在跑「${m.mode}」。</div>`;
+    }
     $('#modeList').innerHTML=warn+m.options.map(o=>`<div class="set-row"><label style="flex:1;display:flex;gap:8px;align-items:flex-start;cursor:pointer">
        <input type="radio" name="stratmode" value="${o.id}" ${o.id===cur?'checked':''} onchange="saveMode('${o.id}')"/>
        <span><b>${o.label}</b><div class="setdesc">${o.desc||''}</div></span></label></div>`).join('');

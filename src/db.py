@@ -67,6 +67,11 @@ GLOBAL_SCOPED_KEYS = frozenset({
     "health_gemini_ok", "health_gemini_ok_streak",
     "health_options_stats_ok", "health_options_stats_ok_streak",
     "regime_last_label", "telegram_offset",
+    # What the RUNNING worker is configured with — published by src/main.py at
+    # startup so the panel can report the worker's mode instead of guessing it
+    # from a file or from the web server's own frozen snapshot. A property of
+    # the process, not of the account's money.
+    "worker_strategy_mode", "worker_news_driven", "worker_started_at",
     # One-time migration markers: facts about this installation's history.
     "baseline_established_at", "ledger_merge", "ledger_quality_migration",
     "phase0a_applied", "poststop_reconcile",

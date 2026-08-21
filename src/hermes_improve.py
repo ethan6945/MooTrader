@@ -441,29 +441,29 @@ def apply_params(changes: dict, reason: str, pnl_estimate: str) -> dict:
             else:
                 env_changes[key] = new_val
 
-    # Non-tunable keys (feature flags, etc.) — legacy .env edit, loudly flagged.
+    # Non-tunable keys (feature flags, etc.) — loudly flagged, and written to
+    # whichever file actually decides them.
+    #
+    # This edited .env directly. Since parameters moved to
+    # config/parameters.json — which is overlaid onto the environment after
+    # load_dotenv and overwrites — a flag living there would have been written
+    # to .env, reported as applied, and silently lost. The web panel had this
+    # exact bug and it cost the strategy-mode selector. One choke point now:
+    # runtime_config.write_setting picks the file.
     if env_changes:
-        env_file = ROOT / ".env"
-        lines = env_file.read_text().splitlines()
-        new_lines = []
-        for line in lines:
-            stripped = line.strip()
-            replaced = False
-            for key, new_val in env_changes.items():
-                if stripped.startswith(f"{key}=") and not stripped.lstrip().startswith("#"):
-                    comment = ""
-                    if "#" in line:
-                        comment = " " + line[line.index("#"):]
-                    new_lines.append(f"{key}={new_val}{comment}")
-                    applied_env[key] = new_val
-                    replaced = True
-                    break
-            if not replaced:
-                new_lines.append(line)
-        env_file.write_text("\n".join(new_lines) + "\n")
-        for key in env_changes:
-            if key not in applied_env:
-                rejected[key] = "key not found in .env (refusing to append blindly)"
+        from . import runtime_config as _rc
+        known = _rc._env_keys() | set(
+            (_rc._read_file() or {}).get("params") or {})
+        for key, new_val in env_changes.items():
+            if key not in known:
+                # Unchanged rule: an unknown key is not created blindly, because
+                # a typo would otherwise become a permanent line nothing reads.
+                rejected[key] = ("key not found in .env or parameters.json "
+                                 "(refusing to append blindly)")
+                continue
+            store = _rc.write_setting(key, str(new_val), source="hermes")
+            applied_env[key] = new_val
+            log.warning("hermes wrote %s=%s to %s", key, new_val, store)
 
     # 铁律: parameter changes must never be silent.
     if applied_runtime or applied_env:
@@ -548,18 +548,15 @@ def rollback() -> dict:
                         continue
                     old_vals[k] = val
         if old_vals:
-            env_file = ROOT / ".env"
-            lines = env_file.read_text().splitlines()
-            out_lines = []
-            for line in lines:
-                s = line.strip()
-                hit = next((k for k in old_vals if s.startswith(f"{k}=")), None)
-                if hit:
-                    out_lines.append(f"{hit}={old_vals[hit]}")
-                    restored_env[hit] = old_vals[hit]
-                else:
-                    out_lines.append(line)
-            env_file.write_text("\n".join(out_lines) + "\n")
+            # Through the choke point, for the same reason apply_params is:
+            # a key that now lives in config/parameters.json would be restored
+            # into .env, reported as rolled back, and overwritten on the next
+            # start by the value we were rolling back FROM.
+            from . import runtime_config as _rc
+            for k, v in old_vals.items():
+                store = _rc.write_setting(k, str(v), source="hermes-rollback")
+                restored_env[k] = v
+                log.warning("hermes rollback restored %s to %s", k, store)
 
     try:
         from src import notifier

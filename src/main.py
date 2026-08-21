@@ -2175,10 +2175,27 @@ def run_loop() -> None:
                   day_of_week="mon-fri", hour=16, minute=45,
                   coalesce=True, misfire_grace_time=1800, max_instances=1)
 
+    # Publish what THIS process is actually running on, so the panel can stop
+    # guessing. Its banner ("still running <mode>, restart to switch") compared
+    # the FILE against the web server's own frozen snapshot — two things,
+    # neither of which is the trading worker. Restarting the worker could not
+    # clear it and restarting the web server cleared it whether or not the
+    # worker had changed. The only process that knows is this one.
+    try:
+        import datetime as _dt
+        db.update_state({
+            "worker_strategy_mode": settings.strategy_mode,
+            "worker_news_driven": bool(news_driven.enabled()),
+            "worker_started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        log.warning("could not publish the worker's strategy mode: %s", e)
+
     log.info(
-        "scheduler started — scan=%dm, "
+        "scheduler started — mode=%s (news_driven=%s), scan=%dm, "
         "weekly autopilot/backtest/review=Mon 20:00 KL (timezone-pinned), "
         "monthly Optuna=1st@03:00, daily blacklist=23:00 ET",
+        settings.strategy_mode, news_driven.enabled(),
         settings.scan_interval_min,
     )
     from .i18n import t

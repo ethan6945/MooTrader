@@ -344,3 +344,149 @@ def _recheck_scale_out() -> None:
         recheck_scale_out(sl, tp)
     except Exception:
         pass  # scale-out guard is advisory; never crash on it
+
+
+# ── where a setting actually lives ───────────────────────────────────────────
+
+def _env_path():
+    from .config import ROOT
+    return ROOT / ".env"
+
+
+def _env_keys() -> set[str]:
+    p = _env_path()
+    if not p.exists():
+        return set()
+    out = set()
+    for line in p.read_text().splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            out.add(s.split("=", 1)[0].strip())
+    return out
+
+
+def owning_store(key: str) -> str:
+    """Which file decides `key` — "parameters" or "env".
+
+    config._load_parameters overlays config/parameters.json onto os.environ
+    AFTER load_dotenv, and overwrites. So when a key is in both files, the
+    parameter file wins and the .env line is decoration.
+
+    A writer that does not know this writes to the losing file, reports
+    success, and changes nothing. That is what happened to the panel's
+    strategy-mode selector — the one control the settings page labels as the
+    only one that changes the strategy. It wrote STRATEGY_MODE=technical to
+    .env while parameters.json said news, the panel showed "restart to apply",
+    the restart applied nothing, and the banner explaining why could never
+    clear.
+
+    It is also, exactly, the split the parameter migration was carried out to
+    end: _load_parameters' own docstring describes SL_ATR_MULT=2.8 sitting in
+    .env while the bot traded 3.5. Same bug, new pair of files, introduced by
+    the fix for the old pair.
+    """
+    from .config import ROOT
+    import json as _json
+    try:
+        params = _json.loads((ROOT / "config" / "parameters.json").read_text())
+        if key in (params.get("params") or {}):
+            return "parameters"
+    except (OSError, ValueError):
+        pass
+    return "env"
+
+
+def write_setting(key: str, value: str, source: str = "panel") -> str:
+    """Write a configuration key to the store that decides it. Returns which.
+
+    The single choke point for every non-credential write. Callers do not get
+    to pick the file, because picking it is the thing that goes wrong.
+
+    Writing to the parameter file also strips any stale .env line for the same
+    key, so the two cannot disagree again the moment someone reads .env to
+    find out what the bot is doing.
+    """
+    key = str(key)
+    value = "" if value is None else str(value)
+    store = owning_store(key)
+
+    if store == "parameters":
+        _write_param_raw(key, value, source)
+        _strip_env_key(key)
+        return "parameters"
+
+    _write_env_raw(key, value)
+    return "env"
+
+
+def _write_param_raw(file_key: str, value: str, source: str) -> None:
+    """Set a parameter BY ITS FILE KEY, bypassing the tunable-bounds path.
+
+    set_param() is for the numeric strategy tunables: it checks ALLOWED_PARAMS
+    bounds and honours PARAMS_FROZEN. A mode switch is neither — freezing the
+    strategy tunables must not weld the simulate/live and strategy-mode
+    controls shut — so this writes the file directly and journals it the same
+    way, with the source recorded.
+    """
+    import json, os as _os, tempfile
+    from .config import ROOT
+    f = params_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    doc = _read_file() or {"version": 1, "params": {}}
+    old = (doc.get("params") or {}).get(file_key)
+    doc.setdefault("params", {})[file_key] = value
+    tmp = tempfile.NamedTemporaryFile("w", dir=str(f.parent), delete=False,
+                                      suffix=".tmp", encoding="utf-8")
+    try:
+        json.dump(doc, tmp, indent=2, ensure_ascii=False)
+        tmp.write("\n")
+        tmp.flush()
+        _os.fsync(tmp.fileno())
+        tmp.close()
+        _os.replace(tmp.name, f)
+    except BaseException:
+        try:
+            _os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    _os.environ[file_key] = value
+    try:
+        with open(ROOT / "config" / "parameters_history.jsonl", "a",
+                  encoding="utf-8") as h:
+            h.write(json.dumps({"key": file_key, "file_key": file_key,
+                                "old": old, "new": value, "source": source,
+                                "applied_at": _now_iso(), "active": True}) + "\n")
+    except OSError as e:
+        log.warning("setting applied but not journalled: %s", e)
+
+
+def _write_env_raw(key: str, value: str) -> None:
+    p = _env_path()
+    lines = p.read_text().splitlines() if p.exists() else []
+    for i, l in enumerate(lines):
+        st = l.strip()
+        if st.startswith(key + "=") or st.startswith("#" + key + "="):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    p.write_text("\n".join(lines) + "\n")
+
+
+def _strip_env_key(key: str) -> None:
+    """Remove a key's line from .env — it has a home, and this is not it."""
+    p = _env_path()
+    if not p.exists():
+        return
+    lines = p.read_text().splitlines()
+    keep = [l for l in lines
+            if not (l.strip().startswith(key + "=")
+                    or l.strip().startswith("#" + key + "="))]
+    if len(keep) != len(lines):
+        p.write_text("\n".join(keep) + "\n")
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()

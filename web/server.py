@@ -930,15 +930,17 @@ def _mask(v: str) -> str:
 
 
 def _write_env_key(key: str, value: str) -> None:
-    lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
-    for i, l in enumerate(lines):
-        st = l.strip()
-        if st.startswith(key + "=") or st.startswith("#" + key + "="):
-            lines[i] = f"{key}={value}"
-            break
-    else:
-        lines.append(f"{key}={value}")
-    ENV_FILE.write_text("\n".join(lines) + "\n")
+    """Persist a setting. The NAME is historical — this no longer picks .env.
+
+    It wrote .env unconditionally. Parameters moved to config/parameters.json,
+    which config._load_parameters overlays onto the environment AFTER
+    load_dotenv and overwrites, so five of the panel's controls — the strategy
+    mode selector and every news/FinBERT toggle — wrote to the losing file,
+    reported success, told the user to restart, and changed nothing on
+    restart. runtime_config.write_setting routes by which file owns the key.
+    """
+    from src import runtime_config
+    runtime_config.write_setting(key, value, source="web-panel")
 
 
 # ── first-run setup ──────────────────────────────────────────────────────────
@@ -1045,13 +1047,32 @@ STRATEGY_MODE_INFO = {
 
 @app.route("/api/strategy-mode")
 def api_strategy_mode():
-    env = _read_env()
+    """What the trading worker is running, and what a restart would change it to.
+
+    `mode` used to be settings.strategy_mode — THIS process's frozen snapshot,
+    and this process is the web server, not the worker. `pending` used to be
+    the .env line, and STRATEGY_MODE moved to config/parameters.json. So the
+    banner compared a file that no longer decided anything against a snapshot
+    of the wrong process: restarting the trading loop could not clear it, and
+    restarting the web server cleared it whether or not the worker had changed.
+
+    Both sides now come from the thing they claim to describe. The worker
+    publishes its effective mode at startup (src/main.py); `pending` is the
+    effective configured value, read through the same overlay the worker will
+    read at its next start.
+    """
+    from src import db as _db
+    st = _db.get_state()
+    running = (st.get("worker_strategy_mode") or "").strip().lower() or None
+    configured = (os.environ.get("STRATEGY_MODE") or "").strip().lower() \
+        or settings.strategy_mode
+
     return jsonify({
-        "mode": settings.strategy_mode,
-        # What the FILE says, which is what takes effect after a restart —
-        # settings.strategy_mode is this process's frozen snapshot and the two
-        # differ exactly between a save and the restart that applies it.
-        "pending": (env.get("STRATEGY_MODE") or "").strip().lower() or None,
+        # None when no worker has ever published one — the panel must say
+        # "not running", not silently show the configured value as if it were.
+        "mode": running,
+        "pending": configured,
+        "worker_started_at": st.get("worker_started_at"),
         "trade_env": (settings.moo_trade_env or "").upper(),
         "options": [{"id": k, **v} for k, v in STRATEGY_MODE_INFO.items()],
     })
