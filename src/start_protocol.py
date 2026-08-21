@@ -167,7 +167,29 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     return out
 
 
-def config_fingerprint(env: dict[str, str]) -> tuple[str, dict]:
+def _parameter_file_values(home: Path | None = None) -> dict[str, str]:
+    """The safety keys as config/parameters.json sets them.
+
+    Parameters moved out of .env on 2026-08-21 (commit 68ba3d2). Thirteen of
+    the fourteen SAFETY_KEYS went with them, so a fingerprint taken from .env
+    alone records "<absent>" for all thirteen — on BOTH sides. The parent/child
+    comparison then passes no matter what the child would actually trade with,
+    and the start audit's record of the risk envelope stops describing one.
+
+    That is the check this module exists for ("a worker running with a safety
+    rail removed"), disabled as a side effect of moving a file.
+    """
+    f = (home or env_file_path().parent) / "config" / "parameters.json"
+    try:
+        doc = json.loads(f.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(k): str(v) for k, v in (doc.get("params") or {}).items()
+            if v is not None}
+
+
+def config_fingerprint(env: dict[str, str],
+                       home: Path | None = None) -> tuple[str, dict]:
     """(sha256, safety values). Covers only the safety-relevant keys.
 
     Hashing the whole file would make the parent/child comparison fail on a
@@ -175,8 +197,14 @@ def config_fingerprint(env: dict[str, str]) -> tuple[str, dict]:
     A missing key is hashed as an explicit absent marker, so deleting a line is
     a different fingerprint from setting it — that is exactly the case where a
     child must not fall back to an inherited value.
+
+    Read from BOTH stores, .env winning, because that is the precedence the
+    running bot uses (config._load_parameters overlays the file, then a real
+    environment variable set outside it still takes effect). A value the bot
+    would trade with must be in the fingerprint whichever file holds it.
     """
-    safety = {k: env.get(k, "<absent>") for k in SAFETY_KEYS}
+    merged = {**_parameter_file_values(home), **env}
+    safety = {k: merged.get(k, "<absent>") for k in SAFETY_KEYS}
     blob = json.dumps(safety, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest(), safety
 
@@ -264,7 +292,7 @@ def prepare(source: str, *, requested_env: str | None = None,
                            f"source must be one of {sorted(start_audit.SOURCES)}")
 
     env = read_env_file(home / ".env")
-    config_sha, safety = config_fingerprint(env)
+    config_sha, safety = config_fingerprint(env, home)
 
     effective = (requested_env or env.get("MOO_TRADE_ENV") or "SIMULATE").upper()
     if effective == "REAL" and not PHASE_ALLOWS_REAL:

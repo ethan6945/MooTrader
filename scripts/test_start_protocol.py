@@ -839,6 +839,63 @@ check("an unwritable audit refuses the start",
       "AuditRefused" in (r.stderr + r.stdout) or "REFUSED" in r.stdout)
 (h5 / "logs").chmod(0o700)
 
+# ── the safety fingerprint must cover wherever the parameters actually live ──
+# Parameters moved from .env to config/parameters.json on 2026-08-21. The
+# fingerprint kept reading .env, so 13 of the 14 SAFETY_KEYS became "<absent>"
+# — on both sides. The parent/child comparison then passed regardless of what
+# the child would trade with, and the start audit recorded a risk envelope
+# consisting of one value. A check that cannot fail is not a check.
+print("\nsafety fingerprint covers the parameter file")
+from src import start_protocol                                 # noqa: E402
+_fp_home = Path(tempfile.mkdtemp(prefix="mmt-fp-"))
+(_fp_home / "config").mkdir(parents=True, exist_ok=True)
+(_fp_home / ".env").write_text("MOO_TRADE_ENV=SIMULATE\n")
+(_fp_home / "config" / "parameters.json").write_text(json.dumps(
+    {"params": {"MAX_POSITION_PCT": "0.10", "SL_ATR_MULT": "3.5",
+                "ENTRY_SCORE_THRESHOLD": "70.0", "PARAMS_FROZEN": "true"}}))
+
+_env = start_protocol.read_env_file(_fp_home / ".env")
+_sha, _safety = start_protocol.config_fingerprint(_env, _fp_home)
+
+check("a key that lives only in parameters.json is in the snapshot",
+      _safety["SL_ATR_MULT"] == "3.5")
+check("...and so is the freeze flag",
+      _safety["PARAMS_FROZEN"] == "true")
+check("a key that lives in .env still is",
+      _safety["MOO_TRADE_ENV"] == "SIMULATE")
+
+# The whole point: changing a parameter must change the fingerprint. Before
+# the fix this edit produced an identical hash.
+(_fp_home / "config" / "parameters.json").write_text(json.dumps(
+    {"params": {"MAX_POSITION_PCT": "0.55", "SL_ATR_MULT": "3.5",
+                "ENTRY_SCORE_THRESHOLD": "70.0", "PARAMS_FROZEN": "true"}}))
+_sha2, _safety2 = start_protocol.config_fingerprint(_env, _fp_home)
+check("widening MAX_POSITION_PCT changes the fingerprint", _sha2 != _sha)
+check("...and the snapshot shows the new value",
+      _safety2["MAX_POSITION_PCT"] == "0.55")
+
+# Removing the parameter file entirely must ALSO be a different fingerprint —
+# "absent" is a distinct state from any value, which is the property the
+# docstring already claimed for .env.
+(_fp_home / "config" / "parameters.json").unlink()
+_sha3, _safety3 = start_protocol.config_fingerprint(_env, _fp_home)
+check("deleting the parameter file changes the fingerprint again",
+      _sha3 not in (_sha, _sha2))
+check("...and the keys read as absent, not as a stale value",
+      _safety3["SL_ATR_MULT"] == "<absent>")
+
+# .env wins, because that is the precedence config._load_parameters uses:
+# it overlays the file, and a real environment variable still overrides it.
+(_fp_home / "config" / "parameters.json").write_text(json.dumps(
+    {"params": {"SL_ATR_MULT": "3.5"}}))
+(_fp_home / ".env").write_text("MOO_TRADE_ENV=SIMULATE\nSL_ATR_MULT=9.9\n")
+_env2 = start_protocol.read_env_file(_fp_home / ".env")
+_, _safety4 = start_protocol.config_fingerprint(_env2, _fp_home)
+check("when both files set a key, .env is the one recorded",
+      _safety4["SL_ATR_MULT"] == "9.9")
+
+shutil.rmtree(_fp_home, ignore_errors=True)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

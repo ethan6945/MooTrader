@@ -32,6 +32,7 @@ EXIT CODE
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -263,6 +264,66 @@ def check_budget_baseline(state: dict, env: dict) -> list[dict]:
     return out
 
 
+def check_parameter_file_is_live(_env: dict) -> list[dict]:
+    """Every key in config/parameters.json must be read by something.
+
+    The 2026-08-21 migration seeded the parameter file from the EFFECTIVE
+    environment. That environment still carried NEWS_DRIVEN_SHADOW=true — a
+    setting deleted from the code a release earlier, whose own CHANGELOG entry
+    warns that "a configuration relying on it to hold orders back will start
+    placing orders". The migration wrote it into the new file, where it read as
+    a live safety switch set to the safe value, and was nothing.
+
+    That is the shape this repository keeps finding: apply_sector_gate naming a
+    MAX_PER_SECTOR that never existed, apply_ml_gate logged as search-engine
+    fidelity with no ML behind it, SandboxConfig.tickers accepted and ignored.
+    A retired setting resurrected into the file people READ to learn what the
+    bot does is the same fault with better placement.
+    """
+    f = ROOT / "config" / "parameters.json"
+    try:
+        params = json.loads(f.read_text()).get("params") or {}
+    except (OSError, json.JSONDecodeError) as e:
+        return [{"severity": "high", "key": "parameters.json",
+                 "what": f"could not be read ({e})",
+                 "why": "it is where every strategy parameter now lives",
+                 "action": f"repair {f}"}]
+
+    # Strip docstrings and comments before looking: a key named only in prose
+    # is not a key anything consults.
+    code = []
+    for d in ("src", "web", "packaging"):
+        for pyf in (ROOT / d).rglob("*.py"):
+            try:
+                t = ast.parse(pyf.read_text())
+            except (OSError, SyntaxError):
+                continue
+            for n in ast.walk(t):
+                if (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+                        and isinstance(n.value.value, str)):
+                    n.value.value = ""
+            code.append("\n".join(l.split("#")[0] for l in ast.unparse(t).splitlines()))
+    blob = "\n".join(code)
+
+    out = []
+    for key in sorted(params):
+        snake = key.lower()
+        if re.search(rf'\b{re.escape(key)}\b', blob) or \
+           re.search(rf'\bsettings\.{snake}\b', blob):
+            continue
+        out.append({
+            "severity": "high", "key": key,
+            "what": f"{key}={params[key]} is in parameters.json and NOTHING reads it",
+            "why": "A parameter file is the document people consult to learn "
+                   "what the bot is configured to do. A key in it that no code "
+                   "consults reads as a setting and is a comment — and it reads "
+                   "loudest when its name promises safety.",
+            "action": f"delete {key} from config/parameters.json, or wire it up "
+                      f"if the behaviour it names is wanted",
+        })
+    return out
+
+
 def collect() -> dict:
     state = db.get_state()
     history = list(state.get("param_history") or [])
@@ -274,6 +335,7 @@ def collect() -> dict:
 
     findings += check_budget_baseline(state, env)
     findings += check_risk_switches(env, example)
+    findings += check_parameter_file_is_live(env)
 
     for key in EXAMPLE_MUST_MATCH:
         have, want = env.get(key), example.get(key)

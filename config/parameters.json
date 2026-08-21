@@ -67,7 +67,6 @@
     "MOO_NOTICES_ENABLED": "true",
     "FINBERT_ENABLED": "true",
     "NEWS_DRIVEN_ENABLED": "true",
-    "NEWS_DRIVEN_SHADOW": "true",
     "STRATEGY_MODE": "news"
   }
 }
