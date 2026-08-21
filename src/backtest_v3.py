@@ -225,8 +225,6 @@ def simulate_v3(
     # so the A-vs-B diff-test stays byte-exact; they only bite in the strategy lens.
     _rs_gate = bool(cfg.apply_rs_gate) and not parity_mode
     _sector_regime = bool(cfg.apply_sector_regime_gate) and not parity_mode
-    # (ML conviction sizing removed 2026-06-03 — apply_ml_conviction_sizing stays
-    # as an inert BacktestConfig flag; nothing reads it now.)
     # Fidelity fix 2026-06-03: live (main.py) ALWAYS scores trend + momentum_break
     # and takes the max; the honest engine previously only ran momentum when
     # apply_mr_strategy was on, so the production run (MR off) was trend-only and
@@ -356,7 +354,6 @@ def simulate_v3(
     n_earnings_blocked = 0    # new entries blocked by the earnings gate
     n_rs_blocked = 0          # new entries blocked by the Phase 3-A RS gate
     n_sector_blocked = 0      # new entries blocked by the Phase 3-B sector-regime gate
-    n_ml_halved = 0           # entries half-sized by ML conviction (Phase 4-2)
     n_lev_entries = 0         # entries that left cash negative (conviction margin)
     min_cash = start_capital  # deepest borrow point
     borrow_bar_sum = 0.0      # Σ max(0, −cash) per event — for interest estimate
@@ -405,7 +402,7 @@ def simulate_v3(
         of truth for the strategy/sizing/fill logic — which is exactly why the
         new-entry path still matches the incumbent to the dollar after the
         refactor (proven by engine_compare's parity assertion)."""
-        nonlocal n_skipped_cash, n_earnings_blocked, n_rs_blocked, n_sector_blocked, n_ml_halved
+        nonlocal n_skipped_cash, n_earnings_blocked, n_rs_blocked, n_sector_blocked
         # Dynamic-universe gate first (cheapest): only this week's top-N may
         # open NEW positions. Held names that drop out keep being managed by
         # the exit logic — the gate covers entries (and pyramid add-ons) only.
@@ -836,8 +833,7 @@ def simulate_v3(
 
     metrics = _metrics_v3(closed, cfg, start_capital, cash,
                           max_dd_mtm, peak_gross, n_skipped_cash,
-                          n_earnings_blocked, n_rs_blocked, n_sector_blocked,
-                          n_ml_halved)
+                          n_earnings_blocked, n_rs_blocked, n_sector_blocked)
     if cfg.conviction_lev_score > 0:
         # Conviction-margin experiment telemetry. borrow_bar_sum accumulates
         # once per EVENT (bar × ticker) — normalize to dollar-DAYS so the
@@ -887,8 +883,7 @@ def simulate_v3(
 # ──────────────────────────────────────────────────────────────────────────
 def _metrics_v3(trades, cfg, start_capital, ending_cash,
                 max_dd_mtm, peak_gross, n_skipped_cash,
-                n_earnings_blocked=0, n_rs_blocked=0, n_sector_blocked=0,
-                n_ml_halved=0) -> dict:
+                n_earnings_blocked=0, n_rs_blocked=0, n_sector_blocked=0) -> dict:
     if not trades:
         return {"total_trades": 0, "note": "no trades generated",
                 "net_pnl_usd": 0.0, "max_drawdown_pct": 0.0,
@@ -948,6 +943,5 @@ def _metrics_v3(trades, cfg, start_capital, ending_cash,
         "n_earnings_blocked": n_earnings_blocked,
         "n_rs_blocked": n_rs_blocked,
         "n_sector_regime_blocked": n_sector_blocked,
-        "n_ml_conviction_halved": n_ml_halved,
         "exit_reasons": reasons,
     }

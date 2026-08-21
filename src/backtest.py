@@ -105,14 +105,13 @@ class BacktestConfig:
     max_gap_pct: float = 3.0
     # Live-funnel gates
     apply_regime_gate: bool = True  # need SPY > 200SMA at entry bar (BULL/NEUTRAL)
-    apply_sector_gate: bool = True  # cap concurrent positions per sector (MAX_PER_SECTOR)
-    apply_ml_gate: bool = True      # require ML proba ≥ ML_VETO_THRESHOLD if model exists
-    # Live (main.py) also uses ML proba for SIZING, not just the veto: a passing
-    # but sub-ML_BOOST_THRESHOLD proba halves the position (conviction = 0.5).
-    # The backtest historically modeled only the veto, so it couldn't see whether
-    # the live conviction-halving helps or hurts. Flag-gated + default OFF so the
-    # honest baseline is unchanged until explicitly tested (Phase 4-2).
-    apply_ml_conviction_sizing: bool = False
+    # No apply_sector_gate / apply_ml_gate / apply_ml_conviction_sizing here.
+    # All three were declared and never read by any engine. There is no ML in
+    # this codebase — no model, no predict_proba, no veto, live or backtest —
+    # and the sector cap was rejected on purpose: see src/concentration.py,
+    # which uses correlation because the broker returns no sector field and
+    # "a stale risk constraint is worse than none because it reads as
+    # protection". A flag for a rejected design reads as protection too.
     # 2026-05-29: defaults to False because combo sweep proved MR was a net
     # drag on this watchlist ($23→$27/day when disabled). Flip on for chop-
     # heavy regimes if a regime-detection layer ever lands.
@@ -132,8 +131,6 @@ class BacktestConfig:
     # MAX_POSITIONS like the live system. Off by default so old runs stay
     # comparable; flip on for true live-parity backtests.
     apply_max_positions: bool = True
-    # Diagnostics — counts get returned in metrics so we know what filtered
-    track_skip_reasons: bool = True
     # ── Scale-out + breakeven exit features (2026-05-30) ──
     # All default to False to keep old backtests comparable. Flip on per-run
     # to test if they lift PnL.
@@ -396,8 +393,12 @@ def simulate_time_stepped(cfg: BacktestConfig, cache: dict, progress_cb=None) ->
     Unlike `backtest_ticker` (per-ticker sequential), this iterates a single
     chronologically-sorted event stream across the entire watchlist. The
     `PortfolioState`, open-trades dict, and `MAX_POSITIONS` cap all behave
-    the way the live `risk_manager` sees them — so DD breaker, sector caps,
-    and concurrent-position limits actually fire in the right moments.
+    the way the live `risk_manager` sees them — so the DD breaker and the
+    concurrent-position limit actually fire in the right moments. It does NOT
+    model the live concentration gate (src/concentration.py: per-symbol, gross
+    and correlated-cluster caps); at MAX_POSITION_PCT=0.10 x MAX_POSITIONS=5
+    those cap at 50% gross and none of the three thresholds (50/100/60%) can
+    bind, but raise max_position_pct and this engine stops matching live.
 
     Returns the same dict shape as `simulate_with_cache` for drop-in use.
     """

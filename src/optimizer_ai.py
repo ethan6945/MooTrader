@@ -133,7 +133,7 @@ def _base_cfg(days: int):
         max_position_pct=runtime_config.max_position_pct(),
         max_hold_days=runtime_config.max_hold_days(),
         tp_atr_mult=runtime_config.tp_atr_mult(), sl_atr_mult=runtime_config.sl_atr_mult(),
-        max_gap_pct=settings.max_gap_pct, apply_ml_gate=False, apply_mr_strategy=False,
+        max_gap_pct=settings.max_gap_pct, apply_mr_strategy=False,
         use_scale_out=settings.use_scale_out, tp1_r=settings.tp1_r, tp2_r=settings.tp2_r,
         apply_dynamic_universe=dyn, universe_top_n=runtime_config.universe_top_n())
 

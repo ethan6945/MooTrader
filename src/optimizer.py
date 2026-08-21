@@ -170,22 +170,22 @@ def run_study(
     tickers: Optional[list[str]] = None,
     timeframe: Optional[str] = None,
     fast_mode: bool = True,
-    apply_ml_gate: Optional[bool] = None,
     apply_mr_strategy: Optional[bool] = None,
 ) -> dict:
     """Run the Optuna study.
 
-    `fast_mode=True` disables the ML and mean-revert gates during the search.
-    ML is a pure veto, so leaving it off only widens the trade set without
-    changing the threshold/ATR ranking much. BUT the mean-revert + momentum
-    strategies are NOT pure filters — they ADD signals at different score
-    levels, so toggling them shifts the score distribution and therefore the
-    threshold optimum. To tune the engine production actually runs, pass the
-    two flags EXPLICITLY (they override the fast_mode-derived defaults):
-    production = `apply_ml_gate=True, apply_mr_strategy=False`. Leaving them
-    None preserves the legacy fast_mode behaviour (both = not fast_mode).
+    `fast_mode=True` disables the mean-revert gate during the search. That gate
+    is NOT a pure filter — it ADDS signals at different score levels, so
+    toggling it shifts the score distribution and therefore the threshold
+    optimum. To tune the engine production actually runs, pass the flag
+    EXPLICITLY (it overrides the fast_mode-derived default): production =
+    `apply_mr_strategy=False`. Leaving it None preserves the legacy fast_mode
+    behaviour.
+
+    There used to be an `apply_ml_gate` here too, described as a pure veto and
+    reported in the fidelity log below. Nothing read it — there is no ML in
+    this codebase at all — so the log asserted a fidelity it had not checked.
     """
-    ml_on = (not fast_mode) if apply_ml_gate is None else apply_ml_gate
     mr_on = (not fast_mode) if apply_mr_strategy is None else apply_mr_strategy
     # 2026-06-11: base config comes from optimizer_ai._base_cfg — the single
     # source of "the strategy the bot actually runs" (runtime-effective params,
@@ -198,11 +198,10 @@ def run_study(
         base_cfg,
         timeframe=timeframe or base_cfg.timeframe,
         tickers=tickers or base_cfg.tickers,
-        apply_ml_gate=ml_on,
         apply_mr_strategy=mr_on,
     )
-    log.info("[optuna] search engine fidelity: apply_ml_gate=%s apply_mr_strategy=%s "
-             "(production = True/False)", ml_on, mr_on)
+    log.info("[optuna] search engine fidelity: apply_mr_strategy=%s "
+             "(production = False)", mr_on)
 
     # Pre-fetch all kline data ONCE. Every trial after this is pure CPU
     # (no OpenD calls), making 25 trials take ~30s instead of ~2 hours.
