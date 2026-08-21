@@ -335,9 +335,24 @@ def main():
     # universes inside one run, this compared two universes across runs.
     _universe = json.loads(
         (ROOT / "config" / "watchlist.json").read_text())["tickers"]
+    # The parameters too, for the same reason. Chasing the 2026-08-21 drop
+    # meant reading param_history out of the live database to prove
+    # entry_threshold had not moved — evidence that happened to survive. An
+    # engine comparison is only reproducible if it records what the engines
+    # were configured with.
+    from src import runtime_config as _rc
+    from src.config import settings as _st
+    _params = {"entry_threshold": _rc.entry_threshold(),
+               "tp_atr_mult": _rc.tp_atr_mult(),
+               "sl_atr_mult": _rc.sl_atr_mult(),
+               "max_hold_days": _rc.max_hold_days(),
+               "max_position_pct": _rc.max_position_pct(),
+               "timeframe": _st.timeframe}
+
     out = {"head": head(), "run_at": datetime.now(ET).isoformat(),
            "entry_bps": ENTRY_BPS, "exit_bps": EXIT_BPS,
            "universe": sorted(_universe), "n_universe": len(_universe),
+           "params": _params,
            "windows": [], "walk_forward": []}
 
     # Say it out loud when the previous run used a different one.
