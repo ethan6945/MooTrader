@@ -225,5 +225,71 @@ check("a redacted value is the desired state, not a finding",
 check("a reference is not a finding",
       shapes_in("TELEGRAM_CHAT_ID=ref:telegram_chat_id:0123456789abcdef0123") == [])
 
+
+# ── a rotated credential must be redacted immediately ──────────────────────
+# log_redact.reset_cache()'s docstring names the case — "after a rotation, or
+# in tests" — and until 2026-08-22 only the tests called it. Two things were
+# wrong and each alone was enough:
+#
+#   1. nothing reset the cache after a key was saved, so the filter went on
+#      redacting the OLD key;
+#   2. resetting it would not have helped, because _secret_values() read
+#      `settings`, a snapshot frozen at process start, and writing .env
+#      updates neither that nor os.environ.
+#
+# Measured before the fix: scrub() returned the rotated key
+# verbatim. The panel probes a freshly-pasted key the moment it is saved, and
+# the leak this filter exists for came from a third-party logger echoing a
+# request — which is exactly what that probe triggers.
+# The fixtures carry no vendor prefix on purpose. check_no_secrets flags by
+# SHAPE, and a realistic-looking "tvly-..." literal in a tracked file is a
+# finding whether or not it is real — correctly, since the scanner cannot know.
+# scrub() does substring replacement, so the shape is irrelevant to what is
+# being tested; only the length matters.
+print("\na rotated credential is redacted without a restart")
+import json as _json, os, tempfile as _tf                      # noqa: E402
+_R = Path(_tf.mkdtemp(prefix="mmt-rot-"))
+for _d in ("data", "logs", "config"):
+    (_R / _d).mkdir(parents=True, exist_ok=True)
+(_R / ".env").write_text("MOO_TRADE_ENV=SIMULATE\n"
+                         "TAVILY_API_KEY=SYNTHETIC-KEY-BEFORE-ROTATION-0001\n")
+(_R / "config" / "parameters.json").write_text(
+    _json.dumps({"version": 1, "params": {}}))
+
+_prev_home = os.environ.get("MMT_HOME")
+os.environ["MMT_HOME"] = str(_R)
+os.environ["TAVILY_API_KEY"] = "SYNTHETIC-KEY-BEFORE-ROTATION-0001"
+
+from src import runtime_config as _rc                          # noqa: E402
+log_redact.reset_cache()
+check("the old key is redacted to begin with",
+      "SYNTHETIC-KEY-BEFORE-ROTATION-0001" not in log_redact.scrub("probe SYNTHETIC-KEY-BEFORE-ROTATION-0001"))
+
+_rc.write_setting("TAVILY_API_KEY", "SYNTHETIC-KEY-AFTER-ROTATION-0002", source="test")
+_out = log_redact.scrub("probe SYNTHETIC-KEY-AFTER-ROTATION-0002")
+check("a key saved through the panel is redacted at once, not after a restart",
+      "SYNTHETIC-KEY-AFTER-ROTATION-0002" not in _out)
+
+# The cascades are comma-separated and each key must match on its own — a
+# single joined string would leave the second key readable.
+_rc.write_setting("GEMINI_API_KEYS", "SYNTHETIC-CASCADE-KEY-FIRST-0003,SYNTHETIC-CASCADE-KEY-SECOND-0004",
+                  source="test")
+_out2 = log_redact.scrub("try SYNTHETIC-CASCADE-KEY-FIRST-0003 then SYNTHETIC-CASCADE-KEY-SECOND-0004")
+check("every key in a comma-separated cascade is redacted", "SYNTHETIC-CASCADE" not in _out2)
+
+# And an ordinary parameter must NOT rebuild the list — this runs on every
+# panel save, and rescanning the environment each time is work for nothing.
+_before = log_redact._cache
+_rc.write_setting("SOME_ORDINARY_SETTING", "1", source="test")
+check("a non-credential write leaves the secret cache alone",
+      log_redact._cache is _before)
+
+import shutil as _sh                                           # noqa: E402
+_sh.rmtree(_R, ignore_errors=True)
+if _prev_home is None:
+    os.environ.pop("MMT_HOME", None)
+else:
+    os.environ["MMT_HOME"] = _prev_home
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

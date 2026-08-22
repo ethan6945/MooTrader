@@ -437,9 +437,17 @@ def write_setting(key: str, value: str, source: str = "panel") -> str:
     if store == "parameters":
         _write_param_raw(key, value, source)
         _strip_env_key(key)
+        _reset_redaction_if_secret(key)
         return "parameters"
 
     _write_env_raw(key, value)
+    # The parameter branch above updates os.environ; this one must too, or the
+    # process that just wrote the value cannot see it. That is not cosmetic:
+    # log_redact builds its secret list from the live environment, so a key
+    # pasted into the panel would not be redacted until the next restart —
+    # while the panel's own preflight probe is already sending it.
+    _os_environ()[key] = value
+    _reset_redaction_if_secret(key)
     return "env"
 
 
@@ -514,3 +522,32 @@ def _strip_env_key(key: str) -> None:
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _os_environ():
+    import os
+    return os.environ
+
+
+def _reset_redaction_if_secret(key: str) -> None:
+    """Rebuild the log-redaction secret list when a credential changes.
+
+    log_redact.reset_cache()'s own docstring names this case — "after a
+    rotation, or in tests" — and until now only the tests called it. A rotated
+    key was therefore unredacted for the life of the process, and the panel
+    probes a freshly-pasted key immediately.
+
+    Here rather than in the panel because the panel is not the only writer:
+    hermes_improve reaches this function too, and the next writer will not
+    read the panel's source to find out what it forgot.
+    """
+    if not any(w in key.upper() for w in
+               ("KEY", "TOKEN", "SECRET", "PASSWORD", "PWD", "ACCOUNT")):
+        return
+    try:
+        from . import log_redact
+        log_redact.reset_cache()
+    except Exception as e:
+        log.warning("could not refresh the log-redaction cache after "
+                    "writing %s — a rotated credential may appear in logs "
+                    "until restart: %s", key, e)

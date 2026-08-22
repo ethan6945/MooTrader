@@ -48,12 +48,26 @@ def _secret_values() -> list[str]:
         for k in getattr(settings, attr, ()) or ():
             if str(k).strip():
                 raw.append(str(k).strip())
-    # WEB_PASSWORD / WEB_SECRET are read straight from .env by web/server.py,
-    # never promoted to a settings field — take them from the environment.
-    for env_name in ("WEB_PASSWORD", "WEB_SECRET"):
+    # And the LIVE environment, for every credential .env can hold.
+    #
+    # settings is a snapshot frozen at process start. A key pasted into the
+    # panel is written to .env and does not appear there — so the filter went
+    # on redacting the OLD key while the NEW one, which the panel immediately
+    # probes, was not in the list at all. Measured: after a rotation,
+    # scrub("... tvly-NEWKEY...") returned the key verbatim, and calling
+    # reset_cache() did not help because the re-read hit the same snapshot.
+    #
+    # The leak this filter exists for came from a third-party logger
+    # (requests/urllib3/httpx) echoing a request, which is exactly what a
+    # post-rotation preflight probe triggers.
+    for env_name in ("WEB_PASSWORD", "WEB_SECRET", "TELEGRAM_TOKEN",
+                     "TAVILY_API_KEY", "MOO_TRADE_PWD", "FINNHUB_API_KEY",
+                     "GEMINI_API_KEYS", "DEEPSEEK_API_KEY", "OPEND_LOGIN_ACCOUNT"):
         v = os.getenv(env_name, "")
-        if v.strip():
-            raw.append(v.strip())
+        # The cascades are comma-separated; each key must match on its own.
+        for part in v.split(","):
+            if part.strip():
+                raw.append(part.strip())
     # Longest first: a key that contains another as a prefix must be replaced
     # whole, or the shorter match would leave a readable tail behind.
     return sorted({s for s in raw if len(s) >= _MIN_SECRET_LEN}, key=len, reverse=True)
