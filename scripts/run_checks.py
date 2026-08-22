@@ -104,6 +104,7 @@ CHECKS = {
     "workercmd":  ("scripts/test_worker_cmd.py",         True,  True,  120),
     "atr":        ("scripts/test_atr_agreement.py",       True,  True,  120),
     "setwrite":   ("scripts/test_setting_writes.py",     True,  True,  120),
+    "websmoke":   ("scripts/test_web_smoke.py",         True,  True,  120),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),

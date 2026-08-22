@@ -988,6 +988,10 @@ def setup_state() -> dict:
     except ValueError:
         port = 11111
 
+    # One provider (ai.PROVIDERS). Named from there rather than from
+    # AI_PROVIDER, so the wizard cannot ask for a key belonging to something
+    # the system would not use — which is what the branch removed here did.
+    provider = ai.PROVIDERS[0]
     ai_key = val("DEEPSEEK_API_KEYS") or val("DEEPSEEK_API_KEY")
 
     opend_ok = _opend_reachable(host, port)
