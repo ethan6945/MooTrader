@@ -203,14 +203,21 @@ check("...so once the worker restarts onto it, the banner clears",
 print("\n6  the parameter console tells the truth about what it saved")
 (Path(_TMP) / "config" / "parameters.json").write_text(json.dumps(
     {"version": 1, "params": {
-        "ENTRY_SCORE_THRESHOLD": "70.0",   # hot
-        "SL_ATR_MULT": "3.5",              # hot
-        "USE_SCALE_OUT": "false",          # cold
-        "TIMEFRAME": "HOUR_1"}}))          # cold
+        "ENTRY_SCORE_THRESHOLD": "70.0",   # hot,  shared
+        "SL_ATR_MULT": "3.5",              # hot,  shared
+        "USE_SCALE_OUT": "false",          # cold, shared
+        "TIMEFRAME": "HOUR_1",             # cold, shared
+        "STRATEGY_MODE": "technical",
+        "FINBERT_ENABLED": "false",        # news mode only
+        "NEWS_DRIVEN_MIN_SCORE": "65",     # news mode only
+        "SENTIMENT_SCORING_ENABLED": "false"}}))   # technical only
 
 from web.server import _param_rows, PARAM_GROUPS                # noqa: E402
 
-_rows = {pr["key"]: pr for g in _param_rows() for pr in g["params"]}
+# sections → groups → params since the console was regrouped by strategy.
+_rows = {pr["key"]: pr for sec in _param_rows()
+         for g in sec["groups"] for pr in g["params"]
+         if not pr.get("special")}
 _file = json.loads(
     (Path(_TMP) / "config" / "parameters.json").read_text())["params"]
 
@@ -226,7 +233,8 @@ check("...and a cold one is not", not _rows["USE_SCALE_OUT"]["hot"])
 # A parameter the console describes but the file has dropped must not appear
 # as an editable row with an empty value — that would offer to "save" a key
 # into existence with no reader.
-_described = {k for _, items in PARAM_GROUPS for k, _ in items}
+_described = {k for _, items in PARAM_GROUPS for k, _ in items
+              if not k.startswith("__")}
 check("described-but-absent parameters are not offered for editing",
       not (set(_rows) - set(_file)))
 
@@ -256,6 +264,44 @@ check("a hot-only save does NOT restart the worker",
 _r3 = _c.post("/api/params", json={"params": {"NOT_A_PARAM": "1"}}).get_json()
 check("an unknown key is refused rather than created",
       "NOT_A_PARAM" in _r3["rejected"])
+
+# ── 6b. grouped by which strategy the parameter belongs to ─────────────────
+# The split is the page's claim: a row under 新闻指标模式 does nothing while
+# the mode is technical. If the membership were hand-maintained against the
+# code rather than read off it, the claim would rot — so these assert the two
+# that are provably mode-scoped, from the branch each reader sits in.
+print("\n6b  the strategy split matches where the readers actually are")
+_secs = {sec["id"]: sec for sec in _param_rows()}
+check("there is a shared section and one per mode",
+      {"shared", "technical", "news"} <= set(_secs))
+
+def _keys(sid):
+    return {pr["key"] for g in _secs[sid]["groups"] for pr in g["params"]}
+
+# main.py: finbert_crosscheck sits inside `if news_driven.enabled():`
+check("FINBERT_ENABLED is filed under the news mode that calls it",
+      "FINBERT_ENABLED" in _keys("news"))
+# main.py: sentiment scoring sits under `not news_driven.enabled()`
+check("SENTIMENT_SCORING_ENABLED is filed under technical",
+      "SENTIMENT_SCORING_ENABLED" in _keys("technical"))
+# news_driven.threshold() is `entry_threshold + delta`, so the base is shared
+check("ENTRY_SCORE_THRESHOLD is shared, because news mode uses it as its base",
+      "ENTRY_SCORE_THRESHOLD" in _keys("shared"))
+check("the two mode sections do not overlap", not (_keys("news") & _keys("technical")))
+
+# Whichever mode is NOT running is marked inert as a whole.
+_mode = json.loads(
+    (Path(_TMP) / "config" / "parameters.json").read_text())["params"]["STRATEGY_MODE"]
+_other = "news" if _mode == "technical" else "technical"
+check(f"the section for the mode NOT running ({_other}) is marked inert",
+      _secs[_other]["inert"] and not _secs[_mode]["inert"])
+check("the shared section is never inert", not _secs["shared"]["inert"])
+
+# NEWS_DRIVEN_ENABLED was the duplicate: config reads it only when
+# STRATEGY_MODE is absent, which it never is. One setting, one row.
+check("NEWS_DRIVEN_ENABLED is gone — STRATEGY_MODE is the only mode setting",
+      "NEWS_DRIVEN_ENABLED" not in
+      set().union(*(_keys(k) for k in _secs)))
 
 
 # ── 7. the API key field ───────────────────────────────────────────────────

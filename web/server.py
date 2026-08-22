@@ -1097,10 +1097,10 @@ def api_set_strategy_mode():
         return jsonify({"ok": False, "error": "unknown mode"}), 400
     try:
         _write_env_key("STRATEGY_MODE", mode)
-        # Keep the legacy boolean consistent rather than leaving a line that
-        # contradicts the mode. config only reads it when STRATEGY_MODE is
-        # absent, so this is about the file not lying to whoever opens it.
-        _write_env_key("NEWS_DRIVEN_ENABLED", "true" if mode == "news" else "false")
+        # NEWS_DRIVEN_ENABLED is NOT written alongside. config reads it only
+        # when STRATEGY_MODE is absent, which it never is — so the pair could
+        # only ever be a second copy that disagrees, and settings.
+        # news_driven_enabled is derived from the mode anyway.
         try:
             from src import preflight
             preflight.invalidate()
@@ -1131,85 +1131,134 @@ def api_set_strategy_mode():
 # start — writing them changes the file and nothing else until the worker is
 # restarted. Presenting all fifty as "saved, done" would be the same lie the
 # strategy-mode selector told for a day.
-PARAM_GROUPS = [
-    ("入场 Entry", [
-        ("ENTRY_SCORE_THRESHOLD", "入场总分门槛。分数由指标加权得出，越高越挑剔。"),
-        ("TIMEFRAME", "K 线周期。改这个等于换一套指标周期，回测口径也跟着变。"),
-        ("MAX_GAP_PCT", "跳空上限 %。开盘跳空超过它就不追。"),
-        ("BREADTH_BLOCKING", "市场广度不健康时是否阻止开新仓（false=仅提示）。"),
-        ("SMART_REGIME_ENABLED", "启用带滞回的市场状态判定（而非裸标签）。"),
-        ("REGIME_BULL_MULT", "牛市时的仓位放大系数。"),
-        ("REGIME_VIX_CALM", "VIX 低于此值算“平静”。"),
-    ]),
-    ("出场 Exit", [
-        ("SL_ATR_MULT", "止损距离 = 这个倍数 × ATR（Wilder）。"),
-        ("TP_ATR_MULT", "止盈距离 = 这个倍数 × ATR。"),
-        ("MAX_HOLD_DAYS", "最长持仓天数，到期无条件平仓。"),
-        ("USE_SCALE_OUT", "分批止盈。关着的时候 TP1_R / TP2_R 不起作用。"),
-        ("TP1_R", "第一批止盈的 R 倍数（需 USE_SCALE_OUT）。"),
-        ("TP2_R", "第二批止盈的 R 倍数（需 USE_SCALE_OUT）。"),
-        ("USE_BREAKEVEN_STOP", "到 +1R 后把止损上移到成本价。"),
-        ("REAL_USE_SOFT_EXITS", "实盘用软出场（本地循环）而非券商挂单。"),
-    ]),
-    ("风控 Risk", [
-        ("RISK_PER_TRADE", "单笔风险占预算比例。仓位大小由它和止损距离反推。"),
-        ("MAX_POSITION_PCT", "单个标的最大仓位占预算比例。"),
-        ("MAX_POSITIONS", "同时最多持有几个标的。"),
-        ("ACCOUNT_USD", "账户资金基数（预算另在设置页调整）。"),
-        ("DAILY_DRAWDOWN_STOP", "当日回撤达到此比例停止开新仓。"),
-        ("DD_HALT_PCT", "总回撤达到此百分比触发 halt。"),
-        ("DD_SIZE_CUT_PCT", "总回撤达到此百分比开始减半仓位。"),
-        ("PARAMS_FROZEN", "参数冻结：挡住一切自动化写入。人工在此页面修改不受它限制。"),
-        ("AUTO_APPLY_PARAMS", "允许优化器自动应用参数（冻结时无效）。"),
-        ("AUTO_BUDGET_ENABLED", "自动复利调整预算（冻结时无效）。"),
-    ]),
-    ("选股池 Universe", [
-        ("UNIVERSE_TOP_N", "观察池保留前 N 个标的。"),
-        ("DYNAMIC_UNIVERSE_ENABLED", "按规则定期重建观察池（关=用固定 watchlist）。"),
-        ("UNIVERSE_REFRESH_FREQ", "重建频率。"),
-        ("UNIVERSE_ETF_SLOTS", "观察池里留给 ETF 的名额。"),
-        ("UNIVERSE_EXIT_RANK", "跌出这个排名才移出观察池（滞回，避免反复进出）。"),
-        ("SIGNAL_WATCHLIST", "盯盘信号台的额外关注列表。"),
-        ("SCAN_INTERVAL_MIN", "扫描间隔（分钟）。"),
-    ]),
-    ("策略与新闻 Strategy & News", [
-        ("STRATEGY_MODE", "由哪一层选股：technical=指标，news=新闻主导。"),
-        ("NEWS_DRIVEN_ENABLED", "新闻主导模式开关（由 STRATEGY_MODE 连带设置）。"),
-        ("FINNHUB_ENABLED", "启用 Finnhub 新闻源（需 API key）。"),
-        ("FINBERT_ENABLED", "本地 FinBERT 打分，仅作参考、不参与下单。"),
-        ("MOO_NOTICES_ENABLED", "抓取 moomoo 公告。"),
-    ]),
-    ("AI", [
-        ("AI_PROVIDER", "AI 供应商。当前只接 deepseek。"),
-        ("AI_VETO_BLOCKING", "AI 否决是否真的挡下单。false=咨询发生在下单之后，改不了决策。"),
-        ("AI_ENSEMBLE_ENABLED", "多模型交叉验证。"),
-        ("GAP_SENTINEL_ENABLED", "持仓跳空哨兵。"),
-        ("GAP_SENTINEL_AI", "哨兵调用 AI 判断跳空原因。"),
-        ("GAP_SENTINEL_AI_INTRADAY", "盘中也跑哨兵。"),
-        ("GAP_SENTINEL_AI_MIN_CONF", "哨兵采信 AI 结论的最低置信度。"),
-        ("GAP_EXIT_EARNINGS_DAYS", "财报前几天开始规避跳空风险。"),
-    ]),
-    ("期权信号 Options", [
-        ("OPTIONS_STATS_ENABLED", "启用期权统计因子。"),
-        ("OPTIONS_STATS_SIZING", "让期权因子参与仓位大小。"),
-        ("OPTIONS_STATS_MIN_RVOL", "期权相对成交量下限。"),
-        ("OPTIONS_STATS_MAX_MULT", "期权因子对仓位的最大放大倍数。"),
-    ]),
+# Grouped by WHICH STRATEGY THE PARAMETER BELONGS TO, because that is the
+# question the page has to answer: change this, and does it affect what I am
+# running? A parameter under 新闻指标模式 does nothing while STRATEGY_MODE is
+# technical, and saying so is the whole point of the split.
+#
+# The membership is read off the code, not chosen. news-only means every
+# reader sits inside `if news_driven.enabled():` — that is where FINBERT_ENABLED
+# lands, because main.py's finbert_crosscheck call is inside that branch.
+# technical-only means the readers sit under `not news_driven.enabled()`.
+# Everything else applies to whatever the selected layer picked.
+PARAM_SECTIONS = [
+ ("mode", "策略模式 — 由哪一层选股", [
+   ("策略模式", [
+     ("STRATEGY_MODE", "technical=指标评分选股，新闻只做注释；news=新闻主导选股。"
+                       "这是这一页唯一会<b>换掉策略</b>的设置，下面两组各自只在对应模式下生效。"),
+   ]),
+ ]),
+ ("shared", "共用参数 — 两个模式都生效", [
+   ("入场 Entry", [
+     ("ENTRY_SCORE_THRESHOLD", "指标总分门槛。新闻模式下它仍是底线，再加上 NEWS_DRIVEN_THRESHOLD_DELTA。"),
+     ("TIMEFRAME", "K 线周期。改这个等于换一套指标周期，回测口径也跟着变。"),
+     ("MAX_GAP_PCT", "跳空上限 %。开盘跳空超过它就不追。"),
+     ("BREADTH_BLOCKING", "市场广度不健康时是否阻止开新仓（false=仅提示）。"),
+     ("SMART_REGIME_ENABLED", "启用带滞回的市场状态判定（而非裸标签）。"),
+     ("REGIME_BULL_MULT", "牛市时的仓位放大系数。"),
+     ("REGIME_VIX_CALM", "VIX 低于此值算「平静」。"),
+   ]),
+   ("出场 Exit", [
+     ("SL_ATR_MULT", "止损距离 = 这个倍数 × ATR（Wilder）。"),
+     ("TP_ATR_MULT", "止盈距离 = 这个倍数 × ATR。"),
+     ("MAX_HOLD_DAYS", "最长持仓天数，到期无条件平仓。"),
+     ("USE_SCALE_OUT", "分批止盈。关着的时候 TP1_R / TP2_R 不起作用。"),
+     ("TP1_R", "第一批止盈的 R 倍数。"),
+     ("TP2_R", "第二批止盈的 R 倍数。"),
+     ("USE_BREAKEVEN_STOP", "到 +1R 后把止损上移到成本价。"),
+     ("REAL_USE_SOFT_EXITS", "实盘用软出场（本地循环）而非券商挂单。"),
+   ]),
+   ("风控与资金 Risk & Capital", [
+     ("__BUDGET__", "分配给交易的本金。改了下次扫描生效（免重启）；仓位与风控都由它派生，"
+                    "并且会同步重锚回撤高水位 —— 不重锚的话回撤熔断会失效。"),
+     ("RISK_PER_TRADE", "单笔风险占预算比例。仓位大小由它和止损距离反推。"),
+     ("MAX_POSITION_PCT", "单个标的最大仓位占预算比例。"),
+     ("MAX_POSITIONS", "同时最多持有几个标的。"),
+     ("ACCOUNT_USD", "账户资金基数（回测与派生上限用）。"),
+     ("DAILY_DRAWDOWN_STOP", "当日回撤达到此比例停止开新仓。"),
+     ("DD_HALT_PCT", "总回撤达到此百分比触发 halt。"),
+     ("DD_SIZE_CUT_PCT", "总回撤达到此百分比开始减半仓位。"),
+     ("PARAMS_FROZEN", "参数冻结：挡住一切自动化写入。你在这一页的修改不受它限制。"),
+     ("AUTO_APPLY_PARAMS", "允许优化器自动应用参数。"),
+     ("AUTO_BUDGET_ENABLED", "自动复利调整预算。"),
+   ]),
+   ("选股池 Universe", [
+     ("SCAN_INTERVAL_MIN", "扫描间隔（分钟）。"),
+     ("DYNAMIC_UNIVERSE_ENABLED", "按规则定期重建观察池（关=用固定 watchlist）。"),
+     ("UNIVERSE_TOP_N", "观察池保留前 N 个标的。"),
+     ("UNIVERSE_REFRESH_FREQ", "重建频率。"),
+     ("UNIVERSE_ETF_SLOTS", "观察池里留给 ETF 的名额。"),
+     ("UNIVERSE_EXIT_RANK", "跌出这个排名才移出观察池（滞回，避免反复进出）。"),
+     ("SIGNAL_WATCHLIST", "盯盘信号台的额外关注列表。"),
+   ]),
+   ("持仓保护 Gap sentinel", [
+     ("GAP_SENTINEL_ENABLED", "持仓跳空哨兵。"),
+     ("GAP_SENTINEL_AI", "哨兵调用 AI 判断跳空原因。"),
+     ("GAP_SENTINEL_AI_INTRADAY", "盘中也跑哨兵。"),
+     ("GAP_SENTINEL_AI_MIN_CONF", "哨兵采信 AI 结论的最低置信度。"),
+     ("GAP_EXIT_EARNINGS_DAYS", "财报前几天开始规避跳空风险。"),
+   ]),
+   ("AI 引擎 AI Engine", [
+     ("AI_PROVIDER", "AI 供应商。当前只接 DeepSeek。"),
+     ("__AI_MODEL__", "所选引擎当前可用的模型（实时从 API 拉取）。改了下次扫描即生效，无需重启。"),
+     ("AI_VETO_BLOCKING", "AI 否决是否真的挡下单。false=咨询发生在下单之后，改不了决策。"),
+   ]),
+   ("新闻源 News sources", [
+     ("FINNHUB_ENABLED", "Finnhub 新闻源 — 按代码标注、可查历史某一天。需先填 FINNHUB_API_KEY。"),
+     ("MOO_NOTICES_ENABLED", "moomoo 转发的 SEC 申报与评级变动。只知道「发了 8-K」，不知道内容。"),
+   ]),
+   ("期权信号 Options", [
+     ("OPTIONS_STATS_ENABLED", "启用期权统计因子。"),
+     ("OPTIONS_STATS_SIZING", "让期权因子参与仓位大小。"),
+     ("OPTIONS_STATS_MIN_RVOL", "期权相对成交量下限。"),
+     ("OPTIONS_STATS_MAX_MULT", "期权因子对仓位的最大放大倍数。"),
+   ]),
+ ]),
+ ("technical", "技术指标模式专属", [
+   ("情绪打分 Sentiment", [
+     ("SENTIMENT_SCORING_ENABLED", "对候选标的做 AI 情绪打分。<b>只在技术指标模式下调用</b> —— "
+                                   "新闻模式有自己的新闻打分，不会再跑这个。"),
+     ("SENTIMENT_SIZING", "让情绪分参与仓位大小（最多放大 1.25×）。"),
+     ("SENTIMENT_BUDGET", "每轮扫描最多几次情绪 AI 调用。"),
+   ]),
+ ]),
+ ("news", "新闻指标模式专属", [
+   ("入场门槛 Entry gate", [
+     ("NEWS_DRIVEN_MIN_SCORE", "新闻分低于它就不入场（0–100）。"),
+     ("NEWS_DRIVEN_REQUIRE_CATALYST", "是否必须有明确催化剂事件。"),
+     ("NEWS_DRIVEN_THRESHOLD_DELTA", "在指标门槛上的增减。负数=新闻模式对指标分更宽松。"),
+     ("NEWS_DRIVEN_MAX_MULT", "新闻分很高时，仓位最多放大到几倍。"),
+     ("NEWS_DRIVEN_BUDGET", "每轮扫描最多几次新闻 AI 调用。"),
+   ]),
+   ("日内平仓 Intraday flatten", [
+     ("NEWS_DRIVEN_EOD_FLATTEN", "收盘前平掉新闻模式开的仓（不留隔夜）。"),
+     ("NEWS_DRIVEN_FLATTEN_ET", "平仓时刻（美东时间 HH:MM）。"),
+     ("NEWS_DRIVEN_MIN_HOLD_MIN", "最短持有分钟数，避免刚开就被平仓时刻扫掉。"),
+   ]),
+   ("本地打分模型 FinBERT", [
+     ("FINBERT_ENABLED", "本地 FinBERT 对 AI 读过的<b>同一批</b>标题给确定性的第二意见，"
+                         "两个分数一起记进成交记录。<b>仅供参考，不参与下单决策。</b>"
+                         "需先在下方下载模型（约 120 MB）。"),
+   ]),
+ ]),
 ]
+
+# Flattened for the code that only needs "key → description".
+PARAM_GROUPS = [(g, items) for _, _, groups in PARAM_SECTIONS
+                for g, items in groups]
 
 
 # A parameter can be alive in the code and inert in this configuration,
-# because another parameter switches the feature it belongs to off. That is
-# not a defect — but a row that looks identical to a live one is, since the
-# owner reads this page to find out what the bot is doing.
+# because another parameter switches off the feature it belongs to. That is
+# not a defect — but a row that looks identical to a live one is, since this
+# page is what the owner reads to find out what the bot is doing.
 #
-# GEMINI_MODEL was the version of this that WAS a defect: it read as a live
+# GEMINI_MODEL was the version of this that WAS a defect: a live-looking
 # setting for a provider ai.PROVIDERS could not select. It is deleted. These
-# are the honest ones, and they say why.
+# are the honest ones, and they name the switch responsible.
 PARAM_INERT_WHEN = {
     "TP1_R":                 ("USE_SCALE_OUT", "false"),
     "TP2_R":                 ("USE_SCALE_OUT", "false"),
-    "NEWS_DRIVEN_ENABLED":   ("STRATEGY_MODE", "technical"),
     "AUTO_APPLY_PARAMS":     ("PARAMS_FROZEN", "true"),
     "AUTO_BUDGET_ENABLED":   ("PARAMS_FROZEN", "true"),
     "OPTIONS_STATS_SIZING":  ("OPTIONS_STATS_ENABLED", "false"),
@@ -1224,11 +1273,25 @@ PARAM_INERT_WHEN = {
     "UNIVERSE_ETF_SLOTS":    ("DYNAMIC_UNIVERSE_ENABLED", "false"),
     "UNIVERSE_EXIT_RANK":    ("DYNAMIC_UNIVERSE_ENABLED", "false"),
     "UNIVERSE_REFRESH_FREQ": ("DYNAMIC_UNIVERSE_ENABLED", "false"),
+    "SENTIMENT_SIZING":      ("SENTIMENT_SCORING_ENABLED", "false"),
+    "SENTIMENT_BUDGET":      ("SENTIMENT_SCORING_ENABLED", "false"),
+    "NEWS_DRIVEN_FLATTEN_ET":   ("NEWS_DRIVEN_EOD_FLATTEN", "false"),
+    "NEWS_DRIVEN_MIN_HOLD_MIN": ("NEWS_DRIVEN_EOD_FLATTEN", "false"),
 }
 
 
 def _param_rows():
-    from src import runtime_config as rc
+    """The console's contents: sections → groups → rows.
+
+    Two rows are not parameters and are marked `special`. The budget lives in
+    db-state and must go through risk_manager.set_budget, which re-anchors the
+    drawdown high-water mark — skipping that silently disables the breaker in
+    both directions. The AI model is a db-state override over a list fetched
+    live from the provider. Both were on the settings page; they belong with
+    the numbers they interact with, but they cannot be written like the rest,
+    so the save path handles them separately rather than pretending.
+    """
+    from src import runtime_config as rc, risk_manager, ai
     doc = rc._read_file() or {}
     vals = doc.get("params") or {}
     hot = set(rc._FILE_KEY.values())
@@ -1237,46 +1300,80 @@ def _param_rows():
     described = {k for _, items in PARAM_GROUPS for k, _ in items}
 
     def row(key, desc):
+        if key == "__BUDGET__":
+            return {"key": key, "value": f"{risk_manager.budget_usd():.0f}",
+                    "desc": desc, "kind": "num", "hot": True, "inert": None,
+                    "band": None, "special": "budget", "label": "预算 Budget"}
+        if key == "__AI_MODEL__":
+            return {"key": key, "value": ai.active_model(), "desc": desc,
+                    "kind": "choice", "hot": True, "inert": None, "band": None,
+                    "special": "ai_model", "label": "模型 Model", "options": []}
         raw = str(vals.get(key, ""))
         low = raw.strip().lower()
-        if low in ("true", "false"):
-            kind = "bool"
+        if key == "STRATEGY_MODE":
+            kind, opts = "choice", list(STRATEGY_MODE_INFO)
+        elif low in ("true", "false"):
+            kind, opts = "bool", []
         else:
             try:
-                float(raw)
-                kind = "num"
+                float(raw); kind, opts = "num", []
             except ValueError:
-                kind = "text"
+                kind, opts = "text", []
         b = bounds.get(key)
         inert = None
         gate = PARAM_INERT_WHEN.get(key)
         if gate and str(vals.get(gate[0], "")).strip().lower() == gate[1]:
             inert = f"{gate[0]}={gate[1]}"
-        # REAL_USE_SOFT_EXITS is gated on the environment, not on a parameter.
         if key == "REAL_USE_SOFT_EXITS" and \
                 (settings.moo_trade_env or "").upper() == "SIMULATE":
             inert = "MOO_TRADE_ENV=SIMULATE"
         return {"key": key, "value": raw, "desc": desc, "kind": kind,
-                "hot": key in hot, "inert": inert,
-                "band": [b[0], b[1]] if b else None}
+                "hot": key in hot, "inert": inert, "options": opts,
+                "band": [b[0], b[1]] if b else None, "special": None,
+                "label": key}
 
-    groups = [{"name": name,
-               "params": [row(k, d) for k, d in items if k in vals]}
-              for name, items in PARAM_GROUPS]
-    # Anything in the file this page does not know about still gets shown —
-    # a parameter the console silently omits is a parameter nobody edits and
-    # nobody notices is wrong.
+    mode = str(vals.get("STRATEGY_MODE", "technical")).strip().lower()
+    out = []
+    for sid, label, groups in PARAM_SECTIONS:
+        gs = []
+        for gname, items in groups:
+            rows = [row(k, d) for k, d in items
+                    if k.startswith("__") or k in vals]
+            if rows:
+                gs.append({"name": gname, "params": rows})
+        if gs:
+            out.append({"id": sid, "label": label, "groups": gs,
+                        # A whole section can be inert: everything under
+                        # 新闻指标模式 does nothing while the mode is technical.
+                        # Greyed rather than hidden — hiding it is how a setting
+                        # becomes something nobody remembers is there.
+                        "inert": (sid in ("technical", "news") and sid != mode)})
+
     extra = [row(k, "") for k in sorted(vals) if k not in described]
     if extra:
-        groups.append({"name": "其它 Other", "params": extra})
-    return [g for g in groups if g["params"]]
+        out.append({"id": "other", "label": "其它 Other（这一页尚未描述的键）",
+                    "groups": [{"name": "", "params": extra}], "inert": False})
+    return out
 
 
 @app.route("/api/params")
 def api_params():
     from src import db as _db
+    # The model list comes from the same cache /api/ai-models serves, and
+    # falls back to the static one rather than making the page wait: a
+    # dropdown that blocks on a provider's API is a page that fails to open
+    # when the provider is down.
+    import time as _t
+    prov = ai.active_provider()
+    cached = _AI_MODELS_CACHE.get(prov)
+    models = (cached[1] if cached and (_t.time() - cached[0] < _AI_MODELS_TTL)
+              else list(ai._FALLBACK_MODELS.get(prov, [])))
+    cur = ai.active_model()
+    if cur and cur not in models:
+        models = [cur] + models
     return jsonify({
-        "groups": _param_rows(),
+        "sections": _param_rows(),
+        "ai_models": models,
         "worker_running": bool(_db.get_state().get("worker_strategy_mode")),
     })
 
@@ -1300,6 +1397,31 @@ def api_save_params():
     hot = set(rc._FILE_KEY.values())
 
     applied, cold, rejected = [], [], {}
+
+    # The two rows that are not parameters. They were on the settings page and
+    # moved here to sit with the numbers they interact with, but neither can be
+    # written like the rest, so they are handled rather than pretended about.
+    budget = changes.pop("__BUDGET__", None)
+    if budget is not None:
+        try:
+            from src import risk_manager
+            # Through set_budget, never by writing budget_usd: it re-anchors
+            # the drawdown high-water mark, and skipping that disables the
+            # breaker in both directions — upward it pins drawdown at 0%
+            # forever, downward it reads a phantom drawdown and halts.
+            risk_manager.set_budget(float(budget), source="param-console")
+            applied.append("预算 Budget")
+        except Exception as e:
+            rejected["__BUDGET__"] = str(e)[:200]
+
+    ai_model = changes.pop("__AI_MODEL__", None)
+    if ai_model is not None:
+        try:
+            db.update_state({"ai_model": str(ai_model).strip()})
+            applied.append("AI 模型")      # db-state, read per call — hot
+        except Exception as e:
+            rejected["__AI_MODEL__"] = str(e)[:200]
+
     for key, val in changes.items():
         if key not in known:
             rejected[key] = "not a known parameter"
@@ -1318,6 +1440,15 @@ def api_save_params():
         applied.append(key)
         if key not in hot:
             cold.append(key)
+
+    # Switching the strategy invalidates the cached preflight verdicts, which
+    # were computed about the other mode's requirements.
+    if "STRATEGY_MODE" in applied:
+        try:
+            from src import preflight
+            preflight.invalidate()
+        except Exception:
+            pass
 
     restarted = False
     error = None

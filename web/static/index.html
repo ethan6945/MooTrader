@@ -209,6 +209,15 @@
   .ptag.hot{color:#3fb950;border-color:#238636}
   .pband{color:var(--muted);font-size:10.5px;margin-left:6px}
   .prow.changed{background:rgba(210,153,34,.07)}
+  .psec{margin-bottom:18px}
+  .psec-head{font-size:12px;font-weight:600;color:var(--strong);letter-spacing:.3px;
+             padding:8px 0 2px;border-bottom:2px solid var(--border2);margin-bottom:2px;
+             display:flex;align-items:baseline;gap:10px}
+  /* A whole section can be inert — everything under 新闻指标模式 does nothing
+     while the mode is technical. Greyed, never hidden: hiding a setting is how
+     it becomes something nobody remembers is there. */
+  .psec.inert .set-sec{opacity:.45}
+  .psec.inert .psec-head{opacity:.75}
   .prow.inert .pk b,.prow.inert .setdesc{opacity:.55}
   .pinert{font-size:10.5px;color:#d29922;margin-left:6px;white-space:nowrap}
   .prow.changed .pk b::after{content:" ●";color:#d29922}
@@ -461,6 +470,15 @@
         保存时会<b>自动重启交易循环</b>让它生效 —— 重启期间不开新仓，已有持仓的保护不受影响。
       </div>
       <div id="paramGroups"></div>
+      <!-- Run config, read-only. What is left is what is NOT a parameter row
+           above: which build is serving this, and where it is running from.
+           The four chips that restated entry_threshold / scan_interval /
+           timeframe / max_hold_days are gone — two places to read one number
+           is one place too many, and the editable row is the true one. -->
+      <div class="set-sec"><h3>运行配置 Run Config（只读）</h3>
+        <div class="cfgchips" id="runCfg"><span class="mut" style="font-size:12px">—</span></div>
+        <div id="runFrom"></div>
+      </div>
       <div class="psave">
         <span id="paramMsg" class="setdesc"></span>
         <span style="display:flex;gap:8px">
@@ -482,48 +500,11 @@
           <button class="sm" id="btnEnvToggle">切换</button></div>
       </div>
 
-      <div class="set-sec"><h3>策略模式 Strategy mode — 由哪一层选股</h3>
-        <div class="setdesc">这是这个页面上唯一会<b>换掉策略</b>的设置，不是加一个功能。改完需<b>重启交易循环</b>生效。</div>
-        <div id="modeList" style="margin-top:8px"></div>
-      </div>
-
-      <div class="set-sec"><h3>新闻源与模式 News sources &amp; mode</h3>
-        <div class="setdesc">全部默认关闭。开关写入 .env，需<b>重启交易循环</b>生效。</div>
-        <div id="toggleList" style="margin-top:8px"></div>
-      </div>
-
-      <div class="set-sec"><h3>本地新闻打分模型 FinBERT</h3>
-        <div class="set-row"><div style="flex:1"><b>FinBERT（本地运行，确定性）</b>
-          <div class="setdesc">对 AI 读过的<b>同一批</b>标题给一个确定性的第二意见，两个分数一起记进成交记录，让「AI 和 FinBERT 分歧」变成可量化的东西。<b>仅供参考，不参与下单决策。</b>它评的是句子情绪、不是价格影响 —— 真正的价值是它的训练语料早于任何回测窗口，没有后见之明。<br>
-          模型只下载一次，<b>app 和源码版共用同一份</b>。</div>
-          <div id="finbertState" class="setdesc" style="margin-top:6px">—</div></div>
-          <span style="display:flex;gap:6px">
-            <button class="sm" id="btnFinbertGet">下载</button>
-            <button class="sm" id="btnFinbertDel">删除</button>
-          </span></div>
-      </div>
-
-      <div class="set-sec"><h3>资金 Capital</h3>
-        <div class="set-row"><div style="flex:1"><b>预算 Budget</b><div class="setdesc">分配给交易的本金。改了下次扫描生效（免重启）；仓位/风控按它派生，并自动不超过实盘 equity。</div></div>
-          <span style="display:flex;gap:6px"><input id="setBudget" type="number" step="100" placeholder="$"/><button class="sm" id="btnSetBudget">保存</button></span></div>
-      </div>
-
-      <div class="set-sec"><h3>运行配置 Run Config <span style="text-transform:none;font-weight:400">（只读）</span></h3>
-        <div class="cfgchips" id="runCfg"><span class="mut" style="font-size:12px">—</span></div>
-        <div id="runFrom"></div>
-      </div>
-
-      <div class="set-sec"><h3>AI 引擎 AI Engine</h3>
-        <div class="setdesc" style="margin-bottom:8px">选哪家 AI 做<b>全部</b>分析（信号审核 / 情绪 / 智能退出 / 自动优化）。Gemini 不可用时切到 DeepSeek，<b>下次扫描即生效，无需重启</b>。模型列表实时从各家 API 拉取——出了新模型也能直接选，不写死。先在下方「API Keys」填好对应 Key。</div>
-        <div class="set-row"><div style="flex:1"><b>引擎 Provider</b>
-          <div id="aiEngNote" class="setdesc" style="margin-top:4px">—</div></div>
-          <select id="selAiProvider"><option>…</option></select></div>
-        <div class="set-row"><div style="flex:1"><b>模型 Model</b><div class="setdesc">所选引擎当前可用的模型（实时拉取）。</div></div>
-          <select id="selAiModel"><option>加载中…</option></select></div>
-        <div class="set-row"><div id="aiEngState" class="setdesc" style="flex:1">—</div>
-          <button class="sm" id="btnAiApply">应用 Apply</button></div>
-      </div>
-
+      <!-- 策略模式 / 新闻源 / FinBERT / 资金 / 运行配置 / AI 引擎 all moved to
+           the parameter console (🎛). They were settings that change what the
+           bot TRADES, sitting beside theme and language; and four of the Run
+           Config chips restated parameters that are now editable rows, which
+           is two places to read one number. -->
       <div class="set-sec"><h3>API Keys</h3>
         <div class="mut" style="font-size:11.5px;margin-bottom:8px">框里是<b>当前的 key</b>（中间打码）。点 👁 显示完整内容，改完点「保存」写入 <code>.env</code>，<b>重启交易循环后生效</b>。</div>
         <div id="keyList"></div>
@@ -1093,223 +1074,40 @@ async function loadSettings(){
                onclick="toggleKey('${k.key}')">👁</button>
        <button class="sm" onclick="saveKey('${k.key}')">保存</button></span></div>`).join('');
   }catch(e){}
-  try{const m=await api('/api/strategy-mode');
-    // m.mode is what the WORKER published at startup (null when none is
-    // running); m.pending is the configured value a restart would apply. The
-    // radio follows the configured value — it is what the user last chose —
-    // and the banner distinguishes three states that used to read as one.
-    const cur=m.pending||m.mode;
-    let warn='';
-    if(!m.mode){
-      warn=`<div class="setdesc" style="color:#8b949e">交易循环未在运行 — 已保存「${cur}」，启动后生效。</div>`;
-    }else if(m.mode!==cur){
-      warn=`<div class="setdesc" style="color:#d29922">⚠️ 已保存但未生效 — 交易循环仍在跑「${m.mode}」，重启交易循环后才切换。</div>`;
-    }else{
-      warn=`<div class="setdesc" style="color:#3fb950">✓ 交易循环正在跑「${m.mode}」。</div>`;
-    }
-    $('#modeList').innerHTML=warn+m.options.map(o=>`<div class="set-row"><label style="flex:1;display:flex;gap:8px;align-items:flex-start;cursor:pointer">
-       <input type="radio" name="stratmode" value="${o.id}" ${o.id===cur?'checked':''} onchange="saveMode('${o.id}')"/>
-       <span><b>${o.label}</b><div class="setdesc">${o.desc||''}</div></span></label></div>`).join('');
-  }catch(e){}
-  try{const t=await api('/api/settings/toggles');
-    $('#toggleList').innerHTML=t.toggles.map(g=>`<div class="set-row"><div style="flex:1"><b>${g.key}</b>
-       <div class="setdesc">${g.desc}</div></div>
-       <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="t_${g.key}"
-       ${g.on?'checked':''} onchange="saveToggle('${g.key}',this.checked)"/><span>${g.on?'开':'关'}</span></label></div>`).join('');
-  }catch(e){}
-  try{const a=LAST_STATUS||await api('/api/status');
-    $('#setBudget').value=Math.round(a.budget||0);
-    // read-only run config — kept here (off the dashboard) so the main view stays clean
-    $('#runCfg').innerHTML=[
-      ['版本 Version',a.version],
-      ['AI 模型',a.ai_model],
-      ['入场阈值',a.entry_threshold],['扫描间隔',(a.scan_interval_min??'—')+' min'],
-      ['K线周期',a.timeframe],['最长持仓',(a.max_hold_days??'—')+' 天'],
-    ].map(([k,v])=>`<span class="pill">${k}<b>${v??'—'}</b></span>`).join('');
-    // Which build is actually serving this. A version alone can't tell you —
-    // 2026-08-05 had a bot running out of macos/dist (wiped by every rebuild)
-    // while it was assumed to be /Applications. Show the path, and say so when
-    // it's the build directory.
-    const rf=a.running_from||'';
-    $('#runFrom').innerHTML = rf
-      ? `<div class="setdesc" style="margin-top:8px">运行自 Running from: <code>${rf}</code></div>`
-        + (a.home?`<div class="setdesc">数据目录 Data home: <code>${a.home}</code></div>`:'')
-        + (rf.includes('/macos/dist/')
-            ? `<div class="setdesc" style="color:var(--amber,#d29922)">⚠ 正在从构建输出目录运行 —— 下次 <code>build.sh</code> 会删掉它并结束进程。测试请先复制到别处。</div>`
-            : '')
-      : '';
-  }catch(e){}
   loadWebAccess();
   loadTradeEnv();
-  loadAiEngine();
 }
 
-// ── AI engine (Gemini ⟷ DeepSeek) + live model dropdown ──
-let AIPROV=null;
-async function loadAiEngine(){
-  try{
-    const d=await api('/api/ai-provider'); AIPROV=d;
-    const sel=$('#selAiProvider');
-    sel.innerHTML=d.providers.map(p=>
-      `<option value="${p.id}">${p.label}${p.has_key?'':' (未设 Key)'}${p.vision?'':' · 无视觉'}</option>`).join('');
-    sel.value=d.provider;
-    updateAiNote();
-    await loadAiModels(d.provider, d.model);
-  }catch(e){
-    // Don't leave the dropdown spinning forever. A 404 here means the web server
-    // is running OLD code (started before this feature) — it needs a restart.
-    $('#selAiProvider').innerHTML='<option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option>';
-    $('#selAiModel').innerHTML='<option value="">—</option>';
-    const stale=/404|接口不存在/.test(e.message);
-    $('#aiEngState').innerHTML = stale
-      ? '⚠ 网页服务在跑旧代码（这个开关是新加的）——请<b>重启 start-web</b> 后再打开设置即可。'
-      : '加载失败: '+e.message;
-  }
-}
-function updateAiNote(){
-  if(!AIPROV)return;
-  const p=AIPROV.providers.find(x=>x.id===$('#selAiProvider').value)||{};
-  let s = p.has_key ? '' : `⚠ 请先在下方「API Keys」填入 ${p.label} 的 API Key。`;
-  if(p.id==='deepseek') s+=(s?' ':'')+'DeepSeek 纯文本，无图表视觉——形态视觉确认层会自动跳过。';
-  $('#aiEngNote').innerHTML=s||'就绪。';
-}
-async function loadAiModels(provider, selectModel){
-  const sel=$('#selAiModel'); sel.innerHTML='<option>加载中…</option>';
-  try{
-    const d=await api('/api/ai-models?provider='+encodeURIComponent(provider));
-    const models=d.models||[];
-    sel.innerHTML = models.length
-      ? models.map(m=>`<option value="${m}">${m}</option>`).join('')
-      : '<option value="">(无可用模型)</option>';
-    if(selectModel && models.includes(selectModel)) sel.value=selectModel;
-    $('#aiEngState').innerHTML = d.fallback
-      ? `⚠ 实时拉取失败(${d.error||''})，用内置列表兜底。`
-      : `当前生效：<b>${AIPROV?AIPROV.provider:provider}</b> · <b>${AIPROV?AIPROV.model:''}</b>`;
-  }catch(e){ sel.innerHTML='<option value="">拉取失败</option>'; $('#aiEngState').textContent='拉取模型失败: '+e.message; }
-}
-$('#selAiProvider').onchange=e=>{ updateAiNote(); loadAiModels(e.target.value); };
-$('#btnAiApply').onclick=async()=>{
-  const provider=$('#selAiProvider').value, model=$('#selAiModel').value;
-  if(!model){alert('没有可选模型，请先确认该引擎的 API Key 已设置。');return;}
-  try{
-    const r=await api('/api/ai-provider',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider,model})});
-    alert(r.note||'已切换'); await loadAiEngine(); refresh();
-  }catch(e){ alert('切换失败: '+e.message); }
-};
-let ENVST=null;
-async function loadTradeEnv(){
-  try{
-    const d=await api('/api/trade-env'); ENVST=d;
-    const real=d.env_file==='REAL';
-    const liveTxt=d.env_live?(d.env_live==='REAL'?'💵 实盘':'🧪 模拟'):'—';
-    let s=`配置(.env): <b>${real?'💵 实盘 REAL':'🧪 模拟 SIMULATE'}</b> · 运行中: ${liveTxt} · 持仓: ${d.open_positions}`;
-    if(d.pending_restart) s+=' · <b style="color:#d29922">⚠ 待重启生效</b>';
-    $('#envState').innerHTML=s;
-    const btn=$('#btnEnvToggle');
-    btn.textContent=real?'切回模拟 🧪':'切到实盘 💵';
-    btn.className=real?'sm':'danger sm';
-  }catch(e){}
-}
-$('#btnEnvToggle').onclick=async()=>{
-  if(!ENVST)return;
-  const target=ENVST.env_file==='REAL'?'SIMULATE':'REAL';
-  if(target==='REAL'){
-    if(ENVST.open_positions>0){alert('当前还有 '+ENVST.open_positions+' 个未平仓持仓，请先全部平仓再切实盘。');return;}
-    if(!confirm('⚠ 切换到【实盘 REAL】= 用真钱交易！\n\n确认前请确保:\n• 已 paper trade 足够久且指标达标\n• 已设好 6 位交易密码\n• 首次只放小额验证下单\n\n确定切到实盘?'))return;
-    if(!confirm('再次确认:真的要用真钱交易吗?'))return;
-  }
-  const r=await api('/api/trade-env',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({env:target,confirm:target==='REAL'})});
-  if(!r.ok){alert('失败: '+(r.error||''));return;}
-  await loadTradeEnv();
-  if(confirm((r.note||'已切换')+'\n\n现在重启交易循环使其生效?')){
-    // Don't announce a restart that did not happen. A trade-env switch that
-    // silently failed to restart is the worst version of this bug: the operator
-    // believes the new env is live while the old worker keeps trading the old one.
-    try{
-      await api('/api/scheduler/restart',{method:'POST'});
-      alert('已重启交易循环。');
-    }catch(e){
-      alert('环境已切换，但交易循环未重启 — '+(e.message||e)+
-            '\n\n旧的交易循环若仍在运行，用的仍是切换前的环境。请先 Stop 再 Start。');
-    }
-    setTimeout(()=>{pollStatus();loadTradeEnv();},1500);
-  }
-};
-let WACC=null;
-async function loadWebAccess(){
-  try{
-    const w=await api('/api/web-access'); WACC=w;
-    const b=$('#btnLan'), lan=w.mode==='lan';
-    b.textContent=lan?'关闭':'开启';
-    b.style.background=lan?'#2ea043':''; b.style.borderColor=lan?'#2ea043':'';
-    const u=$('#lanUrls');
-    if(lan){
-      let h='✅ 已开启 · 手机打开（需密码）：';
-      if(w.tailscale_ip) h+=`<br>• Tailscale（任何地方）: <b style="color:var(--primary)">http://${w.tailscale_ip}:${w.port}</b>`;
-      if(w.lan_ip)       h+=`<br>• 同一 WiFi: <b style="color:var(--primary)">http://${w.lan_ip}:${w.port}</b>`;
-      u.innerHTML=h; u.classList.remove('hidden');
-    }else{ u.classList.add('hidden'); }
-  }catch(_){}
-}
-function showRestart(){
-  const o=document.createElement('div');
-  o.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#fff;font-family:inherit';
-  o.innerHTML='<div style="text-align:center"><div style="font-size:16px;margin-bottom:8px">正在切换访问模式…</div><div style="font-size:13px;opacity:.7">网页服务重启中，几秒后自动刷新</div></div>';
-  document.body.appendChild(o);
-  let n=0;
-  const t=setInterval(async()=>{
-    n++;
-    try{const r=await fetch('/login',{cache:'no-store'}); if(r.ok){clearInterval(t);location.reload();return;}}catch(_){}
-    if(n>40){clearInterval(t);location.reload();}
-  },1000);
-}
-async function toggleKey(k){
-  const el=$('#k_'+k), eye=$('#eye_'+k);
-  if(el.dataset.masked==='1'){
-    try{
-      const r=await api('/api/settings/key/reveal',{method:'POST',
-        headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})});
-      el.value=r.value||''; el.dataset.masked='0'; eye.textContent='🙈';
-    }catch(e){ alert('读取失败: '+e.message); }
-  }else{
-    // Back to masked means reloading it — the panel does not keep a plaintext
-    // copy sitting in the DOM once you have stopped looking at it.
-    await loadSettings();
-  }
-}
-async function saveKey(k){
-  const el=$('#k_'+k), v=(el.value||'').trim();
-  // A masked field that was never revealed still contains bullets. Writing
-  // those would replace a working credential with a row of dots and the panel
-  // would cheerfully report success.
-  if(el.dataset.masked==='1' && v.includes('\u2022')){
-    alert('这还是马赛克后的值。先点 👁 显示，再修改保存。'); return;
-  }
-  const r=await api('/api/settings/key',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({key:k,value:v})});
-  alert(r.note||(r.ok?'已保存':'保存失败'));
-  await loadSettings();
-}
-async function saveMode(mode){
-  const r=await api('/api/strategy-mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
-  alert(r.note||(r.ok?'已保存':('失败: '+(r.error||'')))); loadSettings();
-}
-// The server's note is what gets shown: turning news-driven mode on may also
-// have turned shadow mode on, and only the server knows whether it did.
-async function saveToggle(key,on){
-  const r=await api('/api/settings/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,on})});
-  alert(r.note||(r.ok?'已保存':('失败: '+(r.error||'')))); loadSettings();
-}
-$('#btnSetBudget').onclick=async()=>{const v=+$('#setBudget').value; if(v>0){await api('/api/budget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})});refresh();alert('预算已更新: $'+v);}};
+// The AI engine block lived here: a provider dropdown, a model dropdown and
+// an Apply button. Provider is one row on the parameter page now (AI_PROVIDER)
+// and model is the __AI_MODEL__ row beside it, so they save with everything
+// else instead of having their own button. /api/ai-provider and
+// /api/ai-models still exist and still back that dropdown.
+
 // ── FinBERT: status + a consent dialog before spending the user's disk ──
 // The download is only ever started by this button. Opening Settings, or even
 // setting FINBERT_ENABLED, never pulls a byte — the confirm below IS the
 // consent, and it names the size and the exact path before asking.
 let FINBERT_POLL=null;
+// The FinBERT block moved onto the parameter page, under FINBERT_ENABLED —
+// the switch and the 120 MB download it depends on were two sections apart,
+// which is how you end up with the flag on and no model.
+async function loadFinbertInto(sel){
+  const box=$(sel); if(!box) return;
+  if(!box.dataset.built){
+    box.innerHTML='<span id="finbertState">—</span>'
+      +' <button class="sm" id="btnFinbertGet" style="margin-left:6px">下载</button>'
+      +' <button class="sm" id="btnFinbertDel">删除</button>';
+    box.dataset.built='1';
+    $('#btnFinbertGet').onclick=finbertGet;
+    $('#btnFinbertDel').onclick=finbertDel;
+  }
+  return loadFinbert();
+}
 async function loadFinbert(){
   let s; try{s=await api('/api/finbert');}catch(e){return;}
   const el=$('#finbertState'), get=$('#btnFinbertGet'), del=$('#btnFinbertDel');
+  if(!el||!get||!del) return;
   const j=s.job||{};
   if(j.running){
     const pct=j.total?Math.round(100*j.done/j.total):0;
@@ -1335,7 +1133,7 @@ async function loadFinbert(){
     get.disabled=false; del.disabled=true;
   }
 }
-$('#btnFinbertGet').onclick=async()=>{
+async function finbertGet(){
   let s; try{s=await api('/api/finbert');}catch(e){return;}
   const okd=confirm(
     `将从 HuggingFace 下载 FinBERT 模型（约 ${s.est_download_mb} MB）到：\n\n${s.path}\n\n`
@@ -1346,7 +1144,7 @@ $('#btnFinbertGet').onclick=async()=>{
   await api('/api/finbert/download',{method:'POST'});
   loadFinbert();
 };
-$('#btnFinbertDel').onclick=async()=>{
+async function finbertDel(){
   if(!confirm('删除本地 FinBERT 模型？会释放硬盘空间，之后可以重新下载。')) return;
   const r=await api('/api/finbert/remove',{method:'POST'});
   alert(r.note||'已删除'); loadFinbert();
@@ -1358,45 +1156,89 @@ $('#btnFinbertDel').onclick=async()=>{
 // is also what gets sent: only the differences, so two people editing two
 // parameters cannot overwrite each other's untouched fields.
 let PARAM_LOADED={};
+let AI_MODELS=[];
 function paramInput(pr){
-  const id='p_'+pr.key;
+  const id='p_'+pr.key, k=`data-key="${pr.key}"`;
+  if(pr.special==='ai_model'){
+    const opts=(AI_MODELS.length?AI_MODELS:[pr.value]).map(m=>
+      `<option value="${m}" ${m===pr.value?'selected':''}>${m}</option>`).join('');
+    return `<select id="${id}" ${k}>${opts}</select>`;
+  }
+  if(pr.kind==='choice'){
+    return `<select id="${id}" ${k}>${(pr.options||[]).map(o=>
+      `<option value="${o}" ${o===pr.value?'selected':''}>${o}</option>`).join('')}</select>`;
+  }
   if(pr.kind==='bool'){
     const on=String(pr.value).toLowerCase()==='true';
-    return `<select id="${id}" data-key="${pr.key}">
+    return `<select id="${id}" ${k}>
       <option value="true" ${on?'selected':''}>true 开</option>
       <option value="false" ${on?'':'selected'}>false 关</option></select>`;
   }
   if(pr.kind==='num'){
-    const step=(Math.abs(parseFloat(pr.value))<1&&parseFloat(pr.value)!==0)?'0.01':'0.1';
-    return `<input id="${id}" data-key="${pr.key}" type="number" step="${step}" value="${pr.value}"/>`;
+    const n=parseFloat(pr.value);
+    const step=(Math.abs(n)<1&&n!==0)?'0.01':(pr.special==='budget'?'100':'0.1');
+    return `<input id="${id}" ${k} type="number" step="${step}" value="${pr.value}"/>`;
   }
-  return `<input id="${id}" data-key="${pr.key}" type="text" value="${String(pr.value).replace(/"/g,'&quot;')}"/>`;
+  return `<input id="${id}" ${k} type="text" value="${String(pr.value).replace(/"/g,'&quot;')}"/>`;
+}
+async function loadRunConfig(){
+  try{const a=LAST_STATUS||await api('/api/status');
+    // Read-only. Everything else this used to show — entry threshold, scan
+    // interval, timeframe, max hold — is an editable row above now, and
+    // restating it here would be a second place to read one number, free to
+    // disagree with the first.
+    $('#runCfg').innerHTML=[
+      ['版本 Version',a.version],
+      ['AI 模型',a.ai_model],
+    ].map(([k,v])=>`<span class="pill">${k}<b>${v??'—'}</b></span>`).join('');
+    // Which build is actually serving this. A version alone can't tell you —
+    // 2026-08-05 had a bot running out of macos/dist (wiped by every rebuild)
+    // while it was assumed to be /Applications.
+    const rf=a.running_from||'';
+    $('#runFrom').innerHTML = rf
+      ? `<div class="setdesc" style="margin-top:8px">运行自 Running from: <code>${rf}</code></div>`
+        + (a.home?`<div class="setdesc">数据目录 Data home: <code>${a.home}</code></div>`:'')
+        + (rf.includes('/macos/dist/')
+            ? `<div class="setdesc" style="color:var(--amber,#d29922)">⚠ 正在从构建输出目录运行 —— 下次 <code>build.sh</code> 会删掉它并结束进程。测试请先复制到别处。</div>`
+            : '')
+      : '';
+  }catch(e){}
 }
 async function loadParams(){
   const d=await api('/api/params');
   PARAM_LOADED={};
-  $('#paramGroups').innerHTML=d.groups.map(g=>`
-    <div class="set-sec"><h3>${g.name}</h3>
-      ${g.params.map(pr=>{
-        PARAM_LOADED[pr.key]=String(pr.value);
-        const band=pr.band?`<span class="pband">优化器区间 ${pr.band[0]}–${pr.band[1]}</span>`:'';
-        // Inert is not dead: the value is real and the code reads it, but
-        // another switch is off so nothing consults it right now. Saying so
-        // is the difference between this page describing the bot and this
-        // page listing fields.
-        const inert=pr.inert?`<span class="pinert">当前无效 — ${pr.inert}</span>`:'';
-        return `<div class="prow${pr.inert?' inert':''}" id="row_${pr.key}">
-          <div class="pk"><b>${pr.key}</b>${band}${inert}
-            ${pr.desc?`<div class="setdesc">${pr.desc}</div>`:''}</div>
-          <div class="pv">
-            <span class="ptag ${pr.hot?'hot':''}">${pr.hot?'立即':'需重启'}</span>
-            ${paramInput(pr)}
-          </div></div>`;}).join('')}
+  AI_MODELS=d.ai_models||[];
+  $('#paramGroups').innerHTML=d.sections.map(sec=>`
+    <div class="psec${sec.inert?' inert':''}">
+      <div class="psec-head">${sec.label}
+        ${sec.inert?'<span class="pinert">当前模式下整段不生效</span>':''}</div>
+      ${sec.groups.map(g=>`
+        <div class="set-sec">${g.name?`<h3>${g.name}</h3>`:''}
+          ${g.params.map(paramRow).join('')}
+        </div>`).join('')}
     </div>`).join('');
   $('#paramGroups').querySelectorAll('[data-key]').forEach(el=>{
     el.oninput=el.onchange=paramDirty;
   });
+  await loadFinbertInto('#finbertBox');
+  await loadRunConfig();
   paramDirty();
+}
+function paramRow(pr){
+  const band=pr.band?`<span class="pband">优化器区间 ${pr.band[0]}–${pr.band[1]}</span>`:'';
+  // Inert is not dead: the value is real and the code reads it, but another
+  // switch is off so nothing consults it right now. Saying so is the
+  // difference between this page describing the bot and listing fields.
+  const inert=pr.inert?`<span class="pinert">当前无效 — ${pr.inert}</span>`:'';
+  const extra=(pr.key==='FINBERT_ENABLED')?'<div id="finbertBox" class="setdesc" style="margin-top:6px">—</div>':'';
+  PARAM_LOADED[pr.key]=String(pr.value);
+  return `<div class="prow${pr.inert?' inert':''}" id="row_${pr.key}">
+    <div class="pk"><b>${pr.label||pr.key}</b>${band}${inert}
+      ${pr.desc?`<div class="setdesc">${pr.desc}</div>`:''}${extra}</div>
+    <div class="pv">
+      <span class="ptag ${pr.hot?'hot':''}">${pr.hot?'立即':'需重启'}</span>
+      ${paramInput(pr)}
+    </div></div>`;
 }
 function paramChanges(){
   const out={};
@@ -1406,17 +1248,27 @@ function paramChanges(){
   });
   return out;
 }
+// What the last save said, kept because paramDirty() runs again afterwards
+// (from the finally, and from the reload) and would otherwise wipe the result
+// the moment it appeared — "已保存 3 项，交易循环已重启" was on screen for
+// about a frame.
+let PARAM_RESULT='', PARAM_RESULT_COLOR='var(--muted)';
 function paramDirty(){
   const ch=paramChanges(), keys=Object.keys(ch);
   $('#paramGroups').querySelectorAll('.prow').forEach(r=>{
     r.classList.toggle('changed', keys.includes(r.id.slice(4)));
   });
   $('#btnParamsSave').disabled = keys.length===0;
-  $('#paramMsg').textContent = keys.length
-    ? `${keys.length} 项已修改，未保存` : '';
-  $('#paramMsg').style.color='var(--muted)';
+  if(keys.length){
+    $('#paramMsg').textContent=`${keys.length} 项已修改，未保存`;
+    $('#paramMsg').style.color='var(--muted)';
+  }else{
+    $('#paramMsg').textContent=PARAM_RESULT;
+    $('#paramMsg').style.color=PARAM_RESULT_COLOR;
+  }
 }
 $('#btnParams').onclick=async()=>{
+  PARAM_RESULT=''; PARAM_RESULT_COLOR='var(--muted)';
   $('#paramsModal').classList.remove('hidden');
   $('#paramGroups').innerHTML='<div class="setdesc">加载中…</div>';
   try{await loadParams();}catch(e){$('#paramGroups').innerHTML=`<div class="setdesc">读取失败: ${e.message}</div>`;}
@@ -1441,14 +1293,13 @@ $('#btnParamsSave').onclick=async()=>{
     if(r.rejected && Object.keys(r.rejected).length)
       bits.push('拒绝：'+Object.entries(r.rejected).map(([k,v])=>`${k}(${v})`).join('; '));
     if(r.error) bits.push(r.error);
-    $('#paramMsg').textContent=bits.join(' · ')||'没有变化';
-    $('#paramMsg').style.color=(r.ok?'#3fb950':'#d29922');
+    PARAM_RESULT=bits.join(' · ')||'没有变化';
+    PARAM_RESULT_COLOR=(r.ok?'#3fb950':'#d29922');
     await loadParams();
-    if(r.ok) $('#paramMsg').textContent=bits.join(' · ');
     refresh();
   }catch(e){
-    $('#paramMsg').textContent='保存失败: '+e.message;
-    $('#paramMsg').style.color='#f85149';
+    PARAM_RESULT='保存失败: '+e.message;
+    PARAM_RESULT_COLOR='#f85149';
   }finally{ b.textContent='保存并生效'; paramDirty(); }
 };
 
