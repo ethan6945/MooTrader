@@ -924,9 +924,20 @@ def _read_env() -> dict:
 
 
 def _mask(v: str) -> str:
+    """Enough to recognise the key, not enough to use it.
+
+    Keeps the head as well as the tail, because the head is what tells two
+    keys apart at a glance (sk-ant… vs sk-proj…) and the tail is what you
+    check against the provider's dashboard. Short values get no head — with
+    fewer than twelve characters, showing four each end leaves almost nothing
+    hidden.
+    """
     if not v:
         return ""
-    return ("•" * max(0, min(len(v) - 4, 12))) + v[-4:] if len(v) > 4 else "set"
+    if len(v) <= 8:
+        return "•" * len(v)
+    head = v[:4] if len(v) >= 12 else ""
+    return f"{head}{'•' * max(4, min(len(v) - len(head) - 4, 16))}{v[-4:]}"
 
 
 def _write_env_key(key: str, value: str) -> None:
@@ -1106,6 +1117,202 @@ def api_set_strategy_mode():
         return jsonify({"ok": True, "note": note})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+
+# ── parameter console ────────────────────────────────────────────────────────
+# Every strategy parameter in config/parameters.json, on one page.
+#
+# The honest part is the hot/cold split. runtime_config._param() re-reads the
+# file on every call, so the twelve parameters with an accessor there take
+# effect on the worker's NEXT SCAN with nothing restarted. The other
+# thirty-eight are read through `settings`, which is evaluated once at process
+# start — writing them changes the file and nothing else until the worker is
+# restarted. Presenting all fifty as "saved, done" would be the same lie the
+# strategy-mode selector told for a day.
+PARAM_GROUPS = [
+    ("入场 Entry", [
+        ("ENTRY_SCORE_THRESHOLD", "入场总分门槛。分数由指标加权得出，越高越挑剔。"),
+        ("TIMEFRAME", "K 线周期。改这个等于换一套指标周期，回测口径也跟着变。"),
+        ("MAX_GAP_PCT", "跳空上限 %。开盘跳空超过它就不追。"),
+        ("BREADTH_BLOCKING", "市场广度不健康时是否阻止开新仓（false=仅提示）。"),
+        ("SMART_REGIME_ENABLED", "启用带滞回的市场状态判定（而非裸标签）。"),
+        ("REGIME_BULL_MULT", "牛市时的仓位放大系数。"),
+        ("REGIME_VIX_CALM", "VIX 低于此值算“平静”。"),
+    ]),
+    ("出场 Exit", [
+        ("SL_ATR_MULT", "止损距离 = 这个倍数 × ATR（Wilder）。"),
+        ("TP_ATR_MULT", "止盈距离 = 这个倍数 × ATR。"),
+        ("MAX_HOLD_DAYS", "最长持仓天数，到期无条件平仓。"),
+        ("USE_SCALE_OUT", "分批止盈。关着的时候 TP1_R / TP2_R 不起作用。"),
+        ("TP1_R", "第一批止盈的 R 倍数（需 USE_SCALE_OUT）。"),
+        ("TP2_R", "第二批止盈的 R 倍数（需 USE_SCALE_OUT）。"),
+        ("USE_BREAKEVEN_STOP", "到 +1R 后把止损上移到成本价。"),
+        ("REAL_USE_SOFT_EXITS", "实盘用软出场（本地循环）而非券商挂单。"),
+    ]),
+    ("风控 Risk", [
+        ("RISK_PER_TRADE", "单笔风险占预算比例。仓位大小由它和止损距离反推。"),
+        ("MAX_POSITION_PCT", "单个标的最大仓位占预算比例。"),
+        ("MAX_POSITIONS", "同时最多持有几个标的。"),
+        ("ACCOUNT_USD", "账户资金基数（预算另在设置页调整）。"),
+        ("DAILY_DRAWDOWN_STOP", "当日回撤达到此比例停止开新仓。"),
+        ("DD_HALT_PCT", "总回撤达到此百分比触发 halt。"),
+        ("DD_SIZE_CUT_PCT", "总回撤达到此百分比开始减半仓位。"),
+        ("PARAMS_FROZEN", "参数冻结：挡住一切自动化写入。人工在此页面修改不受它限制。"),
+        ("AUTO_APPLY_PARAMS", "允许优化器自动应用参数（冻结时无效）。"),
+        ("AUTO_BUDGET_ENABLED", "自动复利调整预算（冻结时无效）。"),
+    ]),
+    ("选股池 Universe", [
+        ("UNIVERSE_TOP_N", "观察池保留前 N 个标的。"),
+        ("DYNAMIC_UNIVERSE_ENABLED", "按规则定期重建观察池（关=用固定 watchlist）。"),
+        ("UNIVERSE_REFRESH_FREQ", "重建频率。"),
+        ("UNIVERSE_ETF_SLOTS", "观察池里留给 ETF 的名额。"),
+        ("UNIVERSE_EXIT_RANK", "跌出这个排名才移出观察池（滞回，避免反复进出）。"),
+        ("SIGNAL_WATCHLIST", "盯盘信号台的额外关注列表。"),
+        ("SCAN_INTERVAL_MIN", "扫描间隔（分钟）。"),
+    ]),
+    ("策略与新闻 Strategy & News", [
+        ("STRATEGY_MODE", "由哪一层选股：technical=指标，news=新闻主导。"),
+        ("NEWS_DRIVEN_ENABLED", "新闻主导模式开关（由 STRATEGY_MODE 连带设置）。"),
+        ("FINNHUB_ENABLED", "启用 Finnhub 新闻源（需 API key）。"),
+        ("FINBERT_ENABLED", "本地 FinBERT 打分，仅作参考、不参与下单。"),
+        ("MOO_NOTICES_ENABLED", "抓取 moomoo 公告。"),
+    ]),
+    ("AI", [
+        ("AI_PROVIDER", "AI 供应商。当前只接 deepseek。"),
+        ("GEMINI_MODEL", "Gemini 模型名（当前未使用 Gemini 时无效）。"),
+        ("AI_VETO_BLOCKING", "AI 否决是否真的挡下单。false=咨询发生在下单之后，改不了决策。"),
+        ("AI_ENSEMBLE_ENABLED", "多模型交叉验证。"),
+        ("GAP_SENTINEL_ENABLED", "持仓跳空哨兵。"),
+        ("GAP_SENTINEL_AI", "哨兵调用 AI 判断跳空原因。"),
+        ("GAP_SENTINEL_AI_INTRADAY", "盘中也跑哨兵。"),
+        ("GAP_SENTINEL_AI_MIN_CONF", "哨兵采信 AI 结论的最低置信度。"),
+        ("GAP_EXIT_EARNINGS_DAYS", "财报前几天开始规避跳空风险。"),
+    ]),
+    ("期权信号 Options", [
+        ("OPTIONS_STATS_ENABLED", "启用期权统计因子。"),
+        ("OPTIONS_STATS_SIZING", "让期权因子参与仓位大小。"),
+        ("OPTIONS_STATS_MIN_RVOL", "期权相对成交量下限。"),
+        ("OPTIONS_STATS_MAX_MULT", "期权因子对仓位的最大放大倍数。"),
+    ]),
+]
+
+
+def _param_rows():
+    from src import runtime_config as rc
+    doc = rc._read_file() or {}
+    vals = doc.get("params") or {}
+    hot = set(rc._FILE_KEY.values())
+    bounds = {rc._FILE_KEY[k]: v for k, v in rc.ALLOWED_PARAMS.items()
+              if k in rc._FILE_KEY}
+    described = {k for _, items in PARAM_GROUPS for k, _ in items}
+
+    def row(key, desc):
+        raw = str(vals.get(key, ""))
+        low = raw.strip().lower()
+        if low in ("true", "false"):
+            kind = "bool"
+        else:
+            try:
+                float(raw)
+                kind = "num"
+            except ValueError:
+                kind = "text"
+        b = bounds.get(key)
+        return {"key": key, "value": raw, "desc": desc, "kind": kind,
+                "hot": key in hot,
+                "band": [b[0], b[1]] if b else None}
+
+    groups = [{"name": name,
+               "params": [row(k, d) for k, d in items if k in vals]}
+              for name, items in PARAM_GROUPS]
+    # Anything in the file this page does not know about still gets shown —
+    # a parameter the console silently omits is a parameter nobody edits and
+    # nobody notices is wrong.
+    extra = [row(k, "") for k in sorted(vals) if k not in described]
+    if extra:
+        groups.append({"name": "其它 Other", "params": extra})
+    return [g for g in groups if g["params"]]
+
+
+@app.route("/api/params")
+def api_params():
+    from src import db as _db
+    return jsonify({
+        "groups": _param_rows(),
+        "worker_running": bool(_db.get_state().get("worker_strategy_mode")),
+    })
+
+
+@app.route("/api/params", methods=["POST"])
+def api_save_params():
+    """Save the edited parameters, and restart the worker if any need it.
+
+    "Save and it is in use" is only true for the hot twelve on its own. For
+    the rest the file changes and the running worker goes on with the values
+    it read at start — so this restarts it when a cold parameter moved, and
+    says which ones forced that.
+    """
+    from src import runtime_config as rc
+    changes = (request.json or {}).get("params") or {}
+    if not isinstance(changes, dict):
+        return jsonify({"ok": False, "error": "bad payload"}), 400
+
+    current = (rc._read_file() or {}).get("params") or {}
+    known = set(current)
+    hot = set(rc._FILE_KEY.values())
+
+    applied, cold, rejected = [], [], {}
+    for key, val in changes.items():
+        if key not in known:
+            rejected[key] = "not a known parameter"
+            continue
+        new = str(val).strip()
+        if new == str(current.get(key, "")).strip():
+            continue
+        if new == "":
+            rejected[key] = "empty — delete it from the file by hand if intended"
+            continue
+        try:
+            rc.write_setting(key, new, source="param-console")
+        except Exception as e:
+            rejected[key] = str(e)[:200]
+            continue
+        applied.append(key)
+        if key not in hot:
+            cold.append(key)
+
+    restarted = False
+    error = None
+    if cold:
+        try:
+            from src import start_protocol
+            start_protocol.stop("web")
+            start_protocol.start("web")
+            restarted = True
+        except Exception as e:
+            error = (f"参数已保存，但交易循环没能重启({type(e).__name__}: {e})。"
+                     f"这些参数要重启后才生效：{', '.join(cold)}")
+
+    return jsonify({"ok": not rejected and not error, "applied": applied,
+                    "needed_restart": cold, "restarted": restarted,
+                    "rejected": rejected, "error": error})
+
+
+@app.route("/api/settings/key/reveal", methods=["POST"])
+def api_reveal_key():
+    """Hand the panel one credential in the clear, for the eye toggle.
+
+    POST, not GET: a GET would land in the browser history and in any proxy
+    log between here and the tab. The value is returned and never logged —
+    log_redact would scrub it from our own logs, but the point is not to have
+    written it. Auth is the panel's, which is the same gate that already
+    protects changing the trade environment.
+    """
+    k = (request.json or {}).get("key")
+    if k not in SETTING_KEYS:
+        return jsonify({"ok": False, "error": "unknown key"}), 400
+    return jsonify({"ok": True, "key": k, "value": _read_env().get(k, "")})
 
 
 @app.route("/api/settings/toggles")

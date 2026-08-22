@@ -49,9 +49,10 @@ from src import runtime_config as rc                          # noqa: E402
 
 PASS = 0
 FAIL = 0
-def check(name, cond):
+def check(name, cond, detail=""):
     global PASS, FAIL
-    print(("  ok  " if cond else " FAIL ") + name)
+    print(("  ok  " if cond else " FAIL ") + name
+          + (f"   [{detail}]" if detail else ""))
     if cond: PASS += 1
     else: FAIL += 1
 
@@ -190,6 +191,99 @@ check("saving a mode moves the pending value the banner compares against",
       _d["pending"] == "news")
 check("...so once the worker restarts onto it, the banner clears",
       _d["mode"] == _d["pending"])
+
+
+# ── 6. the parameter console ───────────────────────────────────────────────
+# It promises "save and it is in use". That is true of twelve parameters and
+# false of thirty-eight: runtime_config._param() re-reads the file on every
+# call, while everything else is read through `settings`, evaluated once at
+# process start. So the console labels each row and restarts the worker when a
+# cold one moves. The label is the promise, so it must be derived from the
+# same thing the reader uses — never a second list to be kept in step.
+print("\n6  the parameter console tells the truth about what it saved")
+(Path(_TMP) / "config" / "parameters.json").write_text(json.dumps(
+    {"version": 1, "params": {
+        "ENTRY_SCORE_THRESHOLD": "70.0",   # hot
+        "SL_ATR_MULT": "3.5",              # hot
+        "USE_SCALE_OUT": "false",          # cold
+        "TIMEFRAME": "HOUR_1"}}))          # cold
+
+from web.server import _param_rows, PARAM_GROUPS                # noqa: E402
+
+_rows = {pr["key"]: pr for g in _param_rows() for pr in g["params"]}
+_file = json.loads(
+    (Path(_TMP) / "config" / "parameters.json").read_text())["params"]
+
+check("every parameter in the file is shown — none silently omitted",
+      set(_rows) == set(_file), f"{sorted(set(_file) - set(_rows))} missing")
+
+# The label must come from _FILE_KEY, the map _param() actually consults.
+check("the 'takes effect now' label matches what _param() can read",
+      all(_rows[k]["hot"] == (k in set(rc._FILE_KEY.values())) for k in _rows))
+check("...so a hot one is labelled hot", _rows["ENTRY_SCORE_THRESHOLD"]["hot"])
+check("...and a cold one is not", not _rows["USE_SCALE_OUT"]["hot"])
+
+# A parameter the console describes but the file has dropped must not appear
+# as an editable row with an empty value — that would offer to "save" a key
+# into existence with no reader.
+_described = {k for _, items in PARAM_GROUPS for k, _ in items}
+check("described-but-absent parameters are not offered for editing",
+      not (set(_rows) - set(_file)))
+
+# Saving a hot parameter must move what the strategy reads, with no restart.
+_before = rc.entry_threshold()
+_c.post("/api/params", json={"params": {"ENTRY_SCORE_THRESHOLD": "72.5"}})
+check("saving a hot parameter changes what the strategy reads immediately",
+      _before != 72.5 and rc.entry_threshold() == 72.5)
+
+# Saving a cold one must ask for a restart. Stub the protocol — this suite
+# must never touch a real worker.
+import src.start_protocol as _sp                                # noqa: E402
+_calls = []
+_sp.stop = lambda src: _calls.append(("stop", src))
+_sp.start = lambda src: _calls.append(("start", src)) or {"pid": 1, "fence": 1}
+_r = _c.post("/api/params", json={"params": {"USE_SCALE_OUT": "true"}}).get_json()
+check("saving a cold parameter reports which one needed a restart",
+      _r["needed_restart"] == ["USE_SCALE_OUT"])
+check("...and actually restarts the worker",
+      _r["restarted"] and [c[0] for c in _calls] == ["stop", "start"])
+
+_calls.clear()
+_r2 = _c.post("/api/params", json={"params": {"SL_ATR_MULT": "3.4"}}).get_json()
+check("a hot-only save does NOT restart the worker",
+      _r2["applied"] == ["SL_ATR_MULT"] and not _r2["restarted"] and not _calls)
+
+_r3 = _c.post("/api/params", json={"params": {"NOT_A_PARAM": "1"}}).get_json()
+check("an unknown key is refused rather than created",
+      "NOT_A_PARAM" in _r3["rejected"])
+
+
+# ── 7. the API key field ───────────────────────────────────────────────────
+print("\n7  a key is masked in the page and whole behind the eye")
+from web.server import _mask                                    # noqa: E402
+# Named for what it is. check_no_secrets flags a literal assigned to
+# anything called _SECRET — correctly, since it cannot know this one is
+# invented, and the first version of this file was refused for it.
+_FIXTURE_KEY = "SYNTHETIC-CONSOLE-KEY-ABCDEFGH1234"
+_m = _mask(_FIXTURE_KEY)
+check("the mask does not contain the key", _FIXTURE_KEY not in _m)
+check("...and does not contain its middle",
+      _FIXTURE_KEY[4:-4] not in _m and len(_FIXTURE_KEY[4:-4]) > 4)
+check("...but keeps enough of both ends to recognise it",
+      _m.startswith(_FIXTURE_KEY[:4]) and _m.endswith(_FIXTURE_KEY[-4:]))
+check("a short value is masked entirely, not almost entirely",
+      _mask("abcd1234") == "•" * 8)
+check("an unset key masks to nothing", _mask("") == "")
+
+(Path(_TMP) / ".env").write_text(
+    "MOO_TRADE_ENV=SIMULATE\nWEB_PASSWORD=\n"
+    f"TAVILY_API_KEY={_FIXTURE_KEY}\n")
+_rev = _c.post("/api/settings/key/reveal",
+               json={"key": "TAVILY_API_KEY"}).get_json()
+check("the eye returns the whole key", _rev["value"] == _FIXTURE_KEY)
+check("an unknown key cannot be revealed",
+      _c.post("/api/settings/key/reveal",
+              json={"key": "SOMETHING_ELSE"}).status_code == 400)
 
 import shutil                                                  # noqa: E402
 shutil.rmtree(_TMP, ignore_errors=True)
