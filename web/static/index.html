@@ -1078,6 +1078,88 @@ async function loadSettings(){
   loadTradeEnv();
 }
 
+// Restored: loadTradeEnv, loadWebAccess, saveKey, showRestart, toggleKey.
+// They lived between the "AI engine" comment and the "FinBERT" one, and a
+// deletion bounded by those two markers took them along with the block it
+// meant to remove. Nothing referenced them from the deleted code — they were
+// simply in the way, and the settings dialog stopped opening because
+// loadSettings() calls loadWebAccess() on its last line.
+//
+// The lesson is the deletion method: a range chosen by two comments is a
+// range nobody has read.
+async function loadTradeEnv(){
+  try{
+    const d=await api('/api/trade-env'); ENVST=d;
+    const real=d.env_file==='REAL';
+    const liveTxt=d.env_live?(d.env_live==='REAL'?'💵 实盘':'🧪 模拟'):'—';
+    let s=`配置(.env): <b>${real?'💵 实盘 REAL':'🧪 模拟 SIMULATE'}</b> · 运行中: ${liveTxt} · 持仓: ${d.open_positions}`;
+    if(d.pending_restart) s+=' · <b style="color:#d29922">⚠ 待重启生效</b>';
+    $('#envState').innerHTML=s;
+    const btn=$('#btnEnvToggle');
+    btn.textContent=real?'切回模拟 🧪':'切到实盘 💵';
+    btn.className=real?'sm':'danger sm';
+  }catch(e){}
+}
+
+async function loadWebAccess(){
+  try{
+    const w=await api('/api/web-access'); WACC=w;
+    const b=$('#btnLan'), lan=w.mode==='lan';
+    b.textContent=lan?'关闭':'开启';
+    b.style.background=lan?'#2ea043':''; b.style.borderColor=lan?'#2ea043':'';
+    const u=$('#lanUrls');
+    if(lan){
+      let h='✅ 已开启 · 手机打开（需密码）：';
+      if(w.tailscale_ip) h+=`<br>• Tailscale（任何地方）: <b style="color:var(--primary)">http://${w.tailscale_ip}:${w.port}</b>`;
+      if(w.lan_ip)       h+=`<br>• 同一 WiFi: <b style="color:var(--primary)">http://${w.lan_ip}:${w.port}</b>`;
+      u.innerHTML=h; u.classList.remove('hidden');
+    }else{ u.classList.add('hidden'); }
+  }catch(_){}
+}
+
+async function saveKey(k){
+  const el=$('#k_'+k), v=(el.value||'').trim();
+  // A masked field that was never revealed still contains bullets. Writing
+  // those would replace a working credential with a row of dots and the panel
+  // would cheerfully report success.
+  if(el.dataset.masked==='1' && v.includes('\u2022')){
+    alert('这还是马赛克后的值。先点 👁 显示，再修改保存。'); return;
+  }
+  const r=await api('/api/settings/key',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:k,value:v})});
+  alert(r.note||(r.ok?'已保存':'保存失败'));
+  await loadSettings();
+}
+
+function showRestart(){
+  const o=document.createElement('div');
+  o.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#fff;font-family:inherit';
+  o.innerHTML='<div style="text-align:center"><div style="font-size:16px;margin-bottom:8px">正在切换访问模式…</div><div style="font-size:13px;opacity:.7">网页服务重启中，几秒后自动刷新</div></div>';
+  document.body.appendChild(o);
+  let n=0;
+  const t=setInterval(async()=>{
+    n++;
+    try{const r=await fetch('/login',{cache:'no-store'}); if(r.ok){clearInterval(t);location.reload();return;}}catch(_){}
+    if(n>40){clearInterval(t);location.reload();}
+  },1000);
+}
+
+async function toggleKey(k){
+  const el=$('#k_'+k), eye=$('#eye_'+k);
+  if(el.dataset.masked==='1'){
+    try{
+      const r=await api('/api/settings/key/reveal',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})});
+      el.value=r.value||''; el.dataset.masked='0'; eye.textContent='🙈';
+    }catch(e){ alert('读取失败: '+e.message); }
+  }else{
+    // Back to masked means reloading it — the panel does not keep a plaintext
+    // copy sitting in the DOM once you have stopped looking at it.
+    await loadSettings();
+  }
+}
+
 // The AI engine block lived here: a provider dropdown, a model dropdown and
 // an Apply button. Provider is one row on the parameter page now (AI_PROVIDER)
 // and model is the __AI_MODEL__ row beside it, so they save with everything

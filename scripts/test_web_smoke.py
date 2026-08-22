@@ -115,6 +115,117 @@ r = client.get("/")
 check("GET / with TESTING off", r.status_code < 400, f"HTTP {r.status_code}")
 app.config["TESTING"] = True
 
+# ── 6. the page's own script must not call a function nobody defines ───────
+# Twice now a deletion bounded by two comment markers has taken code that had
+# nothing to do with the block being removed. The first cost `provider` and
+# returned Internal Server Error on every page; the second took loadTradeEnv,
+# loadWebAccess, saveKey, showRestart and toggleKey, and the settings dialog
+# stopped opening because loadSettings() calls loadWebAccess() on its last
+# line. Neither was a syntax error, so nothing caught either.
+#
+# A range chosen by two comments is a range nobody has read. This asserts on
+# the reachable call graph instead: every plain `name(...)` call in the page
+# script must resolve to something the script itself declares, or to a browser
+# global. It is a linter's job, and there is no linter here.
+print("\n6  every function the page calls is defined")
+import re                                                      # noqa: E402
+
+_html = (ROOT / "web" / "static" / "index.html").read_text()
+_raw = _html[_html.index("<script>") + 8:_html.rindex("</script>")]
+
+
+def _strip_js(src: str) -> str:
+    """Comments and string literals out, so a word in prose is not a call.
+
+    The first version of this check scanned the raw text and reported
+    OUTAGE(), approval(), gradient() — English inside comments, and CSS
+    inside template strings. Which is the same mistake this repository keeps
+    finding in its own assertions: matching text where structure was meant.
+    There is no JS parser here, so this is the smallest thing that is
+    actually right — a scanner that knows what it is inside of.
+    """
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if c == "/" and nxt == "/":
+            i = src.find("\n", i)
+            if i < 0:
+                break
+            continue
+        if c == "/" and nxt == "*":
+            j = src.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if c in "\"'`":
+            quote, i = c, i + 1
+            while i < n:
+                if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == quote:
+                    i += 1
+                    break
+                # ${...} inside a template literal is real code — keep it.
+                if quote == "`" and src[i] == "$" and src[i + 1:i + 2] == "{":
+                    depth, k = 1, i + 2
+                    while k < n and depth:
+                        depth += (src[k] == "{") - (src[k] == "}")
+                        k += 1
+                    out.append(" " + src[i + 2:k - 1] + " ")
+                    i = k
+                    continue
+                i += 1
+            out.append(" ")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+_script = _strip_js(_raw)
+
+# Declared: function foo(), const foo = ..., let foo = ..., var foo = ...
+_declared = set(re.findall(r'(?:async\s+)?function\s+([A-Za-z_$][\w$]*)', _script))
+_declared |= set(re.findall(r'(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=', _script))
+_declared |= set(re.findall(r'(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(', _script))
+
+# Browser and language globals the script legitimately reaches for.
+_GLOBALS = {
+    "Array", "Boolean", "Date", "Error", "Infinity", "Intl", "JSON", "Map",
+    "Math", "Number", "Object", "Promise", "RegExp", "Set", "String", "Symbol",
+    "URL", "URLSearchParams", "WeakMap", "alert", "atob", "btoa", "clearInterval",
+    "clearTimeout", "confirm", "console", "decodeURIComponent", "document",
+    "encodeURIComponent", "fetch", "history", "isFinite", "isNaN", "localStorage",
+    "location", "navigator", "parseFloat", "parseInt", "prompt", "requestAnimationFrame",
+    "setInterval", "setTimeout", "window", "Event", "CustomEvent", "Image",
+    "FormData", "Blob", "AbortController", "structuredClone", "queueMicrotask",
+    "if", "for", "while", "switch", "catch", "return", "function", "typeof",
+    "new", "await", "do", "else", "try", "throw", "case", "delete", "in", "of",
+    "async", "yield", "void", "instanceof",
+    "translateX", "translateY", "rgba", "rgb", "var", "url", "calc", "scale",
+    "linear", "cubic", "matrix", "translate", "rotate", "blur", "constructor",
+}
+
+# Only PLAIN calls — `foo(` not preceded by a dot (those are methods) and not
+# part of a declaration or a property key.
+_called = set()
+for m in re.finditer(r'(?<![.\w$"\'])([a-zA-Z_$][\w$]*)\s*\(', _script):
+    _called.add(m.group(1))
+
+_missing = sorted(n for n in _called - _declared - _GLOBALS)
+# Anything reached through an inline onclick="" in the HTML must be global too.
+_inline = set(re.findall(r'on(?:click|change|input)="([a-zA-Z_$][\w$]*)\(', _html))
+_missing_inline = sorted(_inline - _declared)
+
+for n in _missing:
+    print(f"        calls {n}() — not declared in the page script")
+for n in _missing_inline:
+    print(f"        inline handler calls {n}() — not declared")
+check(f"no call to an undeclared function ({_missing or 'none'})", not _missing)
+check(f"every inline on* handler resolves ({_missing_inline or 'none'})",
+      not _missing_inline)
+
 shutil.rmtree(_TMP, ignore_errors=True)
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
