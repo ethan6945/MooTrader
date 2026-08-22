@@ -588,7 +588,7 @@ def api_status():
         from src import db as _db
         _ch = _ai.call_health()
         _st = _db.get_state()
-        _watchdog_ok = _st.get("health_gemini_ok")
+        _watchdog_ok = _st.get("health_ai_ok")
         _calls_ok = _st.get("health_ai_calls_ok")
         _has_key = _ai.has_key()
         _down = _has_key and (_watchdog_ok is False or _calls_ok is False)
@@ -988,10 +988,7 @@ def setup_state() -> dict:
     except ValueError:
         port = 11111
 
-    provider = (val("AI_PROVIDER", "deepseek") or "deepseek").lower()
     ai_key = val("DEEPSEEK_API_KEYS") or val("DEEPSEEK_API_KEY")
-    if provider == "gemini":
-        ai_key = val("GEMINI_API_KEYS") or val("GEMINI_API_KEY")
 
     opend_ok = _opend_reachable(host, port)
     steps = [
@@ -1180,7 +1177,6 @@ PARAM_GROUPS = [
     ]),
     ("AI", [
         ("AI_PROVIDER", "AI 供应商。当前只接 deepseek。"),
-        ("GEMINI_MODEL", "Gemini 模型名（当前未使用 Gemini 时无效）。"),
         ("AI_VETO_BLOCKING", "AI 否决是否真的挡下单。false=咨询发生在下单之后，改不了决策。"),
         ("AI_ENSEMBLE_ENABLED", "多模型交叉验证。"),
         ("GAP_SENTINEL_ENABLED", "持仓跳空哨兵。"),
@@ -1196,6 +1192,35 @@ PARAM_GROUPS = [
         ("OPTIONS_STATS_MAX_MULT", "期权因子对仓位的最大放大倍数。"),
     ]),
 ]
+
+
+# A parameter can be alive in the code and inert in this configuration,
+# because another parameter switches the feature it belongs to off. That is
+# not a defect — but a row that looks identical to a live one is, since the
+# owner reads this page to find out what the bot is doing.
+#
+# GEMINI_MODEL was the version of this that WAS a defect: it read as a live
+# setting for a provider ai.PROVIDERS could not select. It is deleted. These
+# are the honest ones, and they say why.
+PARAM_INERT_WHEN = {
+    "TP1_R":                 ("USE_SCALE_OUT", "false"),
+    "TP2_R":                 ("USE_SCALE_OUT", "false"),
+    "NEWS_DRIVEN_ENABLED":   ("STRATEGY_MODE", "technical"),
+    "AUTO_APPLY_PARAMS":     ("PARAMS_FROZEN", "true"),
+    "AUTO_BUDGET_ENABLED":   ("PARAMS_FROZEN", "true"),
+    "OPTIONS_STATS_SIZING":  ("OPTIONS_STATS_ENABLED", "false"),
+    "OPTIONS_STATS_MIN_RVOL": ("OPTIONS_STATS_ENABLED", "false"),
+    "OPTIONS_STATS_MAX_MULT": ("OPTIONS_STATS_SIZING", "false"),
+    "GAP_SENTINEL_AI":       ("GAP_SENTINEL_ENABLED", "false"),
+    "GAP_SENTINEL_AI_INTRADAY": ("GAP_SENTINEL_AI", "false"),
+    "GAP_SENTINEL_AI_MIN_CONF": ("GAP_SENTINEL_AI", "false"),
+    "REGIME_BULL_MULT":      ("SMART_REGIME_ENABLED", "false"),
+    "REGIME_VIX_CALM":       ("SMART_REGIME_ENABLED", "false"),
+    "UNIVERSE_TOP_N":        ("DYNAMIC_UNIVERSE_ENABLED", "false"),
+    "UNIVERSE_ETF_SLOTS":    ("DYNAMIC_UNIVERSE_ENABLED", "false"),
+    "UNIVERSE_EXIT_RANK":    ("DYNAMIC_UNIVERSE_ENABLED", "false"),
+    "UNIVERSE_REFRESH_FREQ": ("DYNAMIC_UNIVERSE_ENABLED", "false"),
+}
 
 
 def _param_rows():
@@ -1219,8 +1244,16 @@ def _param_rows():
             except ValueError:
                 kind = "text"
         b = bounds.get(key)
+        inert = None
+        gate = PARAM_INERT_WHEN.get(key)
+        if gate and str(vals.get(gate[0], "")).strip().lower() == gate[1]:
+            inert = f"{gate[0]}={gate[1]}"
+        # REAL_USE_SOFT_EXITS is gated on the environment, not on a parameter.
+        if key == "REAL_USE_SOFT_EXITS" and \
+                (settings.moo_trade_env or "").upper() == "SIMULATE":
+            inert = "MOO_TRADE_ENV=SIMULATE"
         return {"key": key, "value": raw, "desc": desc, "kind": kind,
-                "hot": key in hot,
+                "hot": key in hot, "inert": inert,
                 "band": [b[0], b[1]] if b else None}
 
     groups = [{"name": name,
@@ -1561,7 +1594,9 @@ def api_inverse_sleeve():
     return jsonify({"ok": False, "error": "expected {enabled}"}), 400
 
 
-# ── AI engine: Gemini ⟷ DeepSeek toggle + live model dropdown ─────────────────
+# ── AI engine: provider + live model dropdown ────────────────────────────────
+# One provider (ai.PROVIDERS). The dropdown stays because the MODEL list is
+# still a live fetch and still worth choosing from.
 # The active provider + model are a RUNTIME db-state override (no restart): the
 # running scheduler reads them per AI call (see src/ai.py). The model list is
 # fetched LIVE from each provider so a newly released model is selectable without
@@ -1581,7 +1616,7 @@ def api_ai_provider():
             "providers": [
                 {"id": p, "label": ai.PROVIDER_LABELS[p],
                  "has_key": ai.has_key(p), "default_model": ai.default_model(p),
-                 "vision": p == "gemini"}
+                 "vision": ai.supports_vision(p)}
                 for p in ai.PROVIDERS
             ],
         })

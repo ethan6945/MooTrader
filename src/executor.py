@@ -1713,7 +1713,7 @@ def _manage_open_trades_locked(client: MooClient) -> list[dict]:
                 continue
             try:
                 # RTH per-scan: earnings layer always; AI only if intraday AI is on
-                # (default off → no per-scan Gemini cost; pre-market job does AI).
+                # (default off → no per-scan AI cost; pre-market job does AI).
                 should_exit, reason = gap_sentinel.assess(
                     symbol, use_ai=_settings.gap_sentinel_ai_intraday)
             except Exception as e:

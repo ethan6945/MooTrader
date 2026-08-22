@@ -1,21 +1,33 @@
-"""Unified AI provider layer — Gemini OR DeepSeek, switchable at runtime.
+"""The one place this system talks to an LLM. DeepSeek, and only DeepSeek.
 
-WHY: Gemini occasionally goes unavailable (quota/outage). This module is the one
-place that talks to an LLM, so the owner can flip the WHOLE system to DeepSeek
-(or back) from the web panel with NO restart, and pick the exact model from a
-live dropdown (so a newly released model is usable without a code change — the
-model is no longer hardcoded to gemini-3.5-flash).
+This said "Gemini OR DeepSeek, switchable at runtime", and had done since
+2026-07-22, when Gemini left PROVIDERS and became unselectable. Everything
+downstream inherited the claim: GEMINI_MODEL stayed in the parameter file as
+an editable setting, GEMINI_API_KEYS stayed in .env, AI_ENSEMBLE_ENABLED
+stayed `true` for a two-engine vote that had already collapsed to one, and
+signal_reporter's `_call_gemini` went on calling DeepSeek under a name that
+said otherwise. The owner reasonably concluded Gemini was still in use.
 
-Provider + model are RUNTIME overrides in db-state (`ai_provider` / `ai_model`),
-falling back to the frozen .env defaults (AI_PROVIDER / GEMINI_MODEL /
-DEEPSEEK_MODEL). The running scheduler reads them per AI call, so a switch made
-in the web UI takes effect on the next scan — same cross-process db-state
-mechanism runtime_config.py uses for param overrides.
+WHAT IS ACTUALLY HERE
+  One provider (PROVIDERS), one transport (_deepseek), no cascade and no
+  ensemble. The MODEL is still a runtime override in db-state (`ai_model`)
+  over the .env default, fetched live so a newly released model is usable
+  without a code change. The scheduler reads it per call, so a change in the
+  web panel lands on the next scan with no restart.
 
-Keys stay in .env (GEMINI_API_KEYS comma-rotated; DEEPSEEK_API_KEYS/_KEY).
+  Keys stay in .env (DEEPSEEK_API_KEYS comma-rotated, or DEEPSEEK_API_KEY).
 
-DeepSeek is text-only (no vision, no google_search grounding). Callers that need
-those gate on `supports_vision()` / pass `search=` (honoured only on Gemini).
+  DeepSeek is text-only. supports_vision() returns False for every provider
+  and the `image` / `search` arguments are accepted and ignored — the callers
+  that pass them already gate on it, and removing the parameters would be a
+  change to those callers rather than to this fact.
+
+TO ADD A PROVIDER BACK
+  PROVIDERS, PROVIDER_LABELS, _FALLBACK_MODELS, provider_keys, default_model,
+  and a transport beside _deepseek. Deliberately more than a one-line change:
+  the previous arrangement made re-adding cheap by leaving the dead half in
+  place, and the cost of that was a month of configuration describing a
+  provider nobody was using.
 """
 from __future__ import annotations
 
@@ -26,22 +38,21 @@ import time
 import requests
 
 from . import db
-from .config import settings, GEMINI_FREE_CASCADE
+from .config import settings
 
 log = logging.getLogger(__name__)
 
-# DeepSeek-only (2026-07-22): Gemini removed as a selectable engine. The
-# helper functions (_gemini, _list_gemini, the ensemble's gemini branch) stay
+# One provider. The block that stood here said the Gemini helpers "stay
 # defined but unreachable — keeping them makes re-adding Gemini a one-line
-# revert. Consequences of the switch: the entry validator runs single-engine
-# (DeepSeek), and chart-pattern vision (Gemini-only) no longer runs.
+# change". They are gone now: that arrangement is what left GEMINI_MODEL in
+# the parameter file, GEMINI_API_KEYS in .env, and AI_ENSEMBLE_ENABLED true
+# for an ensemble that had collapsed to one engine.
 PROVIDERS = ("deepseek",)
 PROVIDER_LABELS = {"deepseek": "DeepSeek"}
 
 # Static fallbacks for the model dropdown when a live fetch fails (offline / no
 # key). Kept tiny and current; the live fetch is the source of truth.
 _FALLBACK_MODELS = {
-    "gemini": ["gemini-3.5-flash", "gemini-3.5-pro", "gemini-2.5-flash"],
     "deepseek": ["deepseek-v4-flash", "deepseek-v4-pro"],
 }
 
@@ -91,21 +102,22 @@ def _state() -> dict:
 
 def active_provider() -> str:
     """Effective provider — db-state override else .env default. Always one of
-    PROVIDERS (an unknown/typo value falls back to gemini)."""
+    PROVIDERS. Anything else — a typo, or the retired "gemini" — is
+    deepseek."""
     p = (_state().get("ai_provider") or settings.ai_provider or "deepseek")
     p = str(p).strip().lower()
     return p if p in PROVIDERS else "deepseek"
 
 
 def default_model(provider: str) -> str:
-    return settings.deepseek_model if provider == "deepseek" else settings.gemini_model
+    return settings.deepseek_model
 
 
 def active_model(provider: str | None = None) -> str:
     """Effective model for the active provider — db-state `ai_model` override
     else the provider's .env default. The db override is provider-scoped: it is
     ignored if it doesn't look like it belongs to the current provider, so a
-    leftover Gemini model never leaks into a DeepSeek run."""
+    model left over from another one never leaks into a DeepSeek run."""
     provider = provider or active_provider()
     override = _state().get("ai_model")
     if override:
@@ -119,7 +131,7 @@ def active_model(provider: str | None = None) -> str:
 # ── keys ─────────────────────────────────────────────────────────────────────
 def provider_keys(provider: str | None = None) -> list[str]:
     provider = provider or active_provider()
-    return list(settings.deepseek_keys if provider == "deepseek" else settings.gemini_keys)
+    return list(settings.deepseek_keys)
 
 
 def has_key(provider: str | None = None) -> bool:
@@ -127,24 +139,22 @@ def has_key(provider: str | None = None) -> bool:
 
 
 def supports_vision(provider: str | None = None) -> bool:
-    """Only Gemini is multimodal. Vision callers must skip when this is False."""
-    return (provider or active_provider()) == "gemini"
+    """No configured provider is multimodal. Kept because callers gate on it.
+
+    It read `== "gemini"`. Gemini stopped being a selectable provider on
+    2026-07-22 and the name went on implying a capability the system has not
+    had since.
+    """
+    return False
 
 
 def model_cascade(provider: str | None = None) -> list[str]:
-    """Models tried in order for one call. Gemini: active model first, then the
-    free-tier floor (so a transient 429 on the chosen model still falls through
-    to a working one). DeepSeek: just the active model (no cascade)."""
-    provider = provider or active_provider()
-    primary = active_model(provider)
-    if provider == "deepseek":
-        return [primary]
-    out, seen = [], set()
-    for m in [primary] + list(GEMINI_FREE_CASCADE):
-        if m and m not in seen:
-            seen.add(m)
-            out.append(m)
-    return out
+    """Models tried in order for one call. DeepSeek has no cascade.
+
+    The fallback list this walked was the Gemini free tier — a floor to drop
+    to on a 429. There is no second provider to fall to now.
+    """
+    return [active_model(provider or active_provider())]
 
 
 # ── generation ───────────────────────────────────────────────────────────────
@@ -203,8 +213,9 @@ def generate(prompt: str, *, temperature: float | None = None,
     if no key is configured or every key/model is exhausted; callers keep their
     own try/except neutral defaults.
 
-    image    — PNG bytes for a vision call (Gemini only; ignored on DeepSeek).
-    search   — enable google_search grounding (Gemini only; ignored elsewhere).
+    image    — accepted and ignored. No configured provider is multimodal;
+               callers gate on supports_vision(), which is False.
+    search   — accepted and ignored, same reason.
     """
     provider = active_provider()
     keys = provider_keys(provider)
@@ -215,11 +226,7 @@ def generate(prompt: str, *, temperature: float | None = None,
         # different fixes.
         raise RuntimeError(f"no {PROVIDER_LABELS[provider]} key configured")
     try:
-        if provider == "deepseek":
-            out = _deepseek(prompt, keys, temperature=temperature)
-        else:
-            out = _gemini(prompt, keys, temperature=temperature, image=image,
-                          search=search)
+        out = _deepseek(prompt, keys, temperature=temperature)
     except Exception as e:
         _record_outcome(False, str(e))
         raise
@@ -233,112 +240,6 @@ def generate_text(prompt: str, **kw) -> str:
 
 
 # ── P1-1 (2026-06-26): Dual-provider ensemble voting ─────────────────────────
-def generate_ensemble(prompt: str, *,
-                      temperature: float | None = None) -> dict:
-    """Call BOTH Gemini AND DeepSeek in parallel, return a consensus result.
-
-    Returns:
-      {
-        "text": str,                     # merged or dominant text
-        "verdict": "consensus" | "single" | "conflict" | "unavailable",
-        "gemini": {"text": str, "model": str} | None,
-        "deepseek": {"text": str, "model": str} | None,
-        "confidence": 0-100,            # 100=consensus, 60=single, 30=conflict
-      }
-
-    When only one provider has keys, falls back to single-provider (verdict=
-    'single', confidence=60). On total failure returns verdict='unavailable'.
-    """
-    import concurrent.futures
-
-    # "gemini" is no longer a provider → the ensemble collapses to single-engine
-    # DeepSeek (verdict="single", confidence 60). Gate on PROVIDERS so re-adding
-    # Gemini restores the dual-engine consensus automatically.
-    gemini_ok = "gemini" in PROVIDERS and has_key("gemini")
-    deepseek_ok = has_key("deepseek")
-    result: dict = {
-        "text": "",
-        "verdict": "unavailable",
-        "gemini": None,
-        "deepseek": None,
-        "confidence": 0,
-    }
-
-    # ── Single-provider fallback ──
-    if not gemini_ok and not deepseek_ok:
-        result["text"] = "no AI keys configured"
-        return result
-
-    if gemini_ok and not deepseek_ok:
-        try:
-            text, model = _gemini(prompt, provider_keys("gemini"),
-                                  temperature=temperature, image=None, search=False)
-            result.update(text=text, verdict="single", gemini={"text": text, "model": model},
-                          confidence=60)
-        except Exception as e:
-            result["text"] = f"Gemini unavailable: {e}"
-        return result
-
-    if deepseek_ok and not gemini_ok:
-        try:
-            text, model = _deepseek(prompt, provider_keys("deepseek"),
-                                    temperature=temperature)
-            result.update(text=text, verdict="single",
-                          deepseek={"text": text, "model": model}, confidence=60)
-        except Exception as e:
-            result["text"] = f"DeepSeek unavailable: {e}"
-        return result
-
-    # ── Both available → parallel calls ──
-    def _call_gemini():
-        try:
-            t, m = _gemini(prompt, provider_keys("gemini"),
-                           temperature=temperature, image=None, search=False)
-            return {"text": t, "model": m}
-        except Exception as e:
-            log.warning("Gemini ensemble call failed: %s", e)
-            return None
-
-    def _call_deepseek():
-        try:
-            t, m = _deepseek(prompt, provider_keys("deepseek"),
-                             temperature=temperature)
-            return {"text": t, "model": m}
-        except Exception as e:
-            log.warning("DeepSeek ensemble call failed: %s", e)
-            return None
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        f_g = ex.submit(_call_gemini)
-        f_d = ex.submit(_call_deepseek)
-        g_res = f_g.result(timeout=75)
-        d_res = f_d.result(timeout=75)
-
-    result["gemini"] = g_res
-    result["deepseek"] = d_res
-
-    # ── Consensus logic ──
-    if g_res and d_res:
-        # Both succeeded — try to extract verdicts and compare
-        g_verdict = _extract_verdict(g_res["text"])
-        d_verdict = _extract_verdict(d_res["text"])
-        if g_verdict == d_verdict:
-            result.update(text=g_res["text"], verdict="consensus", confidence=90)
-        else:
-            # Conflict — default to pass but flag it
-            result.update(
-                text=(f"CONFLICT: Gemini={g_verdict}, DeepSeek={d_verdict}. "
-                      f"Gemini: {g_res['text'][:200]}\nDeepSeek: {d_res['text'][:200]}"),
-                verdict="conflict", confidence=30)
-    elif g_res:
-        result.update(text=g_res["text"], verdict="single", confidence=60)
-    elif d_res:
-        result.update(text=d_res["text"], verdict="single", confidence=60)
-    else:
-        result.update(text="both providers unavailable", verdict="unavailable",
-                      confidence=0)
-
-    return result
 
 
 def _extract_verdict(text: str) -> str:
@@ -356,72 +257,14 @@ def _extract_verdict(text: str) -> str:
     return "unknown"
 
 
-# Network timeouts (ms) so a slow/geo-blocked Gemini call fails fast instead of
+# Network timeouts (ms) so a slow or blocked call fails fast instead of
 # hanging the scheduler or the web dropdown.
 _GEN_TIMEOUT_MS = 60_000
 _LIST_TIMEOUT_MS = 10_000
 
 
-def _gemini_client(key: str, timeout_ms: int):
-    from google import genai
-    from google.genai import types
-    return genai.Client(api_key=key,
-                        http_options=types.HttpOptions(timeout=timeout_ms))
 
 
-def _gemini(prompt, keys, *, temperature, image, search) -> tuple[str, str]:
-    from google.genai import types
-
-    contents = prompt
-    if image is not None:
-        part = types.Part.from_bytes(data=image, mime_type="image/png")
-        contents = [part, prompt]
-
-    # Build the per-call config(s). When google_search grounding is requested we
-    # try WITH tools first, then fall back to a plain call (older models reject
-    # tools) — mirrors the old signal_reporter behaviour.
-    base_cfg: dict = {}
-    if temperature is not None:
-        base_cfg["temperature"] = temperature
-    cfgs: list[dict | None] = []
-    if search:
-        sc = dict(base_cfg)
-        sc["tools"] = [{"google_search": {}}]
-        cfgs.append(sc)
-    cfgs.append(base_cfg or None)
-
-    def _one(client, model_name, cfg) -> tuple[str | None, bool, Exception | None]:
-        """One (model, key, cfg) attempt with a single 503 retry.
-        Returns (text | None, is_quota, err)."""
-        for attempt in range(2):
-            try:
-                resp = client.models.generate_content(
-                    model=model_name, contents=contents,
-                    **({"config": cfg} if cfg else {}))
-                return (resp.text or "").strip(), False, None
-            except Exception as e:  # noqa: BLE001
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    return None, True, e            # quota → caller tries next key
-                if attempt == 0 and any(
-                        x in err for x in ("503", "500", "UNAVAILABLE")):
-                    time.sleep(4)
-                    continue
-                return None, False, e               # other error → next cfg/key
-        return None, False, None
-
-    last_err: Exception | None = None
-    for model_name in model_cascade("gemini"):
-        for key in keys:
-            client = _gemini_client(key, _GEN_TIMEOUT_MS)
-            for cfg in cfgs:                        # search-on cfg first, then plain
-                text, is_quota, err = _one(client, model_name, cfg)
-                if text:
-                    return text, model_name
-                last_err = err or last_err
-                if is_quota:
-                    break                           # next key (skip remaining cfgs)
-    raise RuntimeError(f"Gemini exhausted: {last_err}")
 
 
 def _deepseek(prompt, keys, *, temperature) -> tuple[str, str]:
@@ -474,25 +317,13 @@ def list_models(provider: str, *, key: str | None = None) -> list[str]:
     key = key or (provider_keys(provider)[0] if provider_keys(provider) else None)
     if not key:
         raise RuntimeError(f"no {PROVIDER_LABELS[provider]} key to list models")
-    return _list_gemini(key) if provider == "gemini" else _list_deepseek(key)
+    return _list_deepseek(key)
 
 
 def fallback_models(provider: str) -> list[str]:
     return list(_FALLBACK_MODELS.get(provider, []))
 
 
-def _list_gemini(key: str) -> list[str]:
-    client = _gemini_client(key, _LIST_TIMEOUT_MS)
-    out = []
-    for m in client.models.list():
-        actions = getattr(m, "supported_actions", None) or []
-        if "generateContent" not in actions:
-            continue
-        name = (getattr(m, "name", "") or "").split("/")[-1]
-        if name:
-            out.append(name)
-    # Newest-looking first, deduped.
-    return sorted(set(out), reverse=True)
 
 
 def _list_deepseek(key: str) -> list[str]:

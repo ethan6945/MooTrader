@@ -6,9 +6,9 @@ never know until trades quietly degrade:
   • broker options market-data subscription — if it lapses (or OpenD hasn't
     refreshed the entitlement), options_flow can't fetch chains/snapshots; the
     API returns "No permission ...".
-  • Gemini API balance/quota — if the key is exhausted, every AI layer (smart
+  • AI provider balance/quota — if the key is exhausted, every AI layer (smart
     exit / sentiment / pattern vision / news veto) fail-safes to neutral/hold.
-    The model cascade is single-model now (gemini-3.5-flash, no silent lite
+    The model cascade is single-model now (no silent lite
     downgrade), so an exhausted key = AI effectively OFF until topped up.
 
 run() probes both and Telegrams ONLY on a STATE CHANGE (ok→fail and fail→
@@ -28,7 +28,9 @@ log = logging.getLogger(__name__)
 
 _K_OPT = "health_options_ok"
 _K_OPT_STATS = "health_options_stats_ok"
-_K_GEM = "health_gemini_ok"
+# Named for the provider it probes, which is whichever ai.active_provider()
+# returns — not for Gemini, which it stopped probing on 2026-07-22.
+_K_GEM = "health_ai_ok"
 _K_AI_CALLS = "health_ai_calls_ok"
 
 # Consecutive REAL call failures before the runtime ledger is called bad. The
@@ -40,7 +42,7 @@ _CALL_FAIL_THRESHOLD = 3
 
 # Debounce: a transition must be seen on this many CONSECUTIVE checks before we
 # flip state + alert. Stops a flaky/intermittent failure (e.g. an occasional
-# Gemini geo-block) from spamming fail/recover messages. A first-ever BAD reading
+# provider geo-block) from spamming fail/recover messages. A first-ever BAD reading
 # still alerts immediately (so a fresh start surfaces a real outage now).
 _STREAK_NEEDED = 2
 
@@ -96,7 +98,7 @@ def check_options(client, symbol: str = "AAPL") -> tuple[str, str]:
 
 
 def check_ai() -> tuple[str, str]:
-    """Probe the ACTIVE AI provider (Gemini or DeepSeek). ('ok'|'bad'|'skip',
+    """Probe the ACTIVE AI provider. ('ok'|'bad'|'skip',
     detail). 'bad' ONLY on owner-actionable failures (quota/balance, invalid key,
     geo-block). Transient 503 / no-key → 'skip'."""
     from . import ai
@@ -131,7 +133,7 @@ def check_ai() -> tuple[str, str]:
 
 
 def run(client=None) -> None:
-    """Probe options + Gemini and fire edge-triggered Telegram alerts. Never
+    """Probe options + the AI provider and fire edge-triggered Telegram alerts. Never
     raises. Disabled via HEALTH_CHECK_ENABLED=false."""
     if not settings.health_check_enabled:
         return
@@ -190,7 +192,7 @@ def run(client=None) -> None:
                         " call_rvol 因子将静默失效（降级为无意见，不会误下单）。"),
               recover_msg="✅ 期权聚合数据已恢复，call_rvol 因子重新可用。")
 
-    # --- AI provider (Gemini / DeepSeek) ---
+    # --- AI provider ---
     try:
         from . import ai
         provider_label = ai.PROVIDER_LABELS.get(ai.active_provider(), "AI")

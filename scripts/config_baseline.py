@@ -264,6 +264,69 @@ def check_budget_baseline(state: dict, env: dict) -> list[dict]:
     return out
 
 
+def check_no_constant_false_gates(_env: dict) -> list[dict]:
+    """A parameter whose readers all sit behind a constant-false gate.
+
+    check_parameter_file_is_live asks whether anything READS a key. That is
+    too weak, and GEMINI_MODEL walked through it: settings.gemini_model was
+    read by ai.default_model(), on the branch `provider == "deepseek" else
+    gemini_model` — a branch active_provider() can never take, because
+    ai.PROVIDERS is ("deepseek",). Read, and unreachable. It then appeared in
+    the parameter console as a live setting, which is what the owner saw.
+
+    "Something reads it" is not "changing it does something".
+
+    Detecting reachability in general is not on the table. Detecting THIS
+    shape is: a module-level constant collection, and a membership test
+    against it that decides whether a parameter's reader runs. So this finds
+    the constants and reports the literals that can never be members.
+    """
+    out = []
+    for pyf in sorted((ROOT / "src").glob("*.py")):
+        try:
+            tree = ast.parse(pyf.read_text())
+        except (OSError, SyntaxError):
+            continue
+        consts = {}
+        for n in tree.body:
+            if not isinstance(n, ast.Assign) or len(n.targets) != 1:
+                continue
+            t = n.targets[0]
+            if not (isinstance(t, ast.Name) and t.id.isupper()):
+                continue
+            if isinstance(n.value, (ast.Tuple, ast.List, ast.Set)):
+                vals = [e.value for e in n.value.elts
+                        if isinstance(e, ast.Constant)]
+                if vals and all(isinstance(v, str) for v in vals):
+                    consts[t.id] = set(vals)
+        if not consts:
+            continue
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Compare) and len(n.ops) == 1
+                    and isinstance(n.ops[0], ast.In)):
+                continue
+            right = n.comparators[0]
+            if not (isinstance(right, ast.Name) and right.id in consts):
+                continue
+            left = n.left
+            if not (isinstance(left, ast.Constant) and isinstance(left.value, str)):
+                continue
+            if left.value in consts[right.id]:
+                continue
+            out.append({
+                "severity": "high", "key": f"{pyf.name}:{n.lineno}",
+                "what": (f'`"{left.value}" in {right.id}` is always False — '
+                         f"{right.id} holds {sorted(consts[right.id])}"),
+                "why": ("Everything this gate protects is unreachable, "
+                        "including any setting only read inside it. That is "
+                        "how GEMINI_MODEL survived as an editable parameter "
+                        "for a provider that could not be selected."),
+                "action": ("delete the branch and whatever only it reads, or "
+                           f"put {left.value!r} back in {right.id}"),
+            })
+    return out
+
+
 def check_one_store_per_key(env: dict) -> list[dict]:
     """No key may live in both .env and config/parameters.json.
 
@@ -383,6 +446,7 @@ def collect() -> dict:
     findings += check_risk_switches(env, example)
     findings += check_parameter_file_is_live(env)
     findings += check_one_store_per_key(env)
+    findings += check_no_constant_false_gates(env)
 
     for key in EXAMPLE_MUST_MATCH:
         have, want = env.get(key), example.get(key)

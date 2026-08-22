@@ -13,7 +13,7 @@ Two layers, evaluated per held symbol each scan:
     GAP_EXIT_EARNINGS_DAYS, exit. Earnings is the biggest single-name gap source
     and the date is KNOWN, so no AI guess is needed. This is the reliable layer.
 
-  Layer 2 — AI news (probabilistic, secondary, FAIL-SAFE): Gemini + Tavily judge
+  Layer 2 — AI news (probabilistic, secondary, FAIL-SAFE): the model + Tavily judge
     fresh PUBLIC bad news (downgrade / lawsuit / guidance cut / sector shock) and
     sell only on a high-confidence verdict. It CANNOT foresee an earnings surprise
     (that's a coin-flip), and on any error/quota/doubt it HOLDS — a real position

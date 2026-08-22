@@ -18,7 +18,6 @@
   ],
   "version": 1,
   "params": {
-    "GEMINI_MODEL": "gemini-3.5-flash",
     "AI_PROVIDER": "deepseek",
     "ACCOUNT_USD": "10000",
     "RISK_PER_TRADE": "0.05",
@@ -53,7 +52,6 @@
     "AUTO_APPLY_PARAMS": "false",
     "USE_BREAKEVEN_STOP": "true",
     "AUTO_BUDGET_ENABLED": "false",
-    "AI_ENSEMBLE_ENABLED": "true",
     "BREADTH_BLOCKING": "false",
     "SMART_REGIME_ENABLED": "true",
     "OPTIONS_STATS_ENABLED": "true",

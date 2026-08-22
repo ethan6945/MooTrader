@@ -65,7 +65,7 @@ PHASE_ALLOWS_REAL = False        # flipped only when OpenD authorization lands
 
 # Application variables the child must NOT inherit. It reads them from the
 # authoritative .env instead, so a parent holding a stale copy cannot leak it in.
-_APP_ENV_PREFIXES = ("MOO_", "MOOMOO_", "OPEND_", "TELEGRAM_", "GEMINI_",
+_APP_ENV_PREFIXES = ("MOO_", "MOOMOO_", "OPEND_", "TELEGRAM_",
                      "DEEPSEEK_", "TAVILY_", "FINNHUB_", "WEB_", "AI_",
                      "AUTO_", "MAX_", "MIN_", "ENTRY_", "TP_", "SL_", "DD_",
                      "RISK_", "SCAN_", "UNIVERSE_", "NEWS_", "PATTERN_",

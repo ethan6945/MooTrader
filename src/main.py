@@ -696,11 +696,11 @@ def scan_once() -> None:
         #   • ML:    "did similar setups historically work out?"    → size
         #   • AI:    "is there fresh news that contradicts this?"   → veto
         #
-        # AI budget: Gemini 2.5-flash free tier is 50 RPM / 1500 RPD. With 12
+        # AI budget: DeepSeek's rate ceiling. With 12
         # scans/day (trade-phase only) × budget=5 = 60 calls/day → well under
         # quota. Previous budget=2 was leaving most candidates unchecked.
         ai_budget = 10
-        # Per-scan budget for the Phase 2B sentiment Gemini calls.
+        # Per-scan budget for the Phase 2B sentiment AI calls.
         sentiment_budget = settings.sentiment_budget
         # News-driven mode gets its own, larger budget: here a name that doesn't
         # get read cannot trade at all, so running dry stops the scan finding
@@ -828,7 +828,7 @@ def scan_once() -> None:
             # VIX/DD sizing path).
             conviction = setup_conviction
 
-            # --- AI verdict (Gemini + Tavily news, independent advisory) ---
+            # --- AI verdict (DeepSeek + Tavily news, independent advisory) ---
             # Stacking add-ons skip AI consult — we've already done the diligence
             # on the original entry, and the AI budget should reserve for fresh
             # names where context might differ. (Audit 2026-05-28.)
@@ -1078,7 +1078,7 @@ def scan_once() -> None:
                                     # 2026-06-11: persist the numeric advisory
                                     # verdict — without it no AI-vs-outcome
                                     # calibration is possible (keep/drop the
-                                    # Gemini layer needs ~50 scored trades).
+                                    # AI layer needs ~50 scored trades).
                                     "ai_score": ai_score,
                                     "ai_pass": bool(ai_pass),
                                     "setup_quality": "marginal" if marginal_setup else "full",
@@ -1453,9 +1453,9 @@ def _weekly_self_review_job() -> None:
                  si.get("kelly_proposed"), si.get("universe_dropped_proposed"))
     except Exception as e:
         log.warning("self-improve proposals failed: %s", e)
-    # Autonomous Gemini optimizer — INDEPENDENT step so a review/notify failure
+    # Autonomous AI optimizer — INDEPENDENT step so a review/notify failure
     # doesn't silently skip the one auto path that proposes param changes. Reuses
-    # this run's report, else recomputes. No-op until GEMINI_API_KEYS is set.
+    # this run's report, else recomputes. No-op without an AI key.
     try:
         from . import optimizer_ai
         rev = report if report is not None else self_review.weekly_review(days=7)
@@ -1467,10 +1467,10 @@ def _weekly_self_review_job() -> None:
             # "待批准", which misled the owner when auto-apply was on.
             if settings.auto_apply_params:
                 notifier.send(
-                    f"🤖 Gemini 优化器: {n} 条参数变更通过了回测验证 — "
+                    f"🤖 AI 优化器: {n} 条参数变更通过了回测验证 — "
                     f"边界内的已自动应用(见上方单独通知), 越界的才会出现在审批队列。")
             else:
-                notifier.send(f"🤖 Gemini 优化器提了 {n} 条参数建议 — 待你在 GUI/CLI/Telegram 批准。")
+                notifier.send(f"🤖 AI 优化器提了 {n} 条参数建议 — 待你在 GUI/CLI/Telegram 批准。")
     except Exception as e:
         log.warning("weekly optimizer step failed: %s", e)
     # Bookkeeping — also independent so it always runs.
@@ -2142,9 +2142,9 @@ def run_loop() -> None:
     sched.add_job(_watchdog_job, "cron", day_of_week="mon-fri", hour=17, minute=30,
                   coalesce=True, misfire_grace_time=3600, max_instances=1)
 
-    # API/subscription health watchdog: probe broker options data + Gemini every
+    # API/subscription health watchdog: probe broker options data + the AI provider every
     # HEALTH_CHECK_INTERVAL_MIN min and Telegram the owner ONLY on a state change
-    # (subscription lapsed / Gemini quota out → top up). Owner-requested; edge-
+    # (subscription lapsed / AI quota out → top up). Owner-requested; edge-
     # triggered so no spam. Also runs once at startup for an immediate status.
     def _api_health_job():
         try:

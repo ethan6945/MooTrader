@@ -7,7 +7,7 @@ effect (runtime override, no restart). This is the feedback-铁律 implementatio
 of requirement #8 — the system can optimize itself, but every change passes
 through the owner.
 
-Uses the same provider + model the rest of the system runs on (Gemini or
+Uses the same provider + model the rest of the system runs on (
 DeepSeek, switchable from the web panel — see src/ai.py). With no AI key
 configured this is a no-op (the rules-based suggestions in self_review still run).
 """
@@ -55,7 +55,7 @@ def _current_params() -> dict:
 
 
 def _call_ai(review: dict) -> list[dict]:
-    """Ask the active AI provider (Gemini or DeepSeek) for parameter-change
+    """Ask the active AI provider for parameter-change
     proposals. Returns parsed proposals or []. No-op when no key is configured."""
     if not ai.has_key():
         return []

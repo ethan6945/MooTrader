@@ -507,16 +507,43 @@ def _write_env_raw(key: str, value: str) -> None:
 
 
 def _strip_env_key(key: str) -> None:
-    """Remove a key's line from .env — it has a home, and this is not it."""
+    """Remove a key's line from .env — it has a home, and this is not it.
+
+    Takes the key's trailing comment block with it. A `.env` line often
+    carries an indented rationale on the lines below; removing only the
+    assignment left those floating with nothing to explain, and after a dozen
+    strips the file was mostly orphaned commentary and blank runs. One of
+    those orphans read "the system is unified on Gemini 3.5 Flash" long after
+    it was not — which is the file someone opens to find out what the bot
+    uses.
+    """
     p = _env_path()
     if not p.exists():
         return
     lines = p.read_text().splitlines()
-    keep = [l for l in lines
-            if not (l.strip().startswith(key + "=")
-                    or l.strip().startswith("#" + key + "="))]
-    if len(keep) != len(lines):
-        p.write_text("\n".join(keep) + "\n")
+    out, i, hit = [], 0, False
+    while i < len(lines):
+        st = lines[i].strip()
+        if st.startswith(key + "=") or st.startswith("#" + key + "="):
+            hit = True
+            i += 1
+            # Its continuation comments: INDENTED # lines directly below. A
+            # comment at column 0 introduces the next thing, not this one.
+            while i < len(lines) and lines[i][:1] in (" ", "\t") \
+                    and lines[i].strip().startswith("#"):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    if not hit:
+        return
+    # Collapse the blank runs the removals leave behind.
+    tidy, blanks = [], 0
+    for l in out:
+        blanks = blanks + 1 if not l.strip() else 0
+        if blanks <= 1:
+            tidy.append(l)
+    p.write_text("\n".join(tidy).rstrip() + "\n")
 
 
 def _now_iso() -> str:

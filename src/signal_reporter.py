@@ -566,9 +566,14 @@ def _score_bar(score: int) -> str:
     return emoji * s + "⬜" * (10 - s) + f" *{s}/10*"
 
 
-# ─── GEMINI AI (盘前 only) ────────────────────────────────────────────────────
+# ─── AI (盘前 only) ──────────────────────────────────────────────────────────
+# These were _call_ai / _ai_signal / _call_ai_text. Every one of
+# them calls ai.generate(), which dispatches through ai.active_provider() —
+# DeepSeek since 2026-07-22. The names said Gemini and the behaviour was
+# DeepSeek, which is how the owner came to believe a provider was still in
+# use that had been gone for a month.
 
-def _call_gemini(prompt: str) -> Optional[dict]:
+def _call_ai(prompt: str) -> Optional[dict]:
     if not ai.has_key():
         return None
     try:
@@ -583,7 +588,7 @@ def _call_gemini(prompt: str) -> Optional[dict]:
         return None
 
 
-def _gemini_signal(tech: dict, ticker_news: list, macro_news: list) -> dict:
+def _ai_signal(tech: dict, ticker_news: list, macro_news: list) -> dict:
     news_text  = "\n".join(
         f"- {n['title'][:80]}: {n['content'][:100]}" for n in ticker_news[:4]
     ) or "无近期新闻"
@@ -617,7 +622,7 @@ def _gemini_signal(tech: dict, ticker_news: list, macro_news: list) -> dict:
   "reason":"35字内核心理由","news_impact":"20字内","catalyst":"20字内",
   "risk_level":"低/中/高","confidence":"高/中/低","summary":"40字内执行建议"}}"""
 
-    result = _call_gemini(prompt)
+    result = _call_ai(prompt)
     if result:
         log.info("premarket AI [%s] %s → %s (%s/10)",
                  result.get("_model", "?"), tech["ticker"],
@@ -900,8 +905,8 @@ _CLOSE_FORMAT = """输出格式（Telegram 紧凑卡片，纯文本+emoji，总�
 💡 明日启示: <对明天操作最有价值的一条经验，≤50字>"""
 
 
-def _call_gemini_text(prompt: str, use_search: bool = True) -> Optional[str]:
-    """像 _call_gemini，但返回纯文本（简报卡片）。在 Gemini 上尽量启用
+def _call_ai_text(prompt: str, use_search: bool = True) -> Optional[str]:
+    """像 _call_ai，但返回纯文本（简报卡片）。曾在 Gemini 上启用
     google_search grounding 让模型自己补全最新宏观/个股新闻（不支持 tools 的
     模型自动降级为无搜索）。DeepSeek 无 grounding，按纯文本调用。"""
     if not ai.has_key():
@@ -1100,7 +1105,7 @@ def run_daily_brief(phase: str = "premarket") -> None:
                 prompt = _brief_prompt(sym, d, phase, prev_brief, first_hour,
                                        open1h_brief=saved.get("open1h_brief"),
                                        day=day)
-                brief = _call_gemini_text(prompt)
+                brief = _call_ai_text(prompt)
                 if not brief:
                     log.warning("daily brief: AI unavailable for %s", sym)
                     notifier.send(f"⚠️ {sym} 简报生成失败（AI 不可用）")
@@ -1125,7 +1130,7 @@ def run_daily_brief(phase: str = "premarket") -> None:
 # ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
 def run_premarket() -> None:
-    """盘前全面分析：08:30 ET 触发，15-min K线 + Gemini AI + 完整卡片。"""
+    """盘前全面分析：08:30 ET 触发，15-min K线 + AI + 完整卡片。"""
     watchlist = load_watchlist()
     if not watchlist:
         log.info("signal_reporter: watchlist empty")
@@ -1139,7 +1144,7 @@ def run_premarket() -> None:
 
     notifier.send(
         f"🌅 *盘前分析* | {ts}\n"
-        f"15-min K线 · Gemini AI · 近3天新闻\n"
+        f"15-min K线 · AI · 近3天新闻\n"
         f"共 {len(watchlist)} 支，按 AI 评分高→低"
     )
 
@@ -1187,7 +1192,7 @@ def run_premarket() -> None:
                 insider=insider_data,
                 spread_pct=spread_pct,
             )
-            ai = _gemini_signal(tech, ticker_news, macro_news)
+            ai = _ai_signal(tech, ticker_news, macro_news)
             results.append({
                 "tech": tech, "ai": ai,
                 "context_block": context_block,

@@ -209,6 +209,8 @@
   .ptag.hot{color:#3fb950;border-color:#238636}
   .pband{color:var(--muted);font-size:10.5px;margin-left:6px}
   .prow.changed{background:rgba(210,153,34,.07)}
+  .prow.inert .pk b,.prow.inert .setdesc{opacity:.55}
+  .pinert{font-size:10.5px;color:#d29922;margin-left:6px;white-space:nowrap}
   .prow.changed .pk b::after{content:" ●";color:#d29922}
   .psave{position:sticky;bottom:0;background:var(--card-solid);border-top:1px solid var(--border2);
          padding:12px 0 2px;display:flex;align-items:center;gap:12px;justify-content:space-between}
@@ -296,7 +298,16 @@
     <div class="spacer"></div>
     <button class="primary sm" id="btnStart">▶ Start</button>
     <button class="danger sm" id="btnStop">■ Stop</button>
-    <button class="sm" id="btnParams" title="参数 Parameters" style="font-size:15px;padding:4px 10px">🎛</button>
+    <!-- Sliders, drawn rather than an emoji: ⚙ next to it renders as a glyph in
+         the UI font, and an emoji beside it lands at a different weight and
+         baseline on every platform. currentColor so it inherits the button. -->
+    <button class="sm" id="btnParams" title="参数 Parameters" style="padding:5px 10px;line-height:0">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <path d="M2 4h5M11 4h3M2 8h9M13 8h1M2 12h2M8 12h6"/>
+        <circle cx="9" cy="4" r="1.6"/><circle cx="12" cy="8" r="1.6"/><circle cx="6" cy="12" r="1.6"/>
+      </svg>
+    </button>
     <button class="sm" id="btnSettings" title="设置 Settings" style="font-size:15px;padding:4px 10px">⚙</button>
     <span class="pill" id="updated">—</span>
   </div>
@@ -1369,8 +1380,13 @@ async function loadParams(){
       ${g.params.map(pr=>{
         PARAM_LOADED[pr.key]=String(pr.value);
         const band=pr.band?`<span class="pband">优化器区间 ${pr.band[0]}–${pr.band[1]}</span>`:'';
-        return `<div class="prow" id="row_${pr.key}">
-          <div class="pk"><b>${pr.key}</b>${band}
+        // Inert is not dead: the value is real and the code reads it, but
+        // another switch is off so nothing consults it right now. Saying so
+        // is the difference between this page describing the bot and this
+        // page listing fields.
+        const inert=pr.inert?`<span class="pinert">当前无效 — ${pr.inert}</span>`:'';
+        return `<div class="prow${pr.inert?' inert':''}" id="row_${pr.key}">
+          <div class="pk"><b>${pr.key}</b>${band}${inert}
             ${pr.desc?`<div class="setdesc">${pr.desc}</div>`:''}</div>
           <div class="pv">
             <span class="ptag ${pr.hot?'hot':''}">${pr.hot?'立即':'需重启'}</span>

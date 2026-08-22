@@ -64,7 +64,8 @@ ACCOUNT_SCOPED_KEYS = frozenset({
 GLOBAL_SCOPED_KEYS = frozenset({
     "ai_provider", "ai_model", "ai_fail_streak", "ai_last_error", "ai_last_ok_ts",
     "health_ai_calls_ok", "health_ai_calls_ok_streak",
-    "health_gemini_ok", "health_gemini_ok_streak",
+    "health_ai_ok", "health_ai_ok_streak",
+    "health_gemini_ok", "health_gemini_ok_streak",   # legacy rows, read-only
     "health_options_stats_ok", "health_options_stats_ok_streak",
     "regime_last_label", "telegram_offset",
     # What the RUNNING worker is configured with — published by src/main.py at

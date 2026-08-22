@@ -1,11 +1,11 @@
-"""Gemini-based contextual check, augmented with real Tavily news.
+"""AI contextual check, augmented with real Tavily news.
 
 The technical scorer can be fooled by:
   - Earnings announcements 24h away (volatility trap)
   - Sector-wide bad news the indicators haven't priced yet
   - Macro events (FOMC, CPI release)
 
-We fetch live news (ticker-specific + macro) via Tavily, feed it to Gemini,
+We fetch live news (ticker-specific + macro) via Tavily, feed it to the AI,
 and parse a JSON verdict. A "veto" zeros the AI sub-score, a "pass" awards
 the remaining 10 points.
 """
@@ -64,7 +64,7 @@ def validate(signal: Signal) -> tuple[bool, int, str]:
     """Returns (pass, ai_sub_score_0_100, reason). On error, defaults to pass.
 
     P1-1 (2026-06-26): when AI_ENSEMBLE_ENABLED and both providers have keys,
-    uses ensemble voting (Gemini + DeepSeek in parallel). Consensus = high
+    ran ensemble voting until 2026-07-22; single-engine since (see below). Consensus = high
     confidence pass/veto; conflict = pass with 30% confidence (conservative).
     Single-provider fallback when only one has keys.
     """
@@ -88,21 +88,14 @@ def validate(signal: Signal) -> tuple[bool, int, str]:
     )
 
     try:
-        # P1-1: ensemble mode when both providers have keys and flag is on
-        if _s.ai_ensemble_enabled and ai.has_key("gemini") and ai.has_key("deepseek"):
-            result = ai.generate_ensemble(prompt)
-            ens_verdict = result["verdict"]
-            if ens_verdict == "consensus":
-                text = result["text"]
-                model_name = f"ensemble({result['gemini']['model']}+{result['deepseek']['model']})"
-            elif ens_verdict in ("single", "conflict"):
-                text = result["text"]
-                src = result["gemini"] or result["deepseek"] or {}
-                model_name = f"ensemble-{ens_verdict}({src.get('model','?')})"
-            else:  # unavailable
-                return True, 50, "ensemble unavailable — neutral"
-        else:
-            text, model_name = ai.generate(prompt)
+        # Single engine. This used to branch into ai.generate_ensemble() when
+        # AI_ENSEMBLE_ENABLED was on and both providers had keys — but Gemini
+        # left ai.PROVIDERS on 2026-07-22, so the ensemble's own gemini gate
+        # (`"gemini" in PROVIDERS`) was already constant-false and it collapsed
+        # to exactly this call. The flag changed a label in the log and nothing
+        # else, which is worse than no flag: it was still on, and read as a
+        # dual-engine cross-check that had not run for a month.
+        text, model_name = ai.generate(prompt)
 
         payload = _extract_json(text)
         verdict = payload.get("verdict", "pass")

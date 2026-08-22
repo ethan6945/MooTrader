@@ -44,7 +44,7 @@ def _secret_values() -> list[str]:
         if isinstance(v, str) and v.strip():
             raw.append(v.strip())
     # Multi-key cascades are tuples of keys — each must match on its own.
-    for attr in ("gemini_keys", "deepseek_keys"):
+    for attr in ("deepseek_keys",):
         for k in getattr(settings, attr, ()) or ():
             if str(k).strip():
                 raw.append(str(k).strip())
@@ -62,7 +62,7 @@ def _secret_values() -> list[str]:
     # post-rotation preflight probe triggers.
     for env_name in ("WEB_PASSWORD", "WEB_SECRET", "TELEGRAM_TOKEN",
                      "TAVILY_API_KEY", "MOO_TRADE_PWD", "FINNHUB_API_KEY",
-                     "GEMINI_API_KEYS", "DEEPSEEK_API_KEY", "OPEND_LOGIN_ACCOUNT"):
+                     "DEEPSEEK_API_KEY", "OPEND_LOGIN_ACCOUNT"):
         v = os.getenv(env_name, "")
         # The cascades are comma-separated; each key must match on its own.
         for part in v.split(","):

@@ -265,19 +265,20 @@ class Settings:
     moo_market: str = os.getenv("MOO_MARKET", "US")
     moo_security_firm: str = os.getenv("MOO_SECURITY_FIRM", "FUTUMY")
 
-    gemini_keys: tuple = tuple(
-        k.strip() for k in os.getenv("GEMINI_API_KEYS", "").split(",") if k.strip()
-    )
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+    # No gemini_keys / gemini_model. Gemini stopped being a selectable
+    # provider on 2026-07-22 (ai.PROVIDERS), so GEMINI_MODEL configured a
+    # provider that could not be chosen and GEMINI_API_KEYS unlocked one that
+    # was never called. Both survived into config/parameters.json, where the
+    # parameter console then showed GEMINI_MODEL as a live setting.
 
     tavily_key: str = os.getenv("TAVILY_API_KEY", "")
 
-    # AI provider (2026-06-23): the whole system can run on Gemini OR DeepSeek,
-    # flipped live from the web panel (db-state override, no restart — see
-    # src/ai.py). These are the .env DEFAULTS; the runtime override wins. The
-    # owner reaches for DeepSeek when Gemini is quota'd/down. DeepSeek is
-    # OpenAI-compatible REST (text only — no vision), reached via `requests`.
-    ai_provider: str = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    # AI provider. DeepSeek is the only one — ai.PROVIDERS is the single
+    # gate, and active_provider() maps anything else onto it. The default is
+    # deepseek rather than gemini because a fresh install with no AI_PROVIDER
+    # set was defaulting to a value that gate would immediately override, and
+    # a default that cannot be honoured is not a default.
+    ai_provider: str = os.getenv("AI_PROVIDER", "deepseek").strip().lower()
     deepseek_keys: tuple = tuple(
         k.strip()
         for k in (
@@ -393,7 +394,7 @@ class Settings:
     # Gap-risk sentinel (2026-06-08): for HELD positions, exit DURING regular hours
     # before a likely overnight gap (a stop can't catch a gap — it fills past the
     # stop). Two layers: (1) deterministic — exit if earnings is within
-    # GAP_EXIT_EARNINGS_DAYS; (2) AI — Gemini judges fresh PUBLIC bad news and only
+    # GAP_EXIT_EARNINGS_DAYS; (2) AI — the model judges fresh PUBLIC bad news and only
     # sells on a high-confidence verdict (≥ GAP_SENTINEL_AI_MIN_CONF), fail-safe to
     # HOLD on any error. Default OFF (inert) — set GAP_SENTINEL_ENABLED=true to arm.
     # The AI decision overrides the strategy's hold; every exit fires a notification.
@@ -414,7 +415,7 @@ class Settings:
     # gap-sentinel _force_close path). DEFAULT OFF; FAIL-SAFE (AI down → no exit).
     smart_exit_enabled: bool = os.getenv("SMART_EXIT_ENABLED", "false").lower() in ("1", "true", "yes")
     # AI layer on/off. Off ⇒ only the deterministic technical-breakdown lock-profit
-    # fires (no Gemini cost), so smart exit is still useful without a key.
+    # fires (no AI cost), so smart exit is still useful without a key.
     smart_exit_ai: bool = os.getenv("SMART_EXIT_AI", "true").lower() in ("1", "true", "yes")
     smart_exit_min_conf: int = _int("SMART_EXIT_MIN_CONF", 70)
     # The algo lock-profit path only fires once unrealized profit ≥ this many R
@@ -424,7 +425,7 @@ class Settings:
     smart_exit_min_profit_r: float = _float("SMART_EXIT_MIN_PROFIT_R", 1.0)
 
     # ── Sentiment scoring (Phase 2B, 2026-06-23): broker-style 看好/看空 ──
-    # For each buy candidate, Gemini fuses news + analyst-target direction + the
+    # For each buy candidate, the model fuses news + analyst-target direction + the
     # technical reasons (sig.reasons) into a 0-100 bullishness score (50=neutral),
     # like the broker analysis card. DEFAULT OFF, ADVISORY (recorded + shown, does
     # NOT change which trades fire → live↔backtest parity preserved). FAIL-SAFE →
@@ -595,7 +596,7 @@ class Settings:
 
     # ── API/subscription health watchdog (2026-06-23) ──
     # Edge-triggered Telegram alerts when a silent dependency lapses: the broker
-    # options data subscription (can't fetch chains/snapshots) or the Gemini API
+    # options data subscription (can't fetch chains/snapshots) or the AI API
     # balance/quota (AI layers go blind). Owner-requested safety net → DEFAULT ON
     # (set HEALTH_CHECK_ENABLED=false to silence). Runs every interval minutes +
     # once at startup; only alerts on a state CHANGE, so it never spams.
@@ -770,11 +771,15 @@ class Settings:
     breadth_blocking: bool = os.getenv("BREADTH_BLOCKING", "false").lower() in ("1", "true", "yes")
 
     # ── AI ensemble voting (P1-1, 2026-06-26) ──
-    # When true AND both Gemini + DeepSeek keys are configured, the AI validator
+    # (Retired.) When true AND two providers were configured, the AI validator
     # calls BOTH providers in parallel. Consensus = high-confidence pass/veto;
     # conflict = pass with reduced confidence. Off by default (uses single
     # provider) — turn on after confirming both keys work.
-    ai_ensemble_enabled: bool = os.getenv("AI_ENSEMBLE_ENABLED", "false").lower() in ("1", "true", "yes")
+    # No ai_ensemble_enabled. The ensemble was Gemini and DeepSeek voting;
+    # with Gemini out of PROVIDERS its own gate ("gemini" in PROVIDERS) was
+    # constant-false and it collapsed to the single DeepSeek call the flag was
+    # meant to be an alternative to. It stayed `true` and read as a
+    # cross-check that had not run since 2026-07-22.
 
     # (ML alpha engine removed 2026-06-03 — proven inert, AUC ~0.5.)
 
@@ -811,7 +816,7 @@ class Settings:
     real_use_soft_exits: bool = os.getenv("REAL_USE_SOFT_EXITS", "false").lower() in ("1", "true", "yes")
 
     # Live↔backtest parity (2026-06-03): the honest backtest does NOT model the
-    # Gemini AI veto, so leaving it BLOCKING makes live take different trades than
+    # AI veto, so leaving it BLOCKING makes live take different trades than
     # the backtest that the $/day figure is based on. Default False = AI runs as
     # advisory (logged + shown in the buy card) but never blocks an entry, so the
     # set of trades matches the backtest. Set true to let AI veto block again.
@@ -888,24 +893,3 @@ def derive_max_positions(capital: float) -> int:
         return settings.max_positions
     n = round(capital / slot)
     return max(settings.max_positions, min(settings.max_positions_cap, n))
-
-# Model cascade: GEMINI_MODEL is tried first; on 429/quota it retries across all
-# keys. Owner preference (2026-06-22): use Gemini 3.5-flash or HIGHER everywhere —
-# NO lite-tier fallback — so the cascade floor is gemini-3.5-flash. Override the
-# starting model via the GEMINI_MODEL env var (set it to a higher tier if one
-# exists; do not point it at a *-lite model).
-GEMINI_FREE_CASCADE = [
-    "gemini-3.5-flash",
-]
-
-
-def gemini_cascade() -> list[str]:
-    """Full cascade starting from the configured model, deduped."""
-    primary = settings.gemini_model or "gemini-3.5-flash"
-    seen: set[str] = set()
-    result = []
-    for m in [primary] + GEMINI_FREE_CASCADE:
-        if m not in seen:
-            seen.add(m)
-            result.append(m)
-    return result

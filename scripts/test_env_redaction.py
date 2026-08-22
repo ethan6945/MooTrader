@@ -272,7 +272,12 @@ check("a key saved through the panel is redacted at once, not after a restart",
 
 # The cascades are comma-separated and each key must match on its own — a
 # single joined string would leave the second key readable.
-_rc.write_setting("GEMINI_API_KEYS", "SYNTHETIC-CASCADE-KEY-FIRST-0003,SYNTHETIC-CASCADE-KEY-SECOND-0004",
+# DEEPSEEK_API_KEY, because it is the cascade that still exists. This used to
+# use GEMINI_API_KEYS and went red the moment Gemini was removed from
+# _secret_values — correctly: a key dropped from the redaction list is exactly
+# what this suite is for.
+_rc.write_setting("DEEPSEEK_API_KEY",
+                  "SYNTHETIC-CASCADE-KEY-FIRST-0003,SYNTHETIC-CASCADE-KEY-SECOND-0004",
                   source="test")
 _out2 = log_redact.scrub("try SYNTHETIC-CASCADE-KEY-FIRST-0003 then SYNTHETIC-CASCADE-KEY-SECOND-0004")
 check("every key in a comma-separated cascade is redacted", "SYNTHETIC-CASCADE" not in _out2)

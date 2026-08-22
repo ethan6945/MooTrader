@@ -7,7 +7,7 @@ flags, range breakouts, and bullish candlesticks (see `pattern_detect`).
 
 Convention (identical to the other strategies, so the funnel is agnostic):
   • 0-100 score on the same scale. Weights sum to 90; the remaining ~10 is the
-    AI's — here filled by `pattern_vision` (Gemini chart-image confirmation),
+    AI's — this was `pattern_vision` (chart-image confirmation), deleted
     consulted in main.py exactly where `ai_validator.validate` runs.
   • Returns a Signal with strategy="pattern". The detected pattern's type,
     confidence and key levels ride along in Signal.meta for audit + vision +
