@@ -116,27 +116,51 @@ class V4Config:
     enforce_cash: bool = True
     soft_stops: bool = True
     entry_ttl: bool = True
-    # Pyramiding — modelled (src/stacking.py) but DEFAULT OFF, on evidence.
+    # Pyramiding — modelled (src/stacking.py, the rule live itself calls) and ON.
     #
-    # Live is configured for it (MAX_STACKS_PER_SYMBOL=5, STACK_MIN_R=0.5) and
-    # the code here mirrors live's rule exactly. But the account took ZERO
-    # add-ons across all 37 recorded trades, and v4 takes about one per trade.
-    # Measured against real fills over 2026-06-11 → 08-10:
+    # It was defaulted OFF on 2026-08-23 because v4 took ~1 add-on per trade
+    # over a window in which the account took zero. Both halves of that were
+    # then explained:
+    #
+    #   WHY LIVE TAKES NONE — not a broken gate. The audit shows live reached
+    #   the stack gate 30 times and was refused every time on the same
+    #   condition: unrealised R at those moments ran a median of -0.09R against
+    #   a 0.5R bar, and never once cleared it. Live's held names simply were
+    #   not in profit when they re-signalled.
+    #
+    #   WHY v4 TOOK SO MANY — half of it was a defect here. A 15-minute scan
+    #   grid reads one hourly bar four times and scores each symbol under every
+    #   enabled strategy, so one unchanged price passed the gate up to eight
+    #   times and bought eight lots at it. Position.last_stack_bar now allows
+    #   one add-on decision per position per closed bar.
+    #
+    # With that fixed, against real fills over 2026-06-11 → 08-10:
     #
     #                     trades   win rate   net PnL    net gap   WR gap
     #     live (truth)      34       20.6%     -$667        —         —
-    #     pyramiding ON     47       27.7%     -$992      32.7%     7.1pp
-    #     pyramiding OFF    46       39.1%     -$590      11.7%    18.5pp
+    #     pyramiding ON     60       21.7%    -$1023      34.8%     1.1pp
+    #     pyramiding OFF    58       37.9%     -$439      34.3%    17.3pp
     #
-    # A real trade-off: ON matches live's win rate far better, OFF matches its
-    # PnL far better. What breaks the tie is that ON deploys capital the
-    # account demonstrably did not — modelling a behaviour the data contradicts
-    # is the same class of error as backtest_v3's inverted gap filter, which is
-    # what this whole merge existed to remove.
+    # The net gap is a wash and ON reproduces live's win rate to within a
+    # point — which is why this was briefly switched on. It is OFF anyway, and
+    # the reason is the one thing the table cannot show.
     #
-    # Flip this to True the moment live actually stacks, or the moment the
-    # reason it does not is found. scripts/v4_vs_live.py prints both rates on
-    # every run so the question stays in front of whoever looks.
+    # ON's win-rate match is very likely TWO ERRORS CANCELLING. v4's held
+    # positions sit at a median +0.35R when they re-signal, against live's
+    # -0.09R: its winners run further than the account's do, which on its own
+    # would push the win rate too HIGH. Stacking then piles size onto those
+    # same positions and drags it back down to 21.7%. If v4's winners were as
+    # ordinary as live's, it would stack zero times too — so stacking is
+    # amplifying that calibration error, not causing it.
+    #
+    # An aggregate that looks right because two errors offset is worse than a
+    # visible one: OFF reports 37.9% against live's 20.6%, which is wrong in a
+    # direction anyone can read — v4 is too optimistic about its winners. That
+    # is the defect worth fixing, and hiding it behind a matching headline
+    # would remove the pressure to fix it.
+    #
+    # Flip to True to measure the other way. scripts/v4_vs_live.py prints both
+    # add-on rates every run.
     model_pyramiding: bool = False
 
 
@@ -223,6 +247,13 @@ class Position:
     # The bar this position last resolved an exit against, so a 15-minute grid
     # does not re-test the same hourly bar four times.
     last_bar_seen: object = None
+    # The bar this position last took an ADD-ON against. Same problem, worse
+    # consequence: a 15-minute grid reads one hourly bar four times, and each
+    # scan scores the symbol under every enabled strategy, so one unchanged
+    # price could pass the stack gate eight times and buy eight lots at it.
+    # Live cannot do that — a fill takes time and moves the average — so a
+    # replay that does is inventing size.
+    last_stack_bar: object = None
 
 
 @dataclass
@@ -410,6 +441,13 @@ class V4Broker:
         self.positions[symbol] = held_before
         self.n_stacks += 1
         return True
+
+    def last_bar_of(self, sym: str):
+        """Timestamp of the latest CLOSED bar for `sym`, or None."""
+        k = self.feed.get_kline(sym, bars=1)
+        if k is None or k.empty:
+            return None
+        return k.index[-1]
 
     def _next_bar(self, sym: str):
         k = self.feed.get_kline(sym, bars=1)
@@ -793,6 +831,11 @@ def run_v4(cfg: V4Config, progress_cb=None,
             if held_pos is not None and not cfg.model_pyramiding:
                 continue
             if held_pos is not None:
+                # One add-on decision per position per CLOSED bar.
+                cur_bar = broker.last_bar_of(sig.symbol)
+                if cur_bar is not None and held_pos.last_stack_bar == cur_bar:
+                    continue
+                held_pos.last_stack_bar = cur_bar
                 d = stacking.can_stack(
                     stacks=held_pos.stacks, entry=held_pos.entry,
                     last_px=float(getattr(sig, "price", 0.0) or held_pos.entry),
