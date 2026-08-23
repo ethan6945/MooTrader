@@ -1529,24 +1529,37 @@ def _grid_sweep_job(daily: bool) -> None:
         log.warning("grid sweep (%s) refused: %s", label, result.get("note", ""))
         return
 
-    applied, best = result.get("applied"), result.get("best") or {}
-    if applied:
-        notifier.send(
-            f"🔧 *参数网格搜索已应用* ({label})\n"
-            f"  THR={best.get('th', '—')} TP={best.get('tp', '—')} "
-            f"SL={best.get('sl', '—')} agg={best.get('agg_score', '—')}\n"
-            f"  combos={result.get('combos_tested', '?')} "
-            f"windows={len(result.get('windows', []))} "
-            f"{result.get('elapsed_sec', '?')}s")
-        log.info("grid sweep (%s): APPLIED %s", label, best)
+    # Nothing auto-applies any more — the sweep enqueues and the owner decides
+    # — so this keys on what was QUEUED. It used to key on `applied`, which is
+    # now always False, so the "found something" branch never fired and every
+    # run fell through to a "current parameters are still optimal" message that
+    # contradicted the "waiting for approval" one optimize_system had just sent.
+    queued = result.get("enqueued_for_approval") or []
+    best = result.get("best") or {}
+    baseline = result.get("baseline") or {}
+    if queued:
+        # optimize_system already sent the detailed proposal with its caveats;
+        # nothing to add here beyond the log.
+        log.info("grid sweep (%s): QUEUED %s", label, best)
     else:
-        # Weekly reports even on no-change (matches the old script's behaviour);
-        # daily stays quiet so there's no every-morning "nothing happened" ping.
-        log.info("grid sweep (%s): no change (baseline holds)", label)
+        log.info("grid sweep (%s): no proposal (baseline holds)", label)
         if not daily:
+            # Say what was actually measured. "Current parameters are still
+            # optimal" was asserted regardless of the numbers, and on the
+            # 2026-08-23 run it was false: every combo lost money and the
+            # incumbent was the worst of them.
+            b_pnl = baseline.get("mean_pnl")
+            detail = ""
+            if best and b_pnl is not None:
+                detail = (f"\n  最佳 THR={best.get('th')} TP={best.get('tp')} "
+                          f"SL={best.get('sl')} agg={best.get('agg_score')} "
+                          f"(${best.get('mean_pnl', 0):.0f}/窗口) vs 当前 "
+                          f"agg={baseline.get('agg_score')} (${b_pnl:.0f})"
+                          "\n  没有组合胜过当前参数")
             notifier.send(
-                f"🔧 参数网格搜索({label}): 无变更，当前参数仍最优 "
-                f"(combos={result.get('combos_tested', '?')})")
+                f"🔧 参数网格搜索({label}): 无提议 "
+                f"(combos={result.get('combos_tested', '?')}, "
+                f"windows={len(result.get('windows', []))})" + detail)
     try:
         cron_state.record_run(key)
     except Exception as e:

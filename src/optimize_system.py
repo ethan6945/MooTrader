@@ -390,14 +390,34 @@ def optimize(quick: bool = False, quiet: bool = False,
 
     baseline = next((r for r in results if r.get("is_baseline")), None)
     baseline_score = baseline["agg_score"] if (baseline and baseline["eligible"]) else 0.0
+    # A challenger only has to BEAT THE INCUMBENT — it does not have to be
+    # profitable (owner decision 2026-08-23).
+    #
+    # The old rule was `mean_pnl > 0`, which made the sweep go silent in
+    # exactly the regime it exists for. On this run all 27 combos lost money
+    # across two independent months; the incumbent lost $141.80 a window and
+    # th=65 lost $77.71, and the sweep proposed nothing and telegrammed that
+    # the current parameters were "still optimal". Staying on the worst option
+    # is not caution, it is inertia wearing caution's clothes.
+    #
+    # That rule was right while the optimizer APPLIED its own winner. It is
+    # wrong now that a person reviews every proposal: withholding "this one
+    # bleeds half as much" from the reviewer is the wrong conservatism.
     challengers = [r for r in results
-                   if not r.get("is_baseline") and r["eligible"] and r["mean_pnl"] > 0]
+                   if not r.get("is_baseline") and r["eligible"]]
     best = max(challengers, key=lambda r: r["agg_score"], default=None)
 
     # Apply bar: weekly/full modes require a strict beat; DAILY mode requires
     # the 1.25× hysteresis margin so one new day of data can't thrash params.
-    required = (max(baseline_score, 0.0) * DAILY_HYSTERESIS
-                if daily and baseline_score > 0 else max(baseline_score, 0.0))
+    # Hysteresis must always make the bar HARDER. Multiplying a NEGATIVE
+    # incumbent score by 1.25 moves it further from zero and makes it easier to
+    # beat — the exact opposite of what a damping factor is for. Dividing moves
+    # it toward zero, which is harder, so the sign decides the operation.
+    if daily:
+        required = (baseline_score * DAILY_HYSTERESIS if baseline_score > 0
+                    else baseline_score / DAILY_HYSTERESIS)
+    else:
+        required = baseline_score
 
     applied = False          # kept in the result shape; nothing auto-applies now
     enqueued: list[str] = []
@@ -422,8 +442,15 @@ def optimize(quick: bool = False, quiet: bool = False,
                 payload_params[key] = float(val)
         if payload_params:
             title = "每日优化器" if daily else "Weekly optimizer"
+            losing = best["mean_pnl"] <= 0
+            warn = ("\n  ⚠ 注意：这个组合本身仍是亏的 "
+                    f"(${best['mean_pnl']:.0f}/窗口)，只是比当前参数 "
+                    f"(${(baseline or {}).get('mean_pnl', 0):.0f}) 亏得少。"
+                    "\n  它不是一个赚钱的配置，是同一批里最不亏的那个。"
+                    if losing else "")
             detail = (f"{title} — v4 网格搜索找到更优参数\n"
                       + "\n".join(f"  • {c}" for c in changes)
+                      + warn
                       + f"\n  agg {best['agg_score']:.1f} vs baseline "
                         f"{baseline_score:.1f}"
                       + (f" (需 ≥{required:.1f})" if daily else "")
@@ -452,7 +479,8 @@ def optimize(quick: bool = False, quiet: bool = False,
                     + f"\n  agg {best['agg_score']:.1f} vs baseline "
                       f"{baseline_score:.1f} | mean PnL ${best['mean_pnl']:.0f}"
                       f" ({best['valid_windows']}/{len(windows)} windows)"
-                      "\n  在 Telegram/GUI 批准后生效 — 不批准就什么都不变")
+                      + warn
+                      + "\n  在 Telegram/GUI 批准后生效 — 不批准就什么都不变")
             except Exception as e:
                 print(f"WARN: telegram notify failed: {e}")
             if not quiet:
