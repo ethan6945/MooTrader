@@ -82,6 +82,12 @@ WINDOW_DAYS = 30
 STEP_DAYS = 15
 MIN_TRADES_PER_WINDOW = 3
 MIN_VALID_WINDOWS = 2
+# A window with this many trades is trusted at face value; below it the score
+# is shrunk toward zero because the sample cannot support the claim.
+TRADES_FOR_FULL_CONFIDENCE = 12
+# Win-rate tilt bounds. Deliberately narrow: consistency should break a tie,
+# not overturn a real difference in expectancy.
+WR_TILT_LO, WR_TILT_HI = 0.80, 1.20
 
 PARAM_KEYS = ("entry_threshold", "tp_atr_mult", "sl_atr_mult")
 
@@ -146,14 +152,50 @@ def _append_daily_log(record: dict) -> None:
 
 # ── Scoring ─────────────────────────────────────────────
 
-def _score(net_pnl: float, win_rate: float, n_trades: int, avg_loss: float) -> float | None:
-    """Per-window score; None = window not valid for this combo (too few trades)."""
+def _score(net_pnl: float, win_rate: float, n_trades: int,
+           avg_loss: float) -> float | None:
+    """Per-window score; None = window not valid for this combo (too few trades).
+
+    WHAT WAS WRONG WITH THE OLD ONE
+
+        return max(0.0, net_pnl) * stability * activity
+
+    `max(0.0, ...)` floored every losing window to exactly zero, so a combo
+    that lost $202 and one that lost $465 scored identically. On the
+    2026-08-23 sweep both windows lost money for both the baseline and the
+    winner, both scored 0 there, and the entire 33x score difference between
+    them came from ONE 15-trade window. The optimizer was not ranking two
+    months of evidence; it was ranking the half of it that happened to be
+    green, and discarding the half that says which combo bleeds less — which
+    for a strategy that loses in most windows is the more useful half.
+
+    WHAT THIS ONE DOES
+
+      • PER TRADE, not total. A combo that trades more is not thereby better;
+        the old `activity` multiplier rewarded exactly that, and it saturated
+        at 2x, so a busy mediocre combo could outrank a selective good one.
+      • MONOTONIC ACROSS THE WHOLE RANGE. More profit always scores higher and
+        a smaller loss always scores higher than a bigger one. Nothing is
+        floored, so no window's evidence is thrown away.
+      • CONFIDENCE-WEIGHTED. A 4-trade window is weak evidence in either
+        direction, so it is pulled toward zero rather than trusted at face
+        value.
+      • WIN RATE AS A BOUNDED TILT, applied in the direction that always means
+        better: it multiplies a positive score and divides a negative one, so
+        a high win rate never makes a losing combo look worse than a low one.
+        Bounded so it can reorder near-ties without overturning a real
+        difference in expectancy.
+
+    The unit is dollars of expectancy per trade. That is worth keeping — a
+    score you can read is a score whose proposals you can argue with.
+    """
     if n_trades < MIN_TRADES_PER_WINDOW:
         return None
-    actual_avg_loss = abs(avg_loss) if abs(avg_loss) > 1 else 1.0
-    stability = win_rate / actual_avg_loss
-    activity = min(n_trades / 6.0, 2.0)   # saturates at 12 trades
-    return max(0.0, net_pnl) * stability * activity
+    per_trade = net_pnl / n_trades
+    confidence = min(1.0, n_trades / TRADES_FOR_FULL_CONFIDENCE)
+    tilt = WR_TILT_LO + (WR_TILT_HI - WR_TILT_LO) * min(1.0, max(0.0, win_rate) / 100.0)
+    base = per_trade * confidence
+    return round(base * tilt if base > 0 else base / tilt, 4)
 
 
 # ── Rolling windows ─────────────────────────────────────
@@ -289,7 +331,20 @@ def optimize(quick: bool = False, quiet: bool = False,
     windows = [_snap_weekdays(a, b) for a, b in _windows(end_date)]
     windows = [(a, b) for a, b in windows if a < b]
     if quick or daily:
-        windows = windows[:2]   # two most recent windows
+        # Two NON-OVERLAPPING windows, newest first. This used to be
+        # `windows[:2]` — the two most recent — and with STEP_DAYS=15 against
+        # WINDOW_DAYS=30 those share half their days by construction. The
+        # 2026-08-23 sweep aggregated 07-24→08-21 and 07-09→08-07: one month of
+        # data counted twice, presented as two independent measurements. A
+        # weekly re-tune is only as good as its ability to tell a regime change
+        # from a coincidence, and overlapping windows cannot.
+        picked: list[tuple[datetime, datetime]] = []
+        for a, b in windows:
+            if all(b <= pa or a >= pb for pa, pb in picked):
+                picked.append((a, b))
+            if len(picked) == 2:
+                break
+        windows = picked or windows[:1]
 
     saved = {k: float(runtime_config.current(k)) for k in PARAM_KEYS}
     baseline_combo = (saved["entry_threshold"], saved["tp_atr_mult"], saved["sl_atr_mult"])

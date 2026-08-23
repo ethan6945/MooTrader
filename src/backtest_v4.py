@@ -116,6 +116,28 @@ class V4Config:
     enforce_cash: bool = True
     soft_stops: bool = True
     entry_ttl: bool = True
+    # Pyramiding — modelled (src/stacking.py) but DEFAULT OFF, on evidence.
+    #
+    # Live is configured for it (MAX_STACKS_PER_SYMBOL=5, STACK_MIN_R=0.5) and
+    # the code here mirrors live's rule exactly. But the account took ZERO
+    # add-ons across all 37 recorded trades, and v4 takes about one per trade.
+    # Measured against real fills over 2026-06-11 → 08-10:
+    #
+    #                     trades   win rate   net PnL    net gap   WR gap
+    #     live (truth)      34       20.6%     -$667        —         —
+    #     pyramiding ON     47       27.7%     -$992      32.7%     7.1pp
+    #     pyramiding OFF    46       39.1%     -$590      11.7%    18.5pp
+    #
+    # A real trade-off: ON matches live's win rate far better, OFF matches its
+    # PnL far better. What breaks the tie is that ON deploys capital the
+    # account demonstrably did not — modelling a behaviour the data contradicts
+    # is the same class of error as backtest_v3's inverted gap filter, which is
+    # what this whole merge existed to remove.
+    #
+    # Flip this to True the moment live actually stacks, or the moment the
+    # reason it does not is found. scripts/v4_vs_live.py prints both rates on
+    # every run so the question stays in front of whoever looks.
+    model_pyramiding: bool = False
 
 
 # ── Cost model ────────────────────────────────────────────
@@ -768,6 +790,8 @@ def run_v4(cfg: V4Config, progress_cb=None,
             # live presses up to MAX_STACKS_PER_SYMBOL — under-deploying capital
             # into exactly the trades live is most confident in.
             held_pos = broker.positions.get(sig.symbol)
+            if held_pos is not None and not cfg.model_pyramiding:
+                continue
             if held_pos is not None:
                 d = stacking.can_stack(
                     stacks=held_pos.stacks, entry=held_pos.entry,
