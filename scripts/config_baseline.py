@@ -12,7 +12,11 @@ WHY THIS EXISTS
     1. db-state `param_<key>`   — runtime override, beats everything
     2. `.env`                   — what the owner thinks is configured
     3. code default (config.py) — what a fresh install runs
-    4. README table             — what the documentation claims
+    4. README table             — what a NEW USER is told they get. Compared
+                                  against .env.example, never against this
+                                  machine's effective values: those are one
+                                  owner's weekly tuning and are supposed to
+                                  diverge from the shipped reference.
 
   The 2026-08-10 audit found `param_sl_atr_mult=3.0` live in db while its
   `param_history` record says `active: false`, and `param_max_position_pct=0.36`
@@ -585,15 +589,31 @@ def collect() -> dict:
                           f"so the two agree.",
             })
 
-        # ── Finding 4: README documents something else.
-        if readme_val is not None and not _same(effective, readme_val):
+        # ── Finding 4: the README documents something a fresh install does
+        # not get.
+        #
+        # This compared the README against THIS MACHINE's effective value, and
+        # that is a category error. The README is reference material for a new
+        # user; the effective value is one owner's accumulated tuning, re-tuned
+        # weekly by the grid sweep and applied on approval. Coupling them made
+        # the check fail after every approved change and demanded a README edit
+        # to document a number that is specific to one account and stale by the
+        # next Monday.
+        #
+        # What the README can genuinely be wrong about is what a fresh install
+        # runs, which is .env.example. That is the comparison worth keeping.
+        example_val = example.get(env_name)
+        if (readme_val is not None and example_val is not None
+                and not _same(example_val, readme_val)):
             findings.append({
                 "severity": "low", "key": key,
-                "what": f"README says {env_name}={readme_val}, effective value "
-                        f"is {effective}",
-                "why": "The README is what a new user (or future you) will "
-                       "believe the bot is doing.",
-                "action": f"Update the README table to {effective}.",
+                "what": f"README says {env_name}={readme_val}, but a fresh "
+                        f"install gets {example_val} from .env.example",
+                "why": "The README is what a new user reads before they have "
+                       "run anything. It should describe the shipped default, "
+                       "not any one account's tuning.",
+                "action": f"Update the README table to {example_val}, or change "
+                          f".env.example if the shipped default is meant to move.",
             })
 
     # ── Orphan param_* keys nobody tracks.

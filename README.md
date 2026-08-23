@@ -330,7 +330,7 @@ flowchart LR
 
 For each name on the watchlist, 4 independent strategies each score 0–100; the highest score represents that name. All 4 share one `Signal` interface, so the downstream funnel doesn't care which strategy produced a signal (it only records a `strategy` tag).
 
-> **Live currently runs only the first two (trend + momentum-breakout); mean-reversion and pattern-recognition are off by default** — see [Config at a glance](#-config-at-a-glance) for why. Entry bar: composite score ≥ `ENTRY_SCORE_THRESHOLD` (**65**, re-tuned weekly by the v4 grid sweep and applied only on owner approval; a hard threshold with no edge band).
+> **Live currently runs only the first two (trend + momentum-breakout); mean-reversion and pattern-recognition are off by default** — see [Config at a glance](#-config-at-a-glance) for why. Entry bar: composite score ≥ `ENTRY_SCORE_THRESHOLD` (**70** shipped; re-tuned weekly by the v4 grid sweep and applied only on owner approval, so your running value will differ — a hard threshold with no edge band).
 
 | Strategy | Module | Style | Status |
 |------|------|------|:----:|
@@ -585,7 +585,7 @@ All config lives in `.env` (the template [`.env.example`](.env.example) document
 
 | Param | Value | Param | Value |
 |------|----|------|----|
-| `ENTRY_SCORE_THRESHOLD` | 65 | `TP_ATR_MULT` | 10.0 |
+| `ENTRY_SCORE_THRESHOLD` | 70 | `TP_ATR_MULT` | 10.0 |
 | `SCAN_INTERVAL_MIN` | 15 | `SL_ATR_MULT` | 3.5 |
 | `TIMEFRAME` | HOUR_1 | `MAX_GAP_PCT` | 4.0 |
 | `MAX_HOLD_DAYS` | 4 | `RISK_PER_TRADE` | 0.05 |
