@@ -1,36 +1,43 @@
-#!/usr/bin/env python3
 """
-Auto-optimizer v2 — grid-search best params via sandbox backtests, cross-window
-aggregation, and DIRECT auto-apply (owner directive 2026-07-07: no approval
-step — "确认是最优化了就直接套用").
+Auto-optimizer — grid-search best params with backtest_v4, aggregate across
+rolling windows, and QUEUE the winner for owner approval.
 
-RUNS: Weekly via cron (before the Monday 20:00 KL autopilot chain).
+RUNS: weekly (Mon 07:00 KL, 27-combo grid) and daily (weekdays 09:00 KL,
+neighborhood walk around the current params). Both slots are 19:00-21:00 ET,
+market CLOSED.
+
+ENGINE (2026-08-23): scores with backtest_v4, the single engine, which is
+calibrated against REAL FILLS (scripts/v4_vs_live.py) rather than against a
+second simulator. It previously scored with sandbox.py — the most optimistic of
+the three engines then in the tree, and the only one wired to change live
+parameters. Over 2026-06-11 → 2026-08-10 sandbox reported −$143 against live's
+−$667; v4 reports −$628 on the same window.
+
+APPROVAL (2026-08-23): the winner is enqueued via approvals.enqueue() and
+changes nothing until the owner approves it. The old behaviour applied it
+directly (owner directive 2026-07-07, "确认是最优化了就直接套用"); the owner
+asked for the gate back. Queuing is not writing, so this runs regardless of
+PARAMS_FROZEN — approving is what writes, and that path is still gated by it.
+
 MECHANISM: each combo is pushed as an EPHEMERAL thread-local override that the
-sandbox reads through runtime_config; db-state is never written by the sweep.
-The winner would be applied through runtime_config.set_param() (param_history
-records it, Telegram notified — 铁律: never silent), but see FREEZE below.
+engine reads through runtime_config; db-state is never written by the sweep, so
+a killed process cannot leave the live account running on a grid combo.
 
-FREEZE (2026-08-10): while settings.params_frozen the sweep still runs and
-still reports its winner, but applies nothing. sandbox↔backtest_v3 parity is
-currently BREACH (20% signal match, 83.5% net-PnL gap), so a winner chosen on
-one side of that pair is not evidence about the other.
-
-ARCHITECTURE (v2, 2026-07-07 audit rewrite):
-  1. Rolling 30-day windows over the last 60 days (matches the 2026-07-02
-     owner decision: automated tuning validates on recent 60d OpenD data).
+ARCHITECTURE
+  1. Rolling 30-day windows over the last 60 days (owner decision 2026-07-02:
+     automated tuning validates on recent 60d OpenD data).
   2. Grid: entry_threshold × tp_atr_mult × sl_atr_mult, COMBO-OUTER loop —
      every combo is scored on EVERY window and aggregated (mean), instead of
      the old best-single-window pick that selected on luck.
   3. The CURRENT live params run as a baseline combo through the identical
-     pipeline; a challenger must beat the baseline aggregate to be applied.
-  4. Best combo auto-applied via set_param(source="optimizer_auto") + Telegram.
+     pipeline; a challenger must beat the baseline aggregate to be proposed.
+  4. Best combo → approvals queue + Telegram.
 
-SAFETY:
-  - Sweep combos live in a thread-local, never in db-state, so a killed process
-    cannot leave the live account running on a grid combo.
-  - Values clamped to ALLOWED_PARAMS bounds.
-  - A combo needs ≥3 trades in ≥2 windows to be eligible; the winner must
-    also show positive mean net PnL. Otherwise: no change.
+SAFETY
+  - Sweep combos live in a thread-local, never in db-state.
+  - Values clamped to ALLOWED_PARAMS bounds (re-checked again at approval time).
+  - A combo needs ≥3 trades in ≥2 windows to be eligible; the winner must also
+    show positive mean net PnL. Otherwise: no proposal.
 """
 
 import json, sys, time as _time
@@ -51,7 +58,7 @@ ET = ZoneInfo("America/New_York")
 
 from . import runtime_config
 from . import db as _db
-from .sandbox import run_sandbox, SandboxConfig
+from .backtest_v4 import V4Config, run_v4
 from .config import settings
 
 # ── Search grid ──────────────────────────────────────────
@@ -204,15 +211,14 @@ def _eval_combo(th: float, tp: float, sl: float,
     _inject(th, tp, sl)
     per_window, scores, pnls = [], [], []
     for w_start, w_end in windows:
-        cfg = SandboxConfig(
+        cfg = V4Config(
             start=w_start if w_start.tzinfo else w_start.replace(tzinfo=ET),
             end=w_end if w_end.tzinfo else w_end.replace(tzinfo=ET),
             tickers=pool,
             universe_mode="dynamic",
-            enable_ai=False,
         )
         try:
-            s = run_sandbox(cfg).get("summary", {})
+            s = run_v4(cfg).get("metrics", {})
         except Exception as e:
             if not quiet:
                 print(f"    FAIL window {w_start.date()} th={th} tp={tp} sl={sl}: {e}")
@@ -338,47 +344,66 @@ def optimize(quick: bool = False, quiet: bool = False,
     required = (max(baseline_score, 0.0) * DAILY_HYSTERESIS
                 if daily and baseline_score > 0 else max(baseline_score, 0.0))
 
-    applied = False
-    if best and best["agg_score"] > required and runtime_config.frozen():
-        # Phase 0: report the finding, change nothing. The sweep measures with
-        # sandbox, and sandbox currently disagrees with backtest_v3 by 83.5% of
-        # net PnL (data/sandbox_vs_backtest.json, verdict BREACH) — a winner
-        # picked on one side of an unreconciled pair is not evidence.
-        best_desc = ", ".join(
-            f"{k}: {saved[k]:g} → {v:g}"
-            for k, v in zip(PARAM_KEYS, (best["th"], best["tp"], best["sl"]))
-            if float(v) != saved[k]
-        ) or "no change vs baseline"
-        if not quiet:
-            print(f"FROZEN: would have applied [{best_desc}] "
-                  f"(agg {best['agg_score']:.1f} vs baseline {baseline_score:.1f}) "
-                  f"— PARAMS_FROZEN is on, nothing written.")
-    elif best and best["agg_score"] > required:
-        # Winner beats the incumbent on the identical pipeline → APPLY.
-        # (Owner directive 2026-07-07: validated best is applied directly,
-        # no approval step.) set_param records param_history + bounds-checks.
+    applied = False          # kept in the result shape; nothing auto-applies now
+    enqueued: list[str] = []
+    if best and best["agg_score"] > required:
+        # THE WINNER GOES TO THE APPROVAL QUEUE, NOT TO LIVE.
+        #
+        # This used to call runtime_config.set_param() directly, under the
+        # 2026-07-07 owner directive ("确认是最优化了就直接套用"). Two things
+        # changed. The sweep now scores with backtest_v4, which is calibrated
+        # against real fills rather than against a second engine — so the
+        # winner means more than it used to. And the owner asked for the
+        # approval step back: a parameter change is a decision about real
+        # money, and the engine's job is to make the case, not to make the
+        # call. Queuing is not writing, so this runs whether or not the
+        # PARAMS_FROZEN choke point is armed; approving is what writes, and
+        # that path is still gated by the freeze.
         changes = []
+        payload_params = {}
         for key, val in zip(PARAM_KEYS, (best["th"], best["tp"], best["sl"])):
             if float(val) != saved[key]:
-                runtime_config.set_param(key, float(val), "optimizer_auto")
                 changes.append(f"{key}: {saved[key]:g} → {val:g}")
-        applied = bool(changes)
-        if applied:
+                payload_params[key] = float(val)
+        if payload_params:
             title = "每日优化器" if daily else "Weekly optimizer"
-            msg = (f"🔧 *{title} AUTO-APPLIED*\n"
-                   + "\n".join(f"  • {c}" for c in changes)
-                   + f"\n  agg score {best['agg_score']:.1f} vs baseline {baseline_score:.1f}"
-                   + (f" (需 ≥{required:.1f})" if daily else "")
-                   + f" | mean PnL ${best['mean_pnl']:.0f}"
-                   f" ({best['valid_windows']}/{len(windows)} windows)"
-                   "\n  下一次扫描生效（runtime 覆盖，无需重启）")
+            detail = (f"{title} — v4 网格搜索找到更优参数\n"
+                      + "\n".join(f"  • {c}" for c in changes)
+                      + f"\n  agg {best['agg_score']:.1f} vs baseline "
+                        f"{baseline_score:.1f}"
+                      + (f" (需 ≥{required:.1f})" if daily else "")
+                      + f" | mean PnL ${best['mean_pnl']:.0f}"
+                        f" ({best['valid_windows']}/{len(windows)} windows)")
+            try:
+                from src import approvals
+                for key, val in payload_params.items():
+                    enqueued.append(approvals.enqueue(
+                        kind="param_change",
+                        detail=detail,
+                        action=f"set {key} = {val:g}",
+                        payload={"key": key, "value": val,
+                                 "source": "optimizer_v4",
+                                 "agg_score": best["agg_score"],
+                                 "baseline_score": baseline_score,
+                                 "mean_pnl": best["mean_pnl"],
+                                 "valid_windows": best["valid_windows"]}))
+            except Exception as e:
+                print(f"WARN: could not enqueue for approval: {e}")
             try:
                 from src import notifier
-                notifier.send(msg)
+                notifier.send(
+                    f"📥 *{title} — 待批准*\n"
+                    + "\n".join(f"  • {c}" for c in changes)
+                    + f"\n  agg {best['agg_score']:.1f} vs baseline "
+                      f"{baseline_score:.1f} | mean PnL ${best['mean_pnl']:.0f}"
+                      f" ({best['valid_windows']}/{len(windows)} windows)"
+                      "\n  在 Telegram/GUI 批准后生效 — 不批准就什么都不变")
             except Exception as e:
                 print(f"WARN: telegram notify failed: {e}")
             if not quiet:
-                print(msg)
+                print(f"QUEUED for approval: [{'; '.join(changes)}] "
+                      f"(agg {best['agg_score']:.1f} vs baseline "
+                      f"{baseline_score:.1f}) — nothing written to live.")
     elif not quiet:
         why = ("no eligible challenger beat the baseline"
                if challengers else "no combo produced ≥3 trades in ≥2 windows with positive PnL")
@@ -397,6 +422,7 @@ def optimize(quick: bool = False, quiet: bool = False,
         "baseline": baseline,
         "best": best,
         "applied": applied,
+        "enqueued_for_approval": enqueued,
         "saved_params": saved,
         "top5": results[:5],
     }
@@ -416,6 +442,7 @@ def optimize(quick: bool = False, quiet: bool = False,
                   "agg": best["agg_score"], "mean_pnl": best["mean_pnl"]}
                  if best else None),
         "applied": applied,
+        "enqueued": len(enqueued),
         "combos": len(results),
         "windows": len(windows),
         "elapsed_sec": round(elapsed, 1),

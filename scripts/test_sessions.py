@@ -44,7 +44,8 @@ os.environ["MMT_HOME"] = _TMP
 (Path(_TMP) / "logs").mkdir(parents=True, exist_ok=True)
 
 from moomoo import KLType                                    # noqa: E402
-from src import sandbox                                      # noqa: E402
+from src import sim_feed as sandbox            # session logic moved here
+from src.backtest_v4 import V4Config           # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -81,7 +82,7 @@ check("15:29 is inside it", clk.in_trade_phase())
 clk._now = datetime(2026, 8, 3, 15, 30)
 check("15:30 is past it", not clk.in_trade_phase())
 check("the default config asks for regular hours",
-      sandbox.SandboxConfig(start=ET, end=ET).sessions == "RTH")
+      V4Config(start=ET, end=ET).sessions == "RTH")
 check("...and passes no session to the broker at all",
       feed_for("RTH")._session_arg(KLType.K_60M) is None)
 check("...keeping the unsuffixed cache name",

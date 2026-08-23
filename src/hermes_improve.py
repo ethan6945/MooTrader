@@ -429,9 +429,21 @@ def apply_params(changes: dict, reason: str, pnl_estimate: str) -> dict:
     for key, new_val in changes.items():
         rk = _RUNTIME_KEY_MAP.get(key) or _RUNTIME_KEY_MAP.get(key.upper())
         if rk:
+            # Queued, not applied (2026-08-23). An agent-proposed parameter is
+            # still a decision about real money; PARAMS_FROZEN used to be what
+            # stopped this writing, and the freeze is off.
             try:
-                rec = runtime_config.set_param(rk, float(new_val), source="hermes_agent")
-                applied_runtime[rk] = {"old": rec["old"], "new": rec["new"]}
+                val = float(new_val)
+                if not runtime_config.is_valid(rk, val):
+                    raise ValueError("outside ALLOWED_PARAMS bounds")
+                from . import approvals as _approvals
+                _approvals.enqueue(
+                    kind="param_change",
+                    detail=f"Hermes agent: {rk} {runtime_config.current(rk)} → {val}",
+                    action=f"set {rk} = {val}",
+                    payload={"key": rk, "value": val, "source": "hermes_agent"})
+                applied_runtime[rk] = {"old": runtime_config.current(rk),
+                                       "new": val, "status": "queued for approval"}
             except (ValueError, TypeError) as e:
                 rejected[key] = f"out of ALLOWED_PARAMS bounds / not numeric: {e}"
         else:

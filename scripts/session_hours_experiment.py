@@ -106,8 +106,8 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import sandbox                                    # noqa: E402
-from src.sandbox import SandboxConfig, run_sandbox         # noqa: E402
+from src import backtest_v4 as sandbox                                    # noqa: E402
+from src.backtest_v4 import V4Config, run_v4         # noqa: E402
 
 DAYS = 45
 end = datetime.now().replace(hour=16, minute=0, second=0, microsecond=0)
@@ -131,8 +131,8 @@ results = {}
 for sessions in ("RTH", "ETH", "ALL"):
     print(f"\n{'='*60}\n  sessions = {sessions}\n{'='*60}", flush=True)
     sandbox.reset_fill_stats()
-    cfg = SandboxConfig(start=start, end=end, sessions=sessions)
-    r = run_sandbox(cfg)
+    cfg = V4Config(start=start, end=end, sessions=sessions)
+    r = run_v4(cfg)
     trades = r.get("trades", [])
     s = r.get("summary", {})
 

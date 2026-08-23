@@ -62,7 +62,9 @@ def check(name, cond, detail=""):
 from src.config import settings                              # noqa: E402
 
 MAIN = (ROOT / "src" / "main.py").read_text()
-SANDBOX = (ROOT / "src" / "sandbox.py").read_text()
+# sandbox.py and backtest_v3.py were merged into backtest_v4.py (2026-08-23);
+# the property this guards is unchanged, only the file that must state it.
+ENGINE = (ROOT / "src" / "backtest_v4.py").read_text()
 
 
 # ── 1. the defaults ────────────────────────────────────────────────────────
@@ -193,15 +195,15 @@ if stack_ifs:
 
 # ── 4. the backtest does not model what it cannot model ────────────────────
 print("\n4  the engines do not pretend to have news")
-check("the sandbox states that news-driven mode is not modelled",
-      "NEWS-DRIVEN MODE IS NOT MODELLED HERE" in SANDBOX)
+check("the engine states that news-driven mode is not modelled",
+      "NEWS-DRIVEN MODE IS NOT MODELLED HERE" in ENGINE)
 check("...and why: no point-in-time archive",
-      "point-in-time news archive" in SANDBOX)
+      "point-in-time news archive" in ENGINE)
 check("...and why: no model with a training cutoff before the window",
-      "training cutoff before the test window" in SANDBOX)
-check("the sandbox skips AI annotation rather than faking it",
-      "AI news/veto/sentiment SKIPPED" in SANDBOX)
-# A sandbox that scored news would be measuring a different strategy AND doing
+      "training cutoff before the test window" in ENGINE)
+check("the engine skips AI annotation rather than faking it",
+      "AI news/veto/sentiment SKIPPED" in ENGINE)
+# An engine that scored news would be measuring a different strategy AND doing
 # it with look-ahead. Assert on the IMPORTS: an earlier version searched the
 # whole file for "news_driven" and matched a comment naming the preflight
 # function, which is prose about the gap rather than code that closes it.
@@ -224,7 +226,7 @@ def imports_of(src: str) -> set[str]:
     return out
 
 
-for engine, src in (("sandbox", SANDBOX),
+for engine, src in (("backtest_v4", ENGINE),
                     ("backtest", (ROOT / "src" / "backtest.py").read_text())):
     bad = sorted(i for i in imports_of(src)
                  if any(n in i for n in NEWS_MODULES))

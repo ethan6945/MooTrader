@@ -377,381 +377,15 @@ def _warm_up(cfg: BacktestConfig) -> int:
 
 # ---------- time-stepped portfolio simulator (live-parity) ----------
 
-def simulate_time_stepped(cfg: BacktestConfig, cache: dict, progress_cb=None) -> dict:
-    """Portfolio-level backtest — processes all tickers' bars by timestamp.
-
-    ⚠ FROZEN TEST-ONLY ORACLE. This is the optimistic, implicit-leverage
-    reference engine. It is deliberately NOT what the user reads: every
-    user-facing report goes through `_run_live_engine` → the honest V3 simulator.
-    This stays untouched on purpose so it can serve two jobs: (1) the fixed
-    baseline that `scripts/engine_compare.py` diffs V3(parity_mode) against to
-    prove V3's mechanics are bug-for-bug correct, and (2) the objective the
-    Optuna optimizer scores through `simulate_with_cache`. Do not "fix" its
-    leverage assumptions here — that would defeat the differential test. Tune
-    realism in V3 (src/backtest_v3.py) instead.
-
-    Unlike `backtest_ticker` (per-ticker sequential), this iterates a single
-    chronologically-sorted event stream across the entire watchlist. The
-    `PortfolioState`, open-trades dict, and `MAX_POSITIONS` cap all behave
-    the way the live `risk_manager` sees them — so the DD breaker and the
-    concurrent-position limit actually fire in the right moments. It does NOT
-    model the live concentration gate (src/concentration.py: per-symbol, gross
-    and correlated-cluster caps); at MAX_POSITION_PCT=0.10 x MAX_POSITIONS=5
-    those cap at 50% gross and none of the three thresholds (50/100/60%) can
-    bind, but raise max_position_pct and this engine stops matching live.
-
-    Returns the same dict shape as `simulate_with_cache` for drop-in use.
-    """
-    from .indicators import check_gap, daily_trend_bullish, evaluate
-    from . import regime as regime_mod
-    from .config import derive_max_positions, settings as _settings
-    if cfg.apply_mr_strategy:
-        from . import strategy_momentum, strategy_mr
-    ml_pred = None   # ML subsystem removed 2026-06-03 (proven inert)
-
-    tf = cache["tf"]
-    spy_daily = cache["spy_daily"]
-    per_ticker = cache["per_ticker"]
-    warm_up = _warm_up(cfg)
-    max_hold = _max_hold_bars(cfg)
-    commission = cfg.commission_per_trade
-    _lookback = warm_up + 20   # fixed-size window — all TA indicators fit within warm_up bars
-
-    # ---------- build the chronological event stream ----------
-    events: list[tuple] = []
-    for sym, bundle in per_ticker.items():
-        df = bundle["intraday"]
-        for i in range(warm_up, len(df) - 1):
-            events.append((df.index[i], sym, i))
-    events.sort(key=lambda x: x[0])
-    log.info("[time-step] event stream: %d bars across %d tickers",
-             len(events), len(per_ticker))
-
-    # ---------- portfolio & open positions ----------
-    portfolio = PortfolioState(starting_capital=cfg.account_usd)
-    open_trades: dict[str, Trade] = {}
-    closed_trades: list[Trade] = []
-    # Per-symbol last SL time — used to enforce SL cooldown identically to live.
-    last_sl_at: dict[str, pd.Timestamp] = {}
-
-    # Cache spy/regime lookups & daily-by-date lookups to avoid recomputing.
-    daily_lookup: dict[str, dict] = {}
-    for sym, bundle in per_ticker.items():
-        d = bundle.get("daily")
-        if d is not None and not d.empty:
-            daily_lookup[sym] = {str(ix.date()): row for ix, row in d.iterrows()}
-        else:
-            daily_lookup[sym] = {}
-
-    # ---------- helpers (mirror backtest_ticker logic exactly) ----------
-    def _slip_for(sig_obj) -> float:
-        if sig_obj.price <= 0:
-            return cfg.base_slip_bp / 10000.0
-        atr_pct = sig_obj.atr / sig_obj.price
-        return (cfg.base_slip_bp + cfg.atr_slip_k * (atr_pct * 100)) / 10000.0
-
-    def _finalise(t: Trade) -> None:
-        t.pnl = round((t.exit_price - t.entry_price) * t.qty - commission, 2)
-        t.pnl_pct = round(
-            (t.exit_price - t.entry_price) / t.entry_price * 100, 2
-        )
-
-    def _close(active: Trade, sym: str, exit_ts: pd.Timestamp) -> None:
-        _finalise(active)
-        closed_trades.append(active)
-        portfolio.record(active.pnl)
-        open_trades.pop(sym, None)
-        # Stamp the SL time so the cooldown gate can refuse re-entry.
-        if active.exit_reason == "SL":
-            last_sl_at[sym] = exit_ts
-
-    # ---------- main loop ----------
-    # Progress: fire every ~2% of events so the GUI shows movement during the
-    # simulation phase (not just the prefetch phase). Without this the label
-    # is frozen at "Fetching <last ticker>" for the entire simulation, which
-    # looks identical to a hang.
-    total_events = len(events)
-    progress_step = max(1, total_events // 50)
-    for evt_idx, (ts, sym, i) in enumerate(events):
-        if progress_cb is not None and evt_idx % progress_step == 0:
-            progress_cb(evt_idx, total_events, sym)
-        df = per_ticker[sym]["intraday"]
-        daily_df = per_ticker[sym]["daily"]
-        bar = df.iloc[i]
-        bar_date = str(df.index[i].date())
-        hi = float(bar["high"])
-        lo = float(bar["low"])
-
-        # --- (A) manage an open position on this symbol ---
-        active = open_trades.get(sym)
-        if active is not None:
-            bars_held = i - active.entry_bar
-            # ATR frozen at entry — trailing/breakeven move the stop, so we can
-            # no longer back-derive ATR from (entry − stop) without corrupting
-            # both the slippage estimate and the R-unit. Fall back to the old
-            # derivation only for legacy trades that never stored atr_at_entry.
-            atr_at_entry = active.atr_at_entry if active.atr_at_entry > 0 else \
-                (active.entry_price - active.stop_loss) / max(cfg.sl_atr_mult, 1e-9)
-            atr_est = atr_at_entry
-            exit_slip = (cfg.base_slip_bp + cfg.atr_slip_k
-                         * (atr_est / max(active.entry_price, 1e-9) * 100)) / 10000.0
-
-            # R-unit = original entry risk. Must stay fixed even after the stop
-            # ratchets up, else breakeven/scale-out R-targets collapse toward 0.
-            r_unit = cfg.sl_atr_mult * atr_at_entry
-            if r_unit <= 0:
-                r_unit = 1e-9
-
-            # ── Breakeven stop: once price has touched entry + breakeven_trigger_r × r,
-            # raise the stop to entry (book a no-loss outcome on remaining qty).
-            if cfg.use_breakeven_stop and not active.breakeven_set:
-                trigger_price = active.entry_price + cfg.breakeven_trigger_r * r_unit
-                if hi >= trigger_price:
-                    active.stop_loss = max(active.stop_loss, active.entry_price)
-                    active.breakeven_set = True
-
-            # NB: the Chandelier trailing stop is updated AFTER the exit checks
-            # below — so the stop protecting THIS bar only reflects highs through
-            # the PRIOR bar (no intrabar look-ahead). See the post-exit block.
-
-            # ── Scale-out: partial closes at +tp1_r and +tp2_r ──
-            # tp1: close 1/3 at +2R; tp2: close another 1/3 at +4R; remaining
-            # 1/3 trails via a tightened breakeven (already set above).
-            if cfg.use_scale_out:
-                tp1_price = active.entry_price + cfg.tp1_r * r_unit
-                tp2_price = active.entry_price + cfg.tp2_r * r_unit
-                # tp1 — record the partial as its own closed Trade so metrics see it.
-                if not active.tp1_done and hi >= tp1_price:
-                    partial_qty = max(1, active.qty_initial // 3)
-                    if partial_qty < active.qty:
-                        partial = Trade(
-                            symbol=sym, entry_bar=active.entry_bar,
-                            entry_date=active.entry_date,
-                            entry_price=active.entry_price,
-                            stop_loss=active.stop_loss,
-                            take_profit=tp1_price,
-                            qty=partial_qty, score=active.score,
-                            qty_initial=partial_qty,
-                        )
-                        partial.exit_price = round(tp1_price, 2)
-                        partial.exit_date = bar_date
-                        partial.exit_reason = "TP1"
-                        _finalise(partial)
-                        closed_trades.append(partial)
-                        portfolio.record(partial.pnl)
-                        active.qty -= partial_qty
-                        active.tp1_done = True
-                # tp2 — close another 1/3.
-                if active.tp1_done and not active.tp2_done and hi >= tp2_price:
-                    partial_qty = max(1, active.qty_initial // 3)
-                    if partial_qty < active.qty:
-                        partial = Trade(
-                            symbol=sym, entry_bar=active.entry_bar,
-                            entry_date=active.entry_date,
-                            entry_price=active.entry_price,
-                            stop_loss=active.stop_loss,
-                            take_profit=tp2_price,
-                            qty=partial_qty, score=active.score,
-                            qty_initial=partial_qty,
-                        )
-                        partial.exit_price = round(tp2_price, 2)
-                        partial.exit_date = bar_date
-                        partial.exit_reason = "TP2"
-                        _finalise(partial)
-                        closed_trades.append(partial)
-                        portfolio.record(partial.pnl)
-                        active.qty -= partial_qty
-                        active.tp2_done = True
-
-            if lo <= active.stop_loss:
-                open_price = float(bar["open"])
-                trigger = min(open_price, active.stop_loss)
-                worsened = exit_slip * cfg.sl_breakaway_mult
-                active.exit_price = round(trigger * (1 - worsened), 2)
-                active.exit_date = bar_date
-                # Distinguish a profit-taking trailing/breakeven exit from a real
-                # SL so metrics aren't misleading. TRAIL = stop ratcheted above
-                # entry by the Chandelier trail; BREAKEVEN = parked at entry.
-                if active.trail_active and active.stop_loss > active.entry_price:
-                    active.exit_reason = "TRAIL"
-                elif active.breakeven_set and trigger >= active.entry_price:
-                    active.exit_reason = "BREAKEVEN"
-                else:
-                    active.exit_reason = "SL"
-            elif hi >= active.take_profit:
-                active.exit_price = round(active.take_profit, 2)
-                active.exit_date = bar_date
-                active.exit_reason = "TP"
-            elif bars_held >= max_hold:
-                active.exit_price = round(float(bar["close"]) * (1 - exit_slip), 2)
-                active.exit_date = bar_date
-                active.exit_reason = "MAX_HOLD"
-
-            if active.exit_reason:
-                _close(active, sym, ts)
-            else:
-                # ── Chandelier ATR trailing stop — updated only AFTER this bar's
-                # exit checks, so it never uses a high the same bar could have
-                # stopped out on. Hangs the stop off the highest high SINCE entry
-                # (incl. this bar) and ratchets up only; the new level protects
-                # the NEXT bar. Arms once price clears +trail_activate_r × R so
-                # the trade has room early. This is what lets fat-tail winners
-                # run past the MAX_HOLD guillotine.
-                if cfg.use_trailing_stop:
-                    if hi > active.highest_high:
-                        active.highest_high = hi
-                    if not active.trail_active and active.highest_high >= \
-                            active.entry_price + cfg.trail_activate_r * r_unit:
-                        active.trail_active = True
-                    if active.trail_active:
-                        trail_stop = active.highest_high - cfg.trail_atr_mult * atr_at_entry
-                        if trail_stop > active.stop_loss:
-                            active.stop_loss = round(trail_stop, 2)
-            continue   # already has (or had) position on this bar — no new entry
-
-        # --- (B) try to open a new position ---
-        # Portfolio max_positions cap (true portfolio-level — what live enforces).
-        if cfg.apply_max_positions and len(open_trades) >= derive_max_positions(cfg.account_usd):
-            continue
-
-        # SL cooldown — refuse re-entry on a name we just stopped out of.
-        # Mirrors `risk_manager.in_sl_cooldown` in live.
-        if cfg.sl_cooldown_hours > 0 and sym in last_sl_at:
-            elapsed_hours = (ts - last_sl_at[sym]).total_seconds() / 3600
-            if elapsed_hours < cfg.sl_cooldown_hours:
-                continue
-
-        # --- score the bar (trend + optional MR) ---
-        window = df.iloc[max(0, i + 1 - _lookback): i + 1]
-        try:
-            sig_trend = evaluate(sym, window)
-            if cfg.apply_mr_strategy:
-                sig_mr = strategy_mr.evaluate(sym, window)
-                sig_mom = strategy_momentum.evaluate(sym, window)
-                # Pick the highest-scoring of the three.
-                candidates = [sig_trend, sig_mr, sig_mom]
-                sig = max(candidates, key=lambda s: s.score)
-            else:
-                sig = sig_trend
-        except Exception:
-            continue
-        if sig.score < cfg.threshold or sig.atr <= 0:
-            continue
-
-        # --- gates: MTF + gap + regime + ML ---
-        if daily_df is not None and not daily_df.empty:
-            d_until = daily_df.loc[daily_df.index <= df.index[i]].tail(100)
-            if len(d_until) >= 2:
-                if cfg.apply_mtf_gate and cfg.timeframe == "HOUR_1":
-                    ok, _ = daily_trend_bullish(d_until)
-                    if not ok:
-                        continue
-                if cfg.apply_gap_gate:
-                    ok, _ = check_gap(d_until, max_gap_pct=cfg.max_gap_pct)
-                    if not ok:
-                        continue
-
-        regime = None
-        if (cfg.apply_regime_gate or cfg.use_regime_scaling) and \
-                spy_daily is not None and not spy_daily.empty:
-            s_until = spy_daily.loc[spy_daily.index <= df.index[i]].tail(250)
-            if len(s_until) >= 200:
-                regime = regime_mod.assess(s_until)
-                if cfg.apply_regime_gate and regime.block_new_entries:
-                    continue
-
-        # --- DD circuit breaker (TRUE portfolio-level now that we're chronological) ---
-        # is_halted() also handles the 7-day auto-release so a stuck halt
-        # doesn't lock the simulator for months.
-        qty_mult = 1.0
-        if cfg.apply_dd_breaker:
-            if portfolio.is_halted(ts, cfg.dd_halt_pct):
-                continue   # halt active — refuse new entries this bar
-            if portfolio.dd_pct >= cfg.dd_size_cut_pct:
-                qty_mult = 0.5
-
-        # --- regime-scaled sizing: lever up in a confirmed strong bull (SPY >
-        # 50MA > 200MA) when VIX is calm. Stacks on top of the DD cut, so a
-        # strong-bull-but-drawn-down state still de-risks first. ---
-        if cfg.use_regime_scaling and regime is not None and regime.bullish:
-            try:
-                vix_now = float(bar["vix"])
-            except (KeyError, TypeError, ValueError):
-                vix_now = 15.0
-            if vix_now < cfg.regime_vix_calm:
-                qty_mult *= cfg.regime_bull_mult
-
-        # --- realistic limit-buy fill ---
-        next_bar = df.iloc[i + 1]
-        limit_price = float(sig.price)
-        next_open = float(next_bar["open"])
-        next_low = float(next_bar["low"])
-        slip = _slip_for(sig)
-
-        if cfg.realistic_limit_fills:
-            if next_open <= limit_price:
-                entry_price = next_open * (1 + slip)
-            elif next_low <= limit_price:
-                entry_price = limit_price * (1 + slip)
-            else:
-                continue
-        else:
-            entry_price = next_open * (1 + slip)
-        if entry_price <= 0:
-            continue
-
-        stop_loss = round(entry_price - cfg.sl_atr_mult * sig.atr, 2)
-        take_profit = round(entry_price + cfg.tp_atr_mult * sig.atr, 2)
-        qty = _position_size(entry_price, stop_loss, cfg)
-        qty = max(0, int(qty * qty_mult))
-        if qty == 0:
-            continue
-
-        open_trades[sym] = Trade(
-            symbol=sym,
-            entry_bar=i + 1,
-            entry_date=str(df.index[i + 1].date()),
-            entry_price=round(entry_price, 2),
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            qty=qty,
-            qty_initial=qty,
-            score=sig.score,
-            atr_at_entry=sig.atr,
-            highest_high=round(entry_price, 2),
-        )
-
-    # ---------- close anything still open at the very end ----------
-    for sym, active in list(open_trades.items()):
-        df = per_ticker[sym]["intraday"]
-        last = df.iloc[-1]
-        atr_est = (active.entry_price - active.stop_loss) / max(cfg.sl_atr_mult, 1e-9)
-        eod_slip = (cfg.base_slip_bp + cfg.atr_slip_k
-                    * (atr_est / max(active.entry_price, 1e-9) * 100)) / 10000.0
-        active.exit_price = round(float(last["close"]) * (1 - eod_slip), 2)
-        active.exit_date = str(df.index[-1].date())
-        active.exit_reason = "EOD"
-        _close(active, sym, df.index[-1])
-
-    metrics = compute_metrics(closed_trades, cfg)
-    log.info("[time-step] done — %d trades, final DD=%.2f%%, equity=$%.2f",
-             len(closed_trades), portfolio.dd_pct, portfolio.equity)
-    return {
-        "config": {
-            "days": cfg.days, "timeframe": cfg.timeframe,
-            "threshold": cfg.threshold,
-            "tickers": list(per_ticker.keys()),
-            "account_usd": cfg.account_usd,
-            "simulator": "time_stepped",
-        },
-        "metrics": metrics,
-        "trades": [asdict(t) for t in sorted(closed_trades, key=lambda t: t.entry_date)],
-        "errors": [],
-        "generated_at": str(date.today()),
-    }
-
-
-# ---------- metrics ----------
+# THE FROZEN ORACLE IS GONE (2026-08-23).
+#
+# `simulate_time_stepped` was the optimistic, implicit-leverage reference
+# engine, kept for one job: being the fixed baseline that
+# scripts/engine_compare.py diffed backtest_v3 against. That script had already
+# ceased to exist, and backtest_v3 is gone too — so the oracle was a 380-line
+# second implementation of the strategy that nothing validated and nothing read.
+# `simulate_with_cache` was its only entry point; Optuna moved off it onto
+# backtest_v4 in the same change.
 
 def compute_metrics(trades: list[Trade], cfg: Optional[BacktestConfig] = None) -> dict:
     """Risk-adjusted metrics + Monte Carlo. Delegates to src.metrics.
@@ -1006,102 +640,82 @@ def prefetch_data(cfg: BacktestConfig, progress_cb=None) -> dict:
             "soxx_daily": soxx_daily, "per_ticker": per_ticker}
 
 
-def simulate_with_cache(cfg: BacktestConfig, cache: dict, progress_cb=None) -> dict:
-    """Run the simulation phase only, using pre-fetched data.
-
-    Delegates to the TIME-STEPPED portfolio simulator (`simulate_time_stepped`)
-    so DD breaker / max_positions / sector caps see the same chronological
-    state the live `risk_manager` sees. The old per-ticker `backtest_ticker`
-    is kept around for ad-hoc single-symbol debugging only.
-
-    No OpenD calls — pure CPU. This is what the Optuna optimizer calls 20-30x
-    while only the params change.
-    """
-    _orig = os.environ.get("TIMEFRAME", "")
-    os.environ["TIMEFRAME"] = cfg.timeframe
-    try:
-        return simulate_time_stepped(cfg, cache, progress_cb=progress_cb)
-    finally:
-        if _orig:
-            os.environ["TIMEFRAME"] = _orig
-        else:
-            os.environ.pop("TIMEFRAME", None)
-
-
-# ── the one honest production engine ─────────────────────────────────────────
-# Single source of truth for "what a real cash account would actually have done":
-# the deleveraged V3 simulator with all three live-fidelity gaps closed (real
-# cash wall, VIX risk-off sizing, earnings gate, real broker commissions). Every
-# user-facing report — GUI panel, weekly Telegram self-check, CLI — flows through
-# here, so there is exactly ONE honest number and no optimistic implicit-leverage
-# path can leak into anything the user reads. The frozen oracle
-# `simulate_time_stepped` is deliberately NOT used here; it stays a test-only
-# reference (see its docstring) backing `simulate_with_cache` + engine_compare.
-def _run_live_engine(cfg: BacktestConfig, cache: dict, progress_cb=None,
+def _run_live_engine(cfg: BacktestConfig, cache: dict = None, progress_cb=None,
                      rich_metrics: bool = True) -> dict:
-    from .backtest_v3 import simulate_v3  # lazy: avoids a circular import at module load
-    # Mirror live sizing: trend + momentum_break, VIX/earnings/commissions, AND the
-    # owner-approved regime up-scaling (inert at the default REGIME_BULL_MULT=1.0,
-    # so the honest baseline is unchanged until the owner activates it in .env).
-    from .config import settings as _s
-    from . import runtime_config as _rc
-    cfg_live = replace(cfg, apply_vix_sizing=True, apply_earnings_gate=True,
-                       use_realistic_commission=True,
-                       apply_momentum_strategy=True,
-                       use_regime_scaling=True,
-                       regime_bull_mult=_s.regime_bull_mult,
-                       regime_vix_calm=_s.regime_vix_calm,
-                       # Phase 0 realism (2026-06-10): pay live's exit/fill/
-                       # lookahead frictions in every user-facing number.
-                       scan_grid_exits=True,
-                       entry_fill_open_only=True,
-                       no_same_day_daily=True,
-                       reclamp_position_cap=True,
-                       apply_trade_windows=True,
-                       max_new_names_per_scan=_s.max_new_names_per_scan,
-                       use_breakeven_stop=_s.use_breakeven_stop,
-                       breakeven_trigger_r=_rc.breakeven_trigger_r())
-    return simulate_v3(cfg_live, cache, enforce_cash=True,
-                       rich_metrics=rich_metrics, progress_cb=progress_cb)
+    """THE engine, behind the name every caller already uses.
 
+    This used to configure backtest_v3 with a dozen live-fidelity flags — VIX
+    sizing, the earnings gate, real commissions, soft exits, an entry TTL, the
+    same-day-daily lookahead fix, the position-cap re-clamp, trade windows. All
+    of those were knobs because v3's default was a DIFFERENT, more optimistic
+    strategy, and every user-facing path had to remember to turn them on.
+
+    v4 has no optimistic mode to opt out of. The frictions are the engine, so
+    this function is now an adapter: BacktestConfig in, V4Config out, and the
+    result reshaped to the dict every existing consumer already reads (the GUI
+    panel, the weekly Telegram health check, autopilot's validation step,
+    strategy_gate, optimizer_ai).
+
+    `cache` is accepted and ignored — v4 owns its own replay feed. Callers that
+    still call prefetch_data() first are paying for a fetch nothing reads; that
+    is wasteful, not wrong, and it keeps their call sites working.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+    from zoneinfo import ZoneInfo as _Z
+    from .backtest_v4 import V4Config, run_v4
+
+    _et = _Z("America/New_York")
+    end = _dt.now(_et).replace(hour=16, minute=0, second=0, microsecond=0)
+    v4cfg = V4Config(
+        start=end - _td(days=cfg.days), end=end,
+        tickers=list(cfg.tickers) or _load_watchlist(),
+        universe_mode="dynamic" if cfg.apply_dynamic_universe else "static",
+        account_usd=cfg.account_usd,
+    )
+    res = run_v4(v4cfg, progress_cb=progress_cb, rich_metrics=rich_metrics)
+    # Reshape to the incumbent contract: consumers read result["metrics"] and
+    # result["trades"], and the trade rows are keyed the way compute_metrics
+    # emitted them.
+    res["trades"] = [
+        dict(t,
+             entry_date=t["entry_t"][:10], exit_date=t["exit_t"][:10],
+             entry_price=t["entry"], exit_price=t["exit"],
+             exit_reason=t["reason"], pnl=t["net_pnl"])
+        for t in res["trades"]
+    ]
+    res["errors"] = []
+    return res
 
 def run_backtest(
     cfg: BacktestConfig,
     progress_cb=None,
 ) -> dict:
-    """One-shot: fetch + simulate. Equivalent to prefetch_data + simulate_with_cache.
+    """One-shot user-facing backtest. Backs the GUI panel, the weekly Telegram
+    health check, autopilot's validation step, and strategy_gate.
 
-    Kept for backwards compatibility with the GUI, CLI, and any external callers.
-    The same progress_cb fires during BOTH phases — the callback's (cur, total,
-    label) args mean ticker-being-fetched during prefetch and event-being-replayed
-    during the simulation (label = symbol whose bar is currently being scored).
+    Runs backtest_v4 — the single engine, calibrated against real fills
+    (scripts/v4_vs_live.py). There is no longer a choice of engine or a set of
+    realism flags to remember: the frictions ARE the engine.
 
-    HONEST ENGINE (2026-06): this user-facing path runs the deleveraged V3
-    simulator with the three live-fidelity gaps closed — real $5k cash wall
-    (enforce_cash), VIX risk-off sizing, earnings gate, and real broker (MY)
-    commissions — so the GUI panel and the weekly Telegram self-check report
-    what a real cash account would have done, not the optimistic implicit-leverage
-    number. The frozen oracle `simulate_time_stepped` is untouched and still backs
-    `simulate_with_cache` (Optuna) and the engine_compare differential test.
+    THE STALE-RESULT GUARD moved with the data layer. It used to check that
+    prefetch_data() returned tickers, because a dead OpenD made the old engine
+    "complete" with 0 trades and then OVERWRITE data/backtest_results.json with
+    a garbage number the GUI displayed as the honest one (2026-06-08). v4 reads
+    its own parquet cache, so a dead OpenD no longer produces an empty run — but
+    an empty UNIVERSE or a window with no bars still can, and saving that would
+    reproduce the same failure. So the guard now asks the engine what it
+    actually did: a run that never evaluated a scan has measured nothing.
     """
-    cache = prefetch_data(cfg, progress_cb=progress_cb)
-    # Phase 0 guard (2026-06-10): a dead network/OpenD makes prefetch return 0
-    # tickers and the engine "completes" with 0 trades — which then OVERWRITES
-    # data/backtest_results.json with garbage the GUI displays as the honest
-    # number (happened on the 2026-06-08 Sunday catch-up run). Refuse loudly;
-    # the weekly job's except-branch telegrams the failure and the GUI keeps
-    # the last good result.
-    if not cache.get("per_ticker"):
+    result = _run_live_engine(cfg, progress_cb=progress_cb)
+    if not result.get("eval_scans"):
         raise RuntimeError(
-            "prefetch returned 0 tickers (network/OpenD down?) — "
+            "backtest evaluated 0 scans (empty universe or no bars in window) — "
             "refusing to run and overwrite the last good backtest result")
-    result = _run_live_engine(cfg, cache, progress_cb=progress_cb)
-    # Log per-symbol trade counts for parity with the old behaviour.
     by_sym: dict[str, int] = {}
     for t in result["trades"]:
         by_sym[t["symbol"]] = by_sym.get(t["symbol"], 0) + 1
-    for sym in cache["per_ticker"]:
-        log.info("%s: %d trades", sym, by_sym.get(sym, 0))
+    for sym, n in sorted(by_sym.items()):
+        log.info("%s: %d trades", sym, n)
     _save_result(result)
     return result
 

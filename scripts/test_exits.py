@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from src.backtest import BacktestConfig, prefetch_data, simulate_with_cache
+from src.backtest import BacktestConfig, _run_live_engine
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 import builtins as _b
@@ -51,7 +51,7 @@ for days in [180, 360]:
                 {k: v for k, v in cache["per_ticker"].items() if k in TOP_10}}
     for name, overrides in variants:
         cfg = replace(base(days), **overrides)
-        r = simulate_with_cache(cfg, narrowed)
+        r = _run_live_engine(cfg)
         m = r["metrics"]
         print(f"{name:<26} {m.get('total_trades', 0):>6} "
               f"{m.get('win_rate_pct', 0):>5.1f} {m.get('profit_factor', 0):>5.2f} "

@@ -48,7 +48,7 @@
     "SIGNAL_WATCHLIST": "MU,SNDK,NVDA,AMD,TSLA,META,MSFT,GOOGL",
     "DYNAMIC_UNIVERSE_ENABLED": "true",
     "UNIVERSE_TOP_N": "15",
-    "PARAMS_FROZEN": "true",
+    "PARAMS_FROZEN": "false",
     "AUTO_APPLY_PARAMS": "false",
     "USE_BREAKEVEN_STOP": "true",
     "AUTO_BUDGET_ENABLED": "false",

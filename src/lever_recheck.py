@@ -66,9 +66,12 @@ def _live_cfg(days: int, tickers: list[str]):
     )
 
 
-def _row(cfg, cache) -> dict:
-    from .backtest_v3 import simulate_v3
-    m = simulate_v3(cfg, cache, enforce_cash=True)["metrics"]
+def _row(cfg, cache=None) -> dict:
+    # backtest_v3 is gone (2026-08-23). _run_live_engine is now the v4 adapter
+    # and takes the same BacktestConfig, so the sweep is unchanged apart from
+    # which engine answers it. `cache` is vestigial — v4 owns its replay feed.
+    from .backtest import _run_live_engine
+    m = _run_live_engine(cfg, rich_metrics=True)["metrics"]
     return {"daily": m.get("daily_pnl_usd", 0.0), "ddm": m.get("max_dd_mtm_pct", 0.0),
             "pf": m.get("profit_factor", 0.0), "wr": m.get("win_rate_pct", 0.0),
             "trd": m.get("total_trades", 0)}

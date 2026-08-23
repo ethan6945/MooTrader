@@ -372,13 +372,13 @@ def calc_position_size(signal: Signal, vix: float = 15.0,
     Final qty = floor(min(risk_qty, cap_qty)) — all multipliers compose, and the
     regime boost still bows to the per-name cap so it can't breach concentration.
     """
-    if conviction <= 0:
-        return 0
-    # Defensive: Layer 5 is an UP-scaler only — never let a stray <1 value secretly
-    # shrink risk (that's what the DD/VIX/conviction layers are for).
-    regime_mult = max(1.0, float(regime_mult))
-    # Account-level DD breaker: halve size at deep drawdown.
-    dd_size_mult = _dd_size_multiplier()
+    # THE RULE LIVES IN sizing_rule. This function's job is to resolve live's
+    # account state and hand it over — the arithmetic is shared with the replay
+    # engine so the two cannot drift (the sandbox's `max(1, qty // 4)` VIX layer
+    # is what that drift looked like: 4x the intended risk in exactly the tape
+    # the cut exists for).
+    from . import runtime_config, sizing_rule
+
     # Adaptive sizing — follows the rolling-30-trade Sortino. Lazy import
     # avoids a hard dependency at module load time (and a circular if
     # adaptive_sizing ever needs to read settings/portfolio).
@@ -388,66 +388,23 @@ def calc_position_size(signal: Signal, vix: float = 15.0,
     except Exception as e:
         log.debug("adaptive_sizing skipped: %s", e)
         adaptive_mult = 1.0
-    cap = sizing_capital()
-    # risk_per_trade is runtime-overridable (half-Kelly proposal, owner-approved).
-    from . import runtime_config
 
-    # PnL-optimised (2026-06-27 MS audit): composite floor on account-state
-    # multipliers. dd_size_mult × adaptive_mult can compound to 0.25× in deep
-    # DD — shrinking positions so small the bot can never recover its
-    # drawdown. Floor it at 0.25× so even in worst conditions, risk stays
-    # ≥ 1.25% of account (0.25 × 5% base). Signal-quality (conviction) and
-    # regime tailwind (regime_mult) compose ON TOP and are not floored — a
-    # marginal signal in a deep DD SHOULD still be half-sized, and a bull
-    # tailwind SHOULD still add its boost.
-    state_mult = dd_size_mult * adaptive_mult
-    if state_mult < 0.25:
-        state_mult = 0.25
-    risk_dollars = (cap * runtime_config.risk_per_trade()
-                    * state_mult * conviction * regime_mult)
-
-    stop_distance = signal.price - signal.stop_loss
-    if stop_distance <= 0:
-        return 0
-    qty_by_risk = int(risk_dollars / stop_distance)
-    # 2026-06-12: cap is runtime-tunable (cap ablation: 40% ≥ 70% on every
-    # in-sample metric; optimizer may tune within [0.20, 0.55] — the ceiling
-    # is the untunable tail-risk guard against single-name overnight gaps).
-    qty_by_cap = int(cap * runtime_config.max_position_pct() / signal.price)
-    base = max(0, min(qty_by_risk, qty_by_cap))
-    if base <= 0:
-        # Un-sizeable on this account: either one share already breaches the
-        # per-name notional cap, or one share's stop distance exceeds the whole
-        # risk budget. Declining is correct — but say so, because it used to be
-        # silent and the weekly universe refresh kept re-selecting such names
-        # (2026-07-27: 5 of 15 watchlist tickers were permanently unbuyable,
-        # still consuming a kline fetch + AI budget on every scan).
-        log.info("%s: not sizeable — qty_by_risk=%d (risk $%.0f / stop $%.2f), "
-                 "qty_by_cap=%d (cap $%.0f / price $%.2f) — entry declined",
-                 signal.symbol, qty_by_risk, risk_dollars, stop_distance,
-                 qty_by_cap, cap * runtime_config.max_position_pct(), signal.price)
-        return 0
-
-    # VIX de-risking. 2026-07-27: this used to be max(1, base // 4) — the floor
-    # of 1 meant a name whose base size was already 1-2 shares got its FULL
-    # (or 2-4x its intended) size in exactly the tape the cut exists for. At
-    # VIX>35 with base=1 the intended size is 0.25 shares and the old code
-    # delivered 1 — 4x the intended risk. Integer share sizes can't express
-    # a partial de-risk, so the honest answer is to skip the name rather than
-    # take a position 4x larger than the vol regime allows. This is the only
-    # place the composed multipliers could be silently overridden upward; the
-    # DD/adaptive/conviction layers all scale risk_dollars, which rounds down
-    # cleanly through qty_by_risk.
-    divisor = 4 if vix > 35 else (2 if vix > 25 else 1)
-    if divisor == 1:
-        return base
-    scaled = base // divisor
-    if scaled <= 0:
-        log.info("%s: VIX %.1f wants 1/%d size but base is only %d share(s) — "
-                 "skipping rather than taking %dx the intended risk",
-                 signal.symbol, vix, divisor, base, divisor)
-        return 0
-    return scaled
+    size = sizing_rule.resolve(
+        capital=sizing_capital(),
+        risk_per_trade=runtime_config.risk_per_trade(),
+        max_position_pct=runtime_config.max_position_pct(),
+        price=signal.price, stop_loss=signal.stop_loss,
+        vix=vix, conviction=conviction, regime_mult=regime_mult,
+        # Account-level DD breaker x adaptive sizing. sizing_rule floors the
+        # product so a deep drawdown cannot shrink positions below recovery size.
+        state_mult=_dd_size_multiplier() * adaptive_mult,
+    )
+    if size.qty <= 0 and size.reason:
+        # Used to be silent, and the weekly universe refresh kept re-selecting
+        # names that could never be sized (2026-07-27: 5 of 15 watchlist tickers
+        # were permanently unbuyable, still costing a kline fetch every scan).
+        log.info("%s: %s — entry declined", signal.symbol, size.reason)
+    return size.qty
 
 
 def _can_stack_onto(signal: Signal, held: pd.DataFrame) -> tuple[bool, str]:

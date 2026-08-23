@@ -42,6 +42,12 @@ from pathlib import Path
 # testing the thing it names.
 _TMP = tempfile.mkdtemp(prefix="mmt-freeze-")
 os.environ["MMT_HOME"] = _TMP
+# This suite is about what happens WHILE THE FREEZE IS ON, so it pins the flag
+# instead of inheriting it. The deployment turned PARAMS_FROZEN off on
+# 2026-08-23 (approvals.py is now the sole writer, which is the stronger
+# guarantee) — and a suite that stops testing refusals the moment a deployment
+# stops refusing is a suite that quietly went blank.
+os.environ["PARAMS_FROZEN"] = "true"
 for _d in ("data", "logs", "config"):
     (Path(_TMP) / _d).mkdir(parents=True, exist_ok=True)
 
@@ -140,10 +146,23 @@ rejected = res.get("rejected", {})
 check("PARAMS_FROZEN write refused", "PARAMS_FROZEN" in rejected)
 check("MOO_TRADE_ENV write refused", "MOO_TRADE_ENV" in rejected)
 check("credential write refused", "DEEPSEEK_API_KEY" in rejected)
-check("frozen tunable refused (RISK_PER_TRADE)", "RISK_PER_TRADE" in rejected)
-check("frozen tunable refused (MAX_POSITION_PCT)", "MAX_POSITION_PCT" in rejected)
 check("nothing was applied to .env", not res.get("applied_env"))
-check("nothing was applied at runtime", not res.get("applied_runtime"))
+
+# The tunables changed shape, not outcome (2026-08-23). hermes used to call
+# set_param() and be REFUSED by the freeze; it now never calls it — a tunable
+# proposal goes to the approval queue instead. The property under test is the
+# same one either way: an agent cannot move a risk parameter by itself. Assert
+# on that, not on the mechanism, so this keeps testing something after the
+# freeze comes off.
+_runtime = res.get("applied_runtime") or {}
+check("tunables did not reach live (RISK_PER_TRADE)",
+      _runtime.get("risk_per_trade", {}).get("status") == "queued for approval"
+      or "RISK_PER_TRADE" in rejected)
+check("tunables did not reach live (MAX_POSITION_PCT)",
+      _runtime.get("max_position_pct", {}).get("status") == "queued for approval"
+      or "MAX_POSITION_PCT" in rejected)
+check("no runtime param was written outright",
+      all(v.get("status") == "queued for approval" for v in _runtime.values()))
 if _env_before is not None:
     check("the real .env is byte-identical", _real_env.read_text() == _env_before)
 

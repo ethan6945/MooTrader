@@ -139,7 +139,15 @@ EXAMPLE_MUST_MATCH = [
 # is the case the .env-vs-.env.example comparison cannot see at all.
 # (env var, settings attribute, expected-safe default)
 RISK_SWITCHES = [
-    ("PARAMS_FROZEN",            "params_frozen",            True),
+    # PARAMS_FROZEN's job moved (2026-08-23). It was the global choke point that
+    # stopped every automated write; it is now off for this deployment, and what
+    # replaced it is structural: approvals.py is the ONLY caller of set_param,
+    # so nothing reaches live without an approval. check_sole_param_writer()
+    # below guards that, and it is a stronger property than the flag ever was —
+    # the flag could be turned off, the call sites cannot appear by accident.
+    # Listed with expected False so this file states the current design rather
+    # than failing forever against a decision that was made deliberately.
+    ("PARAMS_FROZEN",            "params_frozen",            False),
     ("AUTO_APPLY_PARAMS",        "auto_apply_params",        False),
     ("AUTO_BUDGET_ENABLED",      "auto_budget_enabled",      False),
     ("MAX_POSITIONS_AUTOSCALE",  "max_positions_autoscale",  False),
@@ -174,6 +182,54 @@ def code_default(attr: str):
             _os.environ[env_name] = saved
         import src.config as _cfg2
         importlib.reload(_cfg2)
+
+
+# Modules allowed to call runtime_config.set_param(). Exactly one: the
+# approval executor. Anything else is an automated path to live.
+_ALLOWED_PARAM_WRITERS = {"src/approvals.py"}
+
+
+def check_sole_param_writer() -> list[dict]:
+    """Only the approval executor may write a live parameter.
+
+    This replaces PARAMS_FROZEN as the thing that makes "live never changes by
+    itself" true. Three modules used to call set_param directly — autopilot
+    (DeepSeek, inside hardcoded guardrails), optimizer_ai (gated on a config
+    flag), and hermes_improve. The freeze was what actually stopped them, so
+    lifting it without moving them would have re-armed all three at once.
+    """
+    # Parsed, not grepped. A docstring that MENTIONS set_param is prose about
+    # the design; only a call node is a path to live.
+    import ast as _ast
+    out, offenders = [], []
+    for path in sorted((ROOT / "src").glob("*.py")):
+        rel = f"src/{path.name}"
+        if rel in _ALLOWED_PARAM_WRITERS:
+            continue
+        try:
+            tree = _ast.parse(path.read_text())
+        except SyntaxError:
+            continue
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            fn = node.func
+            if (isinstance(fn, _ast.Attribute) and fn.attr == "set_param"
+                    and isinstance(fn.value, _ast.Name)
+                    and fn.value.id in ("runtime_config", "rc")):
+                offenders.append(f"{rel}:{node.lineno}")
+    if offenders:
+        out.append({
+            "severity": "high", "key": "PARAM_WRITE_PATH",
+            "what": f"set_param called outside the approval executor: "
+                    f"{', '.join(offenders)}",
+            "why": "With PARAMS_FROZEN off, a direct set_param call changes live "
+                   "parameters with nobody approving it. Owner requirement: "
+                   "every parameter change waits for an approval.",
+            "action": "route it through approvals.enqueue(kind='param_change') "
+                      "instead, or add it to _ALLOWED_PARAM_WRITERS deliberately",
+        })
+    return out
 
 
 def check_risk_switches(env: dict, example: dict) -> list[dict]:
@@ -444,6 +500,7 @@ def collect() -> dict:
 
     findings += check_budget_baseline(state, env)
     findings += check_risk_switches(env, example)
+    findings += check_sole_param_writer()
     findings += check_parameter_file_is_live(env)
     findings += check_one_store_per_key(env)
     findings += check_no_constant_false_gates(env)

@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.backtest import BacktestConfig, prefetch_data, simulate_with_cache  # noqa: E402
+from src.backtest import BacktestConfig, _run_live_engine  # noqa: E402
 
 
 def main() -> None:
@@ -38,7 +38,7 @@ def main() -> None:
         print(f"\n=== prefetching {tf} ===")
         cache = prefetch_data(cfg)
         print(f"=== simulating {tf} ({len(cache['per_ticker'])} tickers) ===")
-        result = simulate_with_cache(cfg, cache)
+        result = _run_live_engine(cfg)
         m = result["metrics"]
         rows.append({
             "tf": tf,

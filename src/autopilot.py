@@ -4,8 +4,9 @@ WEEKLY SCHEDULE (Monday 09:00 ET = Monday 21:00 KL GMT+8):
   1. COLLECT: self_review + breadth + strategy perf + ML training + backtest
   2. PROMPT: send the full report to DeepSeek with guardrails
   3. VALIDATE: each proposal gets a backtest_v3 honest-engine check
-  4. APPLY: within guardrails → auto-apply (runtime override, no restart);
-           outside guardrails → approval queue (owner decides)
+  4. QUEUE: every validated proposal goes to the approval queue. Nothing this
+           module produces reaches live without the owner approving it
+           (2026-08-23 — it used to auto-apply inside the guardrails).
   5. NOTIFY: Telegram summary of everything that happened
 
 SETUP: the owner connects DeepSeek API keys in .env (DEEPSEEK_API_KEY).
@@ -336,18 +337,33 @@ def weekly_autopilot() -> dict:
         if p.get("key") not in val_keys:
             skipped.append({**p, "reason": "no improvement on the recent 60d OpenD backtest"})
 
-    # ── 3c. Apply the validated (independently-improving) changes ──
+    # ── 3c. QUEUE the validated (independently-improving) changes ──
+    #
+    # This used to call set_param() directly: a proposal that cleared the
+    # hardcoded guardrails and beat the backtest was applied to live without
+    # anyone seeing it. The PARAMS_FROZEN choke point was what actually stopped
+    # that, and the freeze came off on 2026-08-23 — so the gate has to live
+    # here, where the decision is, rather than in a global switch that also
+    # disables things nobody objected to. Owner requirement: every parameter
+    # change waits for an approval.
     for v in validated:
         key = v.get("key")
         value = v.get("value")
         try:
             current = _current_params().get(key)
-            runtime_config.set_param(
-                key, float(value),
-                f"autopilot_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
+            approvals.enqueue(
+                kind="param_change",
+                detail=(f"Autopilot (DeepSeek, 已通过 v4 回测验证): "
+                        f"{key} {current} → {value}\n  {v.get('rationale', '')}"),
+                action=f"set {key} = {value}",
+                payload={"key": key, "value": float(value),
+                         "source": "autopilot",
+                         "rationale": v.get("rationale", ""),
+                         "backtest_deltas": v.get("_deltas"),
+                         "backtest_dd": v.get("_dd")})
             applied.append({**v, "old_value": current,
                             "backtest": {"deltas": v.get("_deltas"), "dd": v.get("_dd")}})
-            log.info("Autopilot: APPLIED %s %s → %s (%s)",
+            log.info("Autopilot: QUEUED %s %s → %s (%s)",
                      key, current, value, v.get("rationale", ""))
         except Exception as e:
             skipped.append({**v, "reason": str(e)})
@@ -355,7 +371,7 @@ def weekly_autopilot() -> dict:
     # ── 4. Notify ──
     lines = ["🤖 *Autopilot 周报*"]
     if applied:
-        lines.append("\n✅ *已自动执行:*")
+        lines.append("\n📥 *待你批准:*")
         for a in applied:
             lines.append(
                 f"  • {a['key']}: {a.get('old_value','?')} → {a['value']}"

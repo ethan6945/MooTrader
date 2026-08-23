@@ -27,14 +27,13 @@ import json
 import logging
 import warnings
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import optuna
 
-from .backtest import (BacktestConfig, prefetch_data, simulate_with_cache,  # noqa: F401
-                       _run_live_engine)
+from .backtest import BacktestConfig  # config shape only — v4 does the scoring
 from .config import settings  # noqa: F401 (re-exported)
 
 # Suppress Optuna's experimental warnings — TPE is fine.
@@ -48,64 +47,102 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------- walk-forward evaluator ----------
 
+def _fold_windows(days: int, n_folds: int) -> list[tuple[datetime, datetime]]:
+    """Split the lookback into n_folds NON-OVERLAPPING date ranges.
+
+    This used to partition the finished TRADE LIST into K slices, which is not
+    walk-forward — every slice was produced by one run over the whole window,
+    so a parameter set was never actually evaluated on a period it had not
+    already seen. Date folds cost n_folds runs instead of one; that is the
+    price of the claim.
+    """
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+    end = datetime.now(_ET).replace(hour=16, minute=0, second=0, microsecond=0)
+    span = max(1, days // n_folds)
+    out = []
+    for k in range(n_folds):
+        f_end = end - timedelta(days=span * k)
+        out.append((f_end - timedelta(days=span), f_end))
+    return list(reversed(out))
+
+
 def _evaluate_params(
     base_cfg: BacktestConfig,
     params: dict,
     n_folds: int,
     cache: dict,
 ) -> dict:
-    """Re-simulate with new params on the cached data. NO OpenD calls here.
+    """Score one parameter set on backtest_v4, fold by fold.
 
-    `cache` is what prefetch_data() returned — passed in so we don't refetch
-    historical bars on every Optuna trial. This is the speedup that turns a
-    25-trial study from ~2 hours into ~30 seconds.
+    THE ENGINE CHANGED (2026-08-23). This scored with `_run_live_engine`
+    (backtest_v3) against a prefetched bar cache — pure CPU, ~30s for a whole
+    study. v4 rebuilds its replay feed per run, so a study now costs tens of
+    minutes rather than tens of seconds. That is the accepted trade: v3's
+    entry chain never had the blacklist, spread or sector gates and its gap
+    filter was inverted, so a Sortino it reported was a Sortino for a strategy
+    live does not run. `cache` is accepted and ignored, so callers built for
+    the old signature keep working.
+
+    Params reach the engine through runtime_config's THREAD-LOCAL override —
+    the same mechanism the grid sweep uses — so a trial can never leak into
+    db-state and a killed process cannot leave live on a trial's parameters.
     """
+    import io, contextlib
+    from .backtest_v4 import V4Config, run_v4
+    from . import runtime_config as _rc
     from .metrics import compute_full_metrics
 
     cfg = replace(base_cfg, **params)
-    # Phase 2c (2026-06-01): optimise on the HONEST cash-walled engine, not the
-    # leveraged oracle. _run_live_engine applies the real $5k cash wall + VIX
-    # sizing + earnings gate + MY commissions (enforce_cash=True), so the param
-    # optimum Optuna finds is the one that actually deploys on the account. The
-    # incumbent tp=6.0/sl=3.25 was tuned on simulate_with_cache, which can hold
-    # unlimited positions — a different, more aggressive optimum than a cash
-    # account wants. rich_metrics off: we only need the trade list for the
-    # per-fold Sortino below (skips the Monte-Carlo cost on every trial).
-    result = _run_live_engine(cfg, cache, rich_metrics=False)
-    trades = result.get("trades", [])
-    if not trades:
-        return {"sortino_mean": -10.0, "n_trades": 0, "fold_sortinos": [],
-                "sortino_min": -10.0}
-
-    # Sort by exit_date and split into K folds.
-    sorted_t = sorted(trades, key=lambda t: t.get("exit_date", ""))
-    n = len(sorted_t)
-    if n < n_folds:
-        n_folds = max(1, n // 5) or 1   # avoid empty folds
-    fold_size = max(1, n // n_folds)
+    overrides = {
+        "entry_threshold": float(cfg.threshold),
+        "tp_atr_mult": float(cfg.tp_atr_mult),
+        "sl_atr_mult": float(cfg.sl_atr_mult),
+    }
 
     fold_sortinos: list[float] = []
-    for k in range(n_folds):
-        start = k * fold_size
-        end = (k + 1) * fold_size if k < n_folds - 1 else n
-        fold = sorted_t[start:end]
-        if len(fold) < 5:
-            continue
-        m = compute_full_metrics(fold, cfg.account_usd, max(cfg.days // n_folds, 30),
-                                 n_sims=0)
-        # 2026-06-03: clamp the fold Sortino so a single thin/no-loss fold (which
-        # the metrics layer reports as the "downside-unmeasurable" sentinel) can't
-        # dominate the mean and let the optimizer overfit to a lucky window.
-        fold_sortinos.append(max(-10.0, min(m.get("sortino_ratio", 0.0), 8.0)))
+    n_total = 0
+    try:
+        _rc.push_overrides(overrides)
+        for f_start, f_end in _fold_windows(cfg.days, n_folds):
+            v4cfg = V4Config(start=f_start, end=f_end,
+                             tickers=list(cfg.tickers),
+                             universe_mode="static",
+                             account_usd=cfg.account_usd)
+            try:
+                # The engine narrates its data load; a study runs it dozens of
+                # times and the log is not the product.
+                with contextlib.redirect_stdout(io.StringIO()):
+                    res = run_v4(v4cfg)
+            except Exception as e:
+                log.warning("[optuna] fold %s→%s failed: %s",
+                            f_start.date(), f_end.date(), e)
+                continue
+            trades = res.get("trades", [])
+            n_total += len(trades)
+            if len(trades) < 5:
+                continue
+            # compute_full_metrics reads the incumbent trade shape; v4 reports
+            # net_pnl (after costs) where that layer expects pnl.
+            shaped = [dict(t, pnl=t["net_pnl"],
+                           exit_date=t["exit_t"][:10],
+                           entry_date=t["entry_t"][:10]) for t in trades]
+            m = compute_full_metrics(shaped, cfg.account_usd,
+                                     max(cfg.days // n_folds, 30), n_sims=0)
+            # Clamp so one thin/no-loss fold (which the metrics layer reports
+            # with the downside-unmeasurable sentinel) cannot dominate the mean
+            # and let the optimizer overfit to a lucky window.
+            fold_sortinos.append(max(-10.0, min(m.get("sortino_ratio", 0.0), 8.0)))
+    finally:
+        _rc.clear_overrides()
 
     if not fold_sortinos:
-        return {"sortino_mean": -10.0, "n_trades": n, "fold_sortinos": [],
+        return {"sortino_mean": -10.0, "n_trades": n_total, "fold_sortinos": [],
                 "sortino_min": -10.0}
-
     return {
         "sortino_mean": sum(fold_sortinos) / len(fold_sortinos),
-        "sortino_min": min(fold_sortinos),   # worst-fold robustness check
-        "n_trades": n,
+        "sortino_min": min(fold_sortinos),
+        "n_trades": n_total,
         "fold_sortinos": [round(x, 3) for x in fold_sortinos],
     }
 
@@ -203,14 +240,11 @@ def run_study(
     log.info("[optuna] search engine fidelity: apply_mr_strategy=%s "
              "(production = False)", mr_on)
 
-    # Pre-fetch all kline data ONCE. Every trial after this is pure CPU
-    # (no OpenD calls), making 25 trials take ~30s instead of ~2 hours.
-    log.info("Prefetching market data for %s tickers, %d days @ %s...",
-             len(base_cfg.tickers) or "watchlist", base_cfg.days, base_cfg.timeframe)
-    t0 = datetime.utcnow()
-    cache = prefetch_data(base_cfg)
-    log.info("Prefetch done in %.1fs — cached %d tickers",
-             (datetime.utcnow() - t0).total_seconds(), len(cache["per_ticker"]))
+    # No prefetch step any more: v4 owns its own replay feed (parquet-cached
+    # per symbol in data/sandbox_cache), so the first fold warms the cache and
+    # every later one reads it. A study is now minutes rather than seconds —
+    # see _evaluate_params for why that trade was taken.
+    cache: dict = {}
 
     # TPE sampler with deterministic seed → reproducible search.
     sampler = optuna.samplers.TPESampler(seed=42)

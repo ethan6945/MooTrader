@@ -21,8 +21,8 @@ from moomoo import KLType
 
 from . import (
     adaptive_sizing, ai, ai_validator, approvals, audit, blacklist, breadth,
-    clock, cron_state, db, executor, gap_sentinel, history, indicators,
-    kill_switch, news_driven, notifier, options_stats, portfolio,
+    clock, cron_state, db, entry_gates, executor, gap_sentinel, history,
+    indicators, kill_switch, news_driven, notifier, options_stats, portfolio,
     regime as regime_mod, risk_manager, runtime_config, sector, self_improve,
     self_review, strategy_momentum, strategy_mr, strategy_pattern,
     tg_approvals,
@@ -793,10 +793,9 @@ def scan_once() -> None:
                 # strategies should block positive gaps (chase risk → reversion).
                 # Gap-downs are ALWAYS blocked — catching a falling knife is never
                 # the strategy's edge regardless of direction.
-                _sig_strat = getattr(sig, 'strategy', 'trend')
-                _block_up = _sig_strat not in ('trend', 'momentum_break')
-                gap_ok, gap_reason = indicators.check_gap(
-                    df_d, max_gap_pct=settings.max_gap_pct, block_up_gaps=_block_up)
+                gap_ok, gap_reason = entry_gates.gap_ok(
+                    df_d, strategy=entry_gates.strategy_of(sig),
+                    max_gap_pct=settings.max_gap_pct)
                 if not gap_ok:
                     _skip("gap", gap_reason)
                     continue
@@ -1270,8 +1269,15 @@ def _monthly_optuna_job() -> None:
     log.info("monthly Optuna optimization: starting")
     try:
         from .optimizer import run_study
+        # Trial count cut 30 → 18 when the study moved onto backtest_v4
+        # (2026-08-23). v4 replays live's scan grid instead of re-simulating a
+        # prefetched bar cache, so a fold costs ~25s where it used to cost
+        # milliseconds: 18 x 3 folds is ~25 minutes, which fits this 03:00 ET
+        # slot. Folds stayed at 3 — they are what makes the score
+        # out-of-sample, and buying trials with them would be buying precision
+        # about the wrong thing.
         summary = run_study(
-            n_trials=30,
+            n_trials=18,
             days=60,
             n_folds=3,
             min_trades=30,
@@ -1547,58 +1553,68 @@ def _grid_sweep_job(daily: bool) -> None:
         log.warning("grid sweep bookkeeping failed: %s", e)
 
 
-def _weekly_sandbox_diff_job() -> None:
-    """Monday 20:25 KL — trade-level differential between the sandbox replay and
-    the backtest_v3 live-fidelity engine (scripts/sandbox_vs_backtest.py).
+def _weekly_calibration_job() -> None:
+    """Monday 20:25 KL — score backtest_v4 against the account's REAL FILLS
+    (scripts/v4_vs_live.py).
 
-    Catches silent drift between the two INDEPENDENT strategy implementations at
-    the individual-trade level (engine_compare only cross-checks the two fast
-    engines). Runs as a SUBPROCESS so a crash/hang can never touch the trading
-    loop. Telegram ONLY on breach or on the check itself failing (owner
-    preference: actionable events only) — a clean pass is logged + audited.
+    This slot used to hold a sandbox↔backtest_v3 differential: two engines
+    checking each other. Two engines can agree and both be wrong, and on
+    2026-08-21 they disagreed by 94% of net PnL while the more optimistic one
+    was the one wired to change live parameters. Worse, 62% of that gap was the
+    comparison harness itself — it started one engine after the close on day
+    one, so the first session was structurally missing on one side.
+
+    There is one comparison that can be wrong in a way that costs money: the
+    engine against what the broker actually filled. If v4 drifts away from the
+    account's real win rate, stop distribution, or the names it trades, the
+    optimizer is proposing parameters for a strategy nobody runs — and that is
+    worth a Telegram.
+
+    Runs as a SUBPROCESS so a crash or hang can never touch the trading loop.
+    Telegram ONLY on failure (owner preference: actionable events only).
     """
     from .config import IS_FROZEN
     if IS_FROZEN:
-        # Dev-only cross-check: scripts/ isn't shipped in the packaged .app, and
-        # re-exec'ing the bundled binary with a script path wouldn't work anyway.
-        log.info("weekly sandbox diff: skipped (packaged build)")
+        # scripts/ isn't shipped in the packaged .app, and re-exec'ing the
+        # bundled binary with a script path wouldn't work anyway.
+        log.info("weekly calibration: skipped (packaged build)")
         return
-    log.info("weekly sandbox diff: starting")
+    log.info("weekly calibration: starting")
     try:
         import subprocess
         root = Path(__file__).resolve().parent.parent
         proc = subprocess.run(
-            [sys.executable, str(root / "scripts" / "sandbox_vs_backtest.py"),
-             "--days", "30"],
-            cwd=str(root), capture_output=True, text=True, timeout=1800)
+            [sys.executable, str(root / "scripts" / "v4_vs_live.py")],
+            cwd=str(root), capture_output=True, text=True, timeout=3600)
         if proc.returncode == 0:
-            log.info("weekly sandbox diff: OK — within tolerance")
-            db.audit_insert("sandbox_diff", reason="OK — within tolerance")
+            log.info("weekly calibration: PASS — v4 tracks live")
+            db.audit_insert("v4_calibration", reason="PASS — v4 tracks live")
         elif proc.returncode == 2:
-            s, detail = {}, ""
+            detail, shape = "", {}
             try:
-                rep = json.loads((root / "data" / "sandbox_vs_backtest.json").read_text())
-                s = rep.get("summary", {})
-                detail = "\n".join(f"  ✗ {b}" for b in rep.get("breaches", []))
+                rep = json.loads((root / "data" / "v4_vs_live.json").read_text())
+                v4 = next((r for r in rep.get("results", [])
+                           if r.get("engine") == "v4"), {})
+                shape = rep.get("live", {})
+                detail = "\n".join(f"  ✗ {f}" for f in v4.get("fails", []))
             except Exception:
-                detail = "  (report unreadable — see data/sandbox_vs_backtest.json)"
+                detail = "  (report unreadable — see data/v4_vs_live.json)"
             notifier.send(
-                "⚠ *Sandbox↔backtest 分歧超容差* (30d)\n"
+                "⚠ *v4 与实盘偏离超容差*\n"
                 f"{detail}\n"
-                f"  matched {s.get('n_matched', '?')} | sandbox {s.get('n_sandbox', '?')} "
-                f"vs v3 {s.get('n_v3', '?')} 笔\n"
-                f"  net: sb ${s.get('net_pnl_sandbox', 0):+,.0f} vs v3 "
-                f"${s.get('net_pnl_v3', 0):+,.0f}\n"
-                "  详见 data/sandbox_vs_backtest.json — 两个引擎有一个漂了")
-            db.audit_insert("sandbox_diff", reason=f"BREACH: {detail[:200]}")
+                f"  实盘 {shape.get('n', '?')} 笔 | 胜率 "
+                f"{shape.get('win_rate_pct', '?')}% | 净 "
+                f"${shape.get('net_pnl', 0):+,.0f}\n"
+                "  详见 data/v4_vs_live.json — 引擎在给一个没人跑的策略调参")
+            db.audit_insert("v4_calibration", reason=f"FAIL: {detail[:200]}")
         else:
             tail = (proc.stderr or proc.stdout or "no output").strip()[-300:]
-            notifier.send(f"⚠ Weekly sandbox diff 运行失败 (exit {proc.returncode}):\n{tail}")
-        cron_state.record_run("sandbox_diff")
+            notifier.send(f"⚠ Weekly v4 校准运行失败 (exit {proc.returncode}):\n{tail}")
+        cron_state.record_run("v4_calibration")
     except Exception as e:
-        log.exception("weekly sandbox diff failed: %s", e)
+        log.exception("weekly calibration failed: %s", e)
         try:
-            notifier.send(f"⚠ Weekly sandbox diff failed: {e}")
+            notifier.send(f"⚠ Weekly v4 calibration failed: {e}")
         except Exception:
             pass
 
@@ -1650,9 +1666,9 @@ def _run_catchup_on_startup() -> None:
         ("self_review",
          cron_state.expected_last_fire("self_review"),
          _weekly_self_review_job, "Weekly self-review"),
-        ("sandbox_diff",
-         cron_state.expected_last_fire("sandbox_diff"),
-         _weekly_sandbox_diff_job, "Weekly sandbox↔backtest diff"),
+        ("v4_calibration",
+         cron_state.expected_last_fire("v4_calibration"),
+         _weekly_calibration_job, "Weekly v4↔live calibration"),
         # Grid sweep (2026-07-28, ex-crontab). Both entries are safe to catch up
         # because optimize() refuses outright while the market is open, so a
         # restart during RTH re-schedules rather than sweeping mid-session.
@@ -2058,9 +2074,9 @@ def run_loop() -> None:
         ("self_review", _weekly_self_review_job, 1800,
          "reviews what the bot ACTUALLY did (real fills, not a backtest) and "
          "emits suggestions for owner approval."),
-        ("sandbox_diff", _weekly_sandbox_diff_job, 1800,
-         "trade-level sandbox↔backtest differential. LAST in the Monday chain. "
-         "Subprocess-isolated; Telegram only on breach."),
+        ("v4_calibration", _weekly_calibration_job, 1800,
+         "score v4 against the account's real fills. LAST in the Monday chain. "
+         "Subprocess-isolated; Telegram only on failure."),
         ("grid_sweep_weekly", lambda: _grid_sweep_job(daily=False), 3600,
          "27-combo parameter grid at Mon 07:00 KL (19:00 ET Sun, market shut). "
          "Moved off the crontab 2026-07-28 so it ships with the app."),

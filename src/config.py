@@ -650,11 +650,27 @@ class Settings:
     # record active=false, and param_max_position_pct=0.36 has no provenance
     # record at all. Effective config and audit trail have already diverged.
     #
-    # This flag is the single choke point that closes all of them at once. It
-    # defaults ON: sandbox↔backtest_v3 parity is currently BREACH (20% signal
-    # match, 83.5% PnL gap — data/sandbox_vs_backtest.json), so no engine here
-    # is qualified to tune production. Turn it off only after parity passes and
-    # a human baseline has been re-established.
+    # This flag is the single choke point that closes all of them at once.
+    #
+    # LIFTED FOR THIS DEPLOYMENT 2026-08-23 — in config/parameters.json, not
+    # here. The CODE default stays True on purpose: it is what a packaged
+    # install with no config runs, and a risk switch must not ship disarmed to
+    # someone who never chose to disarm it. scripts/config_baseline.py enforces
+    # exactly that, and it caught this being flipped in the wrong place.
+    #
+    # Why this owner lifted it: it was armed because sandbox and backtest_v3 disagreed
+    # by 94% of net PnL, so neither was qualified to tune production. Both are
+    # gone: backtest_v4 is the only engine, and it is scored against the
+    # account's REAL FILLS (scripts/v4_vs_live.py — PASS on net PnL, win rate,
+    # stop distribution and name recall over 34 real trades) rather than against
+    # a second simulator.
+    #
+    # What replaced the freeze is not nothing. The optimizer no longer writes at
+    # all: its winner goes to approvals.enqueue() and sits there until the owner
+    # approves it (src/optimize_system.py). The freeze guarded against automated
+    # writes; the approval gate guards against ALL unattended writes, which is
+    # the stronger property. Re-arm this by setting PARAMS_FROZEN=true if the
+    # weekly calibration ever starts failing.
     params_frozen: bool = os.getenv("PARAMS_FROZEN", "true").lower() in ("1", "true", "yes")
 
     # ── Phase 1 (2026-06-11): rule-based dynamic universe ──

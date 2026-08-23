@@ -344,19 +344,12 @@ def propose_from_review(review: dict) -> int:
         if blocked:
             log.info("optimizer: auto-apply withheld for %s=%s (%s) — queuing",
                      key, value, blocked)
-        if settings.auto_apply_params and not blocked:
-            try:
-                runtime_config.set_param(key, float(value), source="auto-optimizer")
-                from . import notifier
-                notifier.send(
-                    f"🤖 *自动调参已应用* (预批边界内): {key} {cur} → {value}\n"
-                    f"  依据: {gain}\n  {p.get('rationale', '')}\n"
-                    f"  若后续实盘表现恶化将自动回滚并通知。回复可随时手动改回。")
-                log.info("optimizer: AUTO-APPLIED %s=%s (%s)", key, value, gain)
-                n += 1
-                continue
-            except ValueError as e:
-                log.warning("optimizer: auto-apply rejected (%s) — queuing for approval", e)
+        # AUTO-APPLY REMOVED (2026-08-23). This branch called set_param()
+        # whenever AUTO_APPLY_PARAMS was on and the run was off-hours with
+        # enough trades. That made "does live change by itself" a config
+        # question; the owner's requirement is that it never does. Every
+        # proposal now takes the one path below, and approving is the only
+        # thing that writes.
         approvals.enqueue(
             kind="param_change",
             detail=(f"AI (验证过): {key} {cur} → {value} — {gain}. "

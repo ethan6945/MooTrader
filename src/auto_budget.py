@@ -163,7 +163,7 @@ def arm(seed: float | None = None, force: bool = False) -> dict:
     if runtime_config.frozen() and not force:
         raise runtime_config.ParamsFrozen(
             "param freeze active (PARAMS_FROZEN) — refused to arm auto-budget "
-            "compounding. Fix sandbox↔backtest_v3 parity first."
+            "compounding. Clear the freeze deliberately before compounding."
         )
     s = float(seed) if seed is not None else risk_manager.budget_usd()
     state = db.get_state()

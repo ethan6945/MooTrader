@@ -33,7 +33,7 @@ import json, sys, collections
 from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.sandbox import SandboxConfig, run_sandbox
+from src.backtest_v4 import V4Config, run_v4
 from src.config import ROOT
 
 DAYS = 45
@@ -42,8 +42,8 @@ start = end - timedelta(days=DAYS)
 
 results = {}
 for interval in (15, 30, 60):
-    cfg = SandboxConfig(start=start, end=end, scan_interval_min=interval)
-    r = run_sandbox(cfg)
+    cfg = V4Config(start=start, end=end, scan_interval_min=interval)
+    r = run_v4(cfg)
     trades = r.get("trades", [])
     s = r.get("summary", {})
     # Where in the hour did entries land? A signal that only exists because of
