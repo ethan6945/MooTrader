@@ -410,12 +410,10 @@ def calc_position_size(signal: Signal, vix: float = 15.0,
 def _can_stack_onto(signal: Signal, held: pd.DataFrame) -> tuple[bool, str]:
     """Gate for adding another entry to a symbol we already hold.
 
-    Requires:
-      • current stack count < MAX_STACKS_PER_SYMBOL
-      • unrealised R-multiple ≥ STACK_MIN_R_MULTIPLE (only add to winners)
+    THE RULE lives in src/stacking.py, shared with the replay engine. This
+    function's job is to resolve live's position state and hand it over.
     """
-    if settings.max_stacks_per_symbol <= 1:
-        return False, "stacking disabled (MAX_STACKS_PER_SYMBOL ≤ 1)"
+    from . import stacking
 
     open_trades = db.load_open_trades()
     rec = open_trades.get(signal.symbol)
@@ -423,44 +421,25 @@ def _can_stack_onto(signal: Signal, held: pd.DataFrame) -> tuple[bool, str]:
         # Held at broker but no local trade record — refuse to stack blindly.
         return False, f"no local trade record for {signal.symbol} (skip stack)"
 
-    stacks = int(rec.get("stacks", 1))
-    if stacks >= settings.max_stacks_per_symbol:
-        return False, (f"max stacks ({settings.max_stacks_per_symbol}) "
-                       f"reached for {signal.symbol}")
-
     entry = float(rec.get("entry_price", 0) or 0)
-    # Use init_risk_per_share (ORIGINAL R unit at entry) instead of current
-    # stop_loss for stacking gate. Breakeven ratchet can raise stop to entry
-    # (stop == entry → R=0), which makes _can_stack_onto reject every future
-    # add-on even when the position has run far into profit. The original R
-    # unit is stable — it measures the thesis risk at entry, which is the
-    # right baseline for "is this trade working?".
-    irps = float(rec.get("init_risk_per_share", 0) or 0)
-    if irps > 0:
-        r_unit = irps
-    else:
-        # Fallback for legacy trades opened before init_risk_per_share existed.
-        stop = float(rec.get("stop_loss", 0) or 0)
-        r_unit = entry - stop
-    if r_unit <= 0:
-        return False, f"invalid R unit for {signal.symbol} (r_unit={r_unit})"
-
-    # Use broker's last price for the symbol if available, else fall back to
-    # the live signal price (close of latest scoring bar — same magnitude).
+    # Broker's last price when we have it, else the live signal price (close of
+    # the latest scoring bar — same magnitude).
     last_px = float(signal.price)
     if not held.empty:
         row = held[held["code"].str.split(".").str[-1] == signal.symbol]
         if not row.empty:
-            np = float(row.iloc[0].get("nominal_price") or 0)
-            if np > 0:
-                last_px = np
+            nominal = float(row.iloc[0].get("nominal_price") or 0)
+            if nominal > 0:
+                last_px = nominal
 
-    r_now = (last_px - entry) / r_unit
-    if r_now < settings.stack_min_r_multiple:
-        return False, (f"{signal.symbol} unrealised {r_now:.2f}R < "
-                       f"{settings.stack_min_r_multiple}R (need profit to stack)")
-
-    return True, "ok"
+    d = stacking.can_stack(
+        stacks=int(rec.get("stacks", 1)),
+        entry=entry, last_px=last_px,
+        init_risk_per_share=float(rec.get("init_risk_per_share", 0) or 0),
+        current_stop=float(rec.get("stop_loss", 0) or 0),
+        max_stacks=settings.max_stacks_per_symbol,
+        min_r=settings.stack_min_r_multiple)
+    return d.ok, ("ok" if d.ok else f"{signal.symbol} {d.reason}")
 
 
 # ── PnL-optimised (2026-06-27 MS audit) ──────────────────────────────────────

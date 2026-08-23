@@ -34,7 +34,6 @@ WHAT A PASS LOOKS LIKE
 Run:
   .venv/bin/python3 scripts/v4_vs_live.py
   .venv/bin/python3 scripts/v4_vs_live.py --from 2026-07-22 --to 2026-08-11
-  .venv/bin/python3 scripts/v4_vs_live.py --compare-legacy   # also score v3 + sandbox
 """
 from __future__ import annotations
 
@@ -61,6 +60,26 @@ MIN_NAME_RECALL_PCT = 50.0    # share of live-traded names the engine also took
 
 
 # ── live truth ─────────────────────────────────────────────
+
+def live_stack_rate(start: str, end: str) -> tuple[int, int]:
+    """(add-ons, trades) actually recorded live. A trade's `stacks` is 1 when
+    it was never added to."""
+    from src import db
+    n_tr = n_add = 0
+    for r in db.closed_trades(limit=10_000):
+        ts = str(r.get("ts", ""))[:10]
+        if not ts or ts < start or ts > end:
+            continue
+        extra = r.get("extra") or {}
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except Exception:
+                extra = {}
+        n_tr += 1
+        n_add += max(0, int(extra.get("stacks", 1) or 1) - 1)
+    return n_add, n_tr
+
 
 def live_trades(start: str, end: str) -> list[dict]:
     """Real closed trades in [start, end], from the trading database."""
@@ -95,52 +114,10 @@ def run_v4(start: datetime, end: datetime, tickers: list[str]) -> dict:
         "trades": [{"symbol": t["symbol"], "opened_at": t["entry_t"][:10],
                     "exit_date": t["exit_t"][:10], "reason": t["reason"],
                     "pnl": t["net_pnl"], "r": t["r"]} for t in res["trades"]],
-        "extra": {k: res["metrics"][k] for k in
+        "extra": {k: res["metrics"].get(k) for k in
                   ("fill_rate_pct", "ttl_expired", "max_dd_mtm_pct",
-                   "orders_attempted", "orders_filled")},
+                   "orders_attempted", "orders_filled", "stack_addons")},
         "elapsed_sec": res["elapsed_sec"],
-    }
-
-
-def run_v3(start: datetime, end: datetime, tickers: list[str]) -> dict:
-    """The outgoing honest engine, for the record."""
-    from src import runtime_config as rc
-    from src.backtest import BacktestConfig, prefetch_data, _run_live_engine
-    from src.config import settings
-    from src.risk_manager import budget_usd
-    days = (end - start).days
-    cfg = BacktestConfig(
-        days=days, timeframe="HOUR_1", threshold=rc.entry_threshold(),
-        tickers=tickers, account_usd=budget_usd(),
-        risk_per_trade=rc.risk_per_trade(), max_position_pct=rc.max_position_pct(),
-        max_hold_days=rc.max_hold_days(), tp_atr_mult=rc.tp_atr_mult(),
-        sl_atr_mult=rc.sl_atr_mult(), max_gap_pct=settings.max_gap_pct,
-        apply_mr_strategy=settings.mr_enabled)
-    res = _run_live_engine(cfg, prefetch_data(cfg))
-    lo, hi = start.date().isoformat(), end.date().isoformat()
-    tr = []
-    for t in res["trades"]:
-        if not (lo <= t["entry_date"] <= hi):
-            continue
-        risk = t["entry_price"] - t["stop_loss"]
-        tr.append({"symbol": t["symbol"], "opened_at": t["entry_date"],
-                   "exit_date": t["exit_date"], "reason": t["exit_reason"],
-                   "pnl": t["pnl"],
-                   "r": (t["exit_price"] - t["entry_price"]) / risk if risk > 0 else 0.0})
-    return {"name": "v3", "trades": tr, "extra": {}, "elapsed_sec": None}
-
-
-def run_sandbox(start: datetime, end: datetime, tickers: list[str]) -> dict:
-    """The outgoing replay engine, for the record."""
-    from src.sandbox import SandboxConfig, run_sandbox as _run
-    res = _run(SandboxConfig(start=start, end=end, tickers=tickers,
-                             universe_mode="static", enable_ai=False))
-    return {
-        "name": "sandbox",
-        "trades": [{"symbol": t["symbol"], "opened_at": t["entry_t"][:10],
-                    "exit_date": t["exit_t"][:10], "reason": t["reason"],
-                    "pnl": t["net_pnl"], "r": t["r"]} for t in res["trades"]],
-        "extra": {}, "elapsed_sec": res.get("elapsed_sec"),
     }
 
 
@@ -209,8 +186,6 @@ def main() -> int:
     ap.add_argument("--from", dest="start", default=None)
     ap.add_argument("--to", dest="end", default=None)
     ap.add_argument("--tickers", nargs="*", default=None)
-    ap.add_argument("--compare-legacy", action="store_true",
-                    help="also score backtest_v3 and sandbox on the same window")
     ap.add_argument("--output", default=str(DEFAULT_OUTPUT))
     args = ap.parse_args()
     logging.basicConfig(level=logging.WARNING,
@@ -243,12 +218,6 @@ def main() -> int:
     end = datetime.fromisoformat(end_s).replace(hour=16, tzinfo=ET) + timedelta(days=1)
 
     engines = [run_v4(start, end, tickers)]
-    if args.compare_legacy:
-        for fn in (run_v3, run_sandbox):
-            try:
-                engines.append(fn(start, end, tickers))
-            except Exception as e:
-                print(f"  ({fn.__name__} failed: {e})")
 
     t_shape = _shape(truth)
     results = [score(e, truth) for e in engines]
@@ -261,6 +230,8 @@ def main() -> int:
           f"R median {t_shape['median_r']}  worst {t_shape['worst_r']}  "
           f"stop-median {t_shape['median_sl_r']}")
     print(f"  names: {', '.join(t_shape['symbols'])}")
+    _add, _ntr = live_stack_rate(start_s, end_s)
+    print(f"  pyramiding: {_add} add-ons across {_ntr} trades")
 
     hdr = (f"\n{'engine':10} {'n':>4} {'WR%':>7} {'net $':>11} {'netΔ%':>7} "
            f"{'WRΔpp':>7} {'stopR':>7} {'stopΔ':>7} {'recall':>7}  verdict")
@@ -287,6 +258,19 @@ def main() -> int:
             print(f"  traded names live did not: {', '.join(r['names_engine_only'])}")
         if r["extra"]:
             print(f"  {r['extra']}")
+        # Pyramiding is the loudest way an engine can deploy capital the
+        # account never deployed. Not a hard failure — live uptime confounds a
+        # sample this size — but never silent either.
+        eng_add = r["extra"].get("stack_addons")
+        if eng_add is not None:
+            live_add, live_n = live_stack_rate(start_s, end_s)
+            eng_n = r["engine_shape"]["n"] or 1
+            print(f"  pyramiding: engine {eng_add} add-ons / {eng_n} trades "
+                  f"({eng_add / eng_n:.2f} per trade) vs live {live_add} / "
+                  f"{live_n} ({live_add / max(1, live_n):.2f})")
+            if eng_add > 0 and live_add == 0:
+                print("    ⚠ the engine stacks and the account never has — "
+                      "it is deploying capital live did not")
 
     report = {
         "generated_at": datetime.now(ET).isoformat(),

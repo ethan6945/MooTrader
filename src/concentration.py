@@ -102,7 +102,8 @@ def _daily_returns(client, symbol: str, days: int) -> pd.Series | None:
 
 
 def correlated_cluster(client, symbol: str,
-                       threshold: float = CORRELATION_THRESHOLD) -> list[str]:
+                       threshold: float = CORRELATION_THRESHOLD,
+                       holdings: dict[str, float] | None = None) -> list[str]:
     """Held symbols whose daily returns move with `symbol` above `threshold`.
 
     Returns an empty list when the data is not there. That is a deliberate
@@ -112,7 +113,8 @@ def correlated_cluster(client, symbol: str,
     correlation — but it is also why this is a cap on top of the others rather
     than the only one.
     """
-    held = [s for s in holdings_notional() if s.upper() != symbol.upper()]
+    book = holdings_notional() if holdings is None else holdings
+    held = [s for s in book if s.upper() != symbol.upper()]
     if not held:
         return []
     base = _daily_returns(client, symbol, CORRELATION_LOOKBACK_DAYS)
@@ -135,6 +137,51 @@ def correlated_cluster(client, symbol: str,
     return cluster
 
 
+def check_exposure(symbol: str, add_notional: float, *,
+                   holdings: dict[str, float], budget: float) -> tuple[bool, str]:
+    """The two arithmetic caps, on a book handed in rather than read.
+
+    Live resolves `holdings` from db.load_open_trades(); a replay hands over its
+    own positions. Same rule, one implementation — the alternative is what
+    happened to sizing and the gap filter, where a second copy drifted and the
+    engine tuning production was measuring a strategy nobody ran.
+    """
+    symbol = symbol.upper()
+    budget = max(float(budget), 1.0)
+    add = max(0.0, float(add_notional))
+
+    sym_frac = (holdings.get(symbol, 0.0) + add) / budget
+    if sym_frac > MAX_SYMBOL_EXPOSURE_PCT:
+        return False, (f"{symbol} would reach {sym_frac:.0%} of budget "
+                       f"(cap {MAX_SYMBOL_EXPOSURE_PCT:.0%}) — this is the "
+                       f"cumulative limit stacking never had")
+
+    gross_frac = (sum(holdings.values()) + add) / budget
+    if gross_frac > MAX_GROSS_EXPOSURE_PCT:
+        return False, (f"gross exposure would reach {gross_frac:.0%} of budget "
+                       f"(cap {MAX_GROSS_EXPOSURE_PCT:.0%})")
+    return True, "ok"
+
+
+def check_cluster(symbol: str, add_notional: float, cluster: list[str], *,
+                  holdings: dict[str, float], budget: float) -> tuple[bool, str]:
+    """The correlated-cluster cap, given an already-computed cluster."""
+    if not cluster:
+        return True, "ok"
+    symbol = symbol.upper()
+    budget = max(float(budget), 1.0)
+    notional = (max(0.0, float(add_notional)) + holdings.get(symbol, 0.0)
+                + sum(holdings.get(s, 0.0) for s in cluster))
+    frac = notional / budget
+    if frac > MAX_CLUSTER_EXPOSURE_PCT:
+        return False, (
+            f"{symbol} moves with {', '.join(cluster)}; together they "
+            f"would be {frac:.0%} of budget (cap "
+            f"{MAX_CLUSTER_EXPOSURE_PCT:.0%}). Correlated names are one "
+            f"bet, whatever the per-symbol arithmetic says")
+    return True, "ok"
+
+
 def check(signal, qty: int, client=None) -> tuple[bool, str]:
     """May this order be placed, given everything already held?
 
@@ -151,16 +198,10 @@ def check(signal, qty: int, client=None) -> tuple[bool, str]:
     add = qty * price
     budget = _budget()
 
-    _, sym_frac = symbol_exposure(symbol, add)
-    if sym_frac > MAX_SYMBOL_EXPOSURE_PCT:
-        return False, (f"{symbol} would reach {sym_frac:.0%} of budget "
-                       f"(cap {MAX_SYMBOL_EXPOSURE_PCT:.0%}) — this is the "
-                       f"cumulative limit stacking never had")
-
-    _, gross_frac = gross_exposure(add)
-    if gross_frac > MAX_GROSS_EXPOSURE_PCT:
-        return False, (f"gross exposure would reach {gross_frac:.0%} of budget "
-                       f"(cap {MAX_GROSS_EXPOSURE_PCT:.0%})")
+    held = holdings_notional()
+    ok, reason = check_exposure(symbol, add, holdings=held, budget=budget)
+    if not ok:
+        return False, reason
 
     if client is not None:
         try:
@@ -169,17 +210,7 @@ def check(signal, qty: int, client=None) -> tuple[bool, str]:
             log.warning("correlation check failed for %s (%s) — the exposure "
                         "caps above still applied", symbol, e)
             cluster = []
-        if cluster:
-            held = holdings_notional()
-            cluster_notional = add + sum(held.get(s, 0.0) for s in cluster) \
-                + held.get(symbol, 0.0)
-            frac = cluster_notional / budget
-            if frac > MAX_CLUSTER_EXPOSURE_PCT:
-                return False, (
-                    f"{symbol} moves with {', '.join(cluster)}; together they "
-                    f"would be {frac:.0%} of budget (cap "
-                    f"{MAX_CLUSTER_EXPOSURE_PCT:.0%}). Correlated names are one "
-                    f"bet, whatever the per-symbol arithmetic says")
+        return check_cluster(symbol, add, cluster, holdings=held, budget=budget)
 
     return True, "ok"
 

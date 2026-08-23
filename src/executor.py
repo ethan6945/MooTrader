@@ -535,11 +535,20 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
         # entry_px, not limit_px: the average cost of a position is the average
         # of what was paid. Using the limit here made every stack drift the
         # recorded basis toward a price the broker never charged.
-        new_avg_entry = (old_qty * old_entry + qty * entry_px) / new_total_qty
-        # Stop/TP trail UP only — never weaken protection on the original lot.
-        new_stop = max(float(existing.get("stop_loss", 0)), stop_px)
-        new_tp = max(float(existing.get("take_profit", 0)), tp_px)
-        stacks = int(existing.get("stacks", 1)) + 1
+        # THE MERGE lives in src/stacking.py, shared with the replay engine —
+        # weighted-average entry, stop and TP raised only, R unit re-anchored.
+        from . import stacking as _stacking
+        _lot = _stacking.merge(
+            old_qty=old_qty, old_entry=old_entry,
+            old_stop=float(existing.get("stop_loss", 0)),
+            old_tp=float(existing.get("take_profit", 0)),
+            old_high_water=float(existing.get("high_water") or entry_px),
+            old_stacks=int(existing.get("stacks", 1)),
+            add_qty=qty, add_entry=entry_px, add_stop=stop_px, add_tp=tp_px)
+        new_avg_entry = _lot.entry
+        new_stop = _lot.stop
+        new_tp = _lot.take_profit
+        stacks = _lot.stacks
 
         # On REAL, replace the OCO bracket so it covers the new combined qty
         # (only when broker brackets are in use — soft-exit mode skips this).
@@ -580,7 +589,7 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
             # Re-anchor scale-out to the new combined lot (stacks only happen in
             # profit, so resetting the R unit off the new avg entry/stop is sane).
             "qty_initial": new_total_qty,
-            "init_risk_per_share": max(new_avg_entry - new_stop, 0.0),
+            "init_risk_per_share": _lot.init_risk_per_share,
             "buy_order_id": buy_order_id,
             "stop_order_id": stop_order_id,
             "tp_order_id": tp_order_id,
@@ -590,7 +599,7 @@ def _open_position_locked(client: MooClient, signal: Signal, qty: int) -> dict |
             "last_stack_price": entry_px,
         })
         # Refresh water-marks to current price for the new combined lot.
-        trade["high_water"] = max(float(trade.get("high_water") or entry_px), entry_px)
+        trade["high_water"] = _lot.high_water
         log.info("STACK #%d on %s: +%d @ $%.2f → total %d, avg $%.2f, stop $%.2f, tp $%.2f",
                  stacks, signal.symbol, qty, entry_px,
                  new_total_qty, new_avg_entry, new_stop, new_tp)

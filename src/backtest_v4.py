@@ -32,17 +32,13 @@ WHAT THIS REPLACES AND WHY
 WHAT IT DOES NOT MODEL
   Named here rather than discovered later. live runs these and v4 does not:
 
-    PYRAMIDING (the big one). live stacks add-on entries onto a winner it
-    already holds — MAX_STACKS_PER_SYMBOL=5, STACK_MIN_R_MULTIPLE=0.5, both ON
-    today. backtest_v3 modelled it (_stack_gate / _merge_addon); sandbox never
-    did; v4 does not yet. So v4 under-deploys capital into exactly the trades
-    live presses hardest, and a parameter tuned on v4 is tuned on a strategy
-    that takes one lot where live takes up to five. This is the first gap to
-    close, and it is disclosed rather than discovered because the optimizer
-    now proposes live parameters from these numbers.
+    news_driven entries, auto_budget compounding, cash_yield parking, the
+    inverse sleeve, and gap_sentinel's pre-open exits.
 
-    Also absent: news_driven entries, auto_budget compounding, cash_yield
-    parking, the inverse sleeve, and gap_sentinel's pre-open exits.
+  PYRAMIDING IS MODELLED (2026-08-23) through src/stacking.py, the same rule
+  live's risk_manager and executor call. An add-on pays the same TTL, chase,
+  liquidity and cash frictions as a fresh entry — a stack that always filled
+  would be the kind of fiction this engine exists to remove.
 
   A v4 number is a claim about the core long strategy, not about the whole
   account.
@@ -87,6 +83,7 @@ from src.config import ROOT, derive_max_positions, settings
 from src import (blacklist, entry_gates, entry_threshold, indicators,
                  regime as regime_mod, risk_manager, runtime_config, sector,
                  sizing_rule, strategy_momentum, strategy_mr, strategy_pattern)
+from src import concentration, stacking
 from src.sim_feed import (SimClock, SimFeed, _bar_session, _note_fill,
                           reset_fill_stats)
 
@@ -194,6 +191,13 @@ class Position:
     low_w: float
     entry_slip_usd: float = 0.0
     breakeven_set: bool = False
+    # Pyramiding state, mirroring live's open_trades record. init_risk_per_share
+    # is the ORIGINAL per-share risk and does NOT move when the stop ratchets —
+    # that stability is the whole reason live measures stack eligibility against
+    # it rather than against the current stop.
+    stacks: int = 1
+    init_risk_per_share: float = 0.0
+    high_water: float = 0.0
     # The bar this position last resolved an exit against, so a 15-minute grid
     # does not re-test the same hourly bar four times.
     last_bar_seen: object = None
@@ -242,6 +246,7 @@ class V4Broker:
         self.n_ttl_expired = 0
         self.n_fills = 0
         self.n_orders = 0
+        self.n_stacks = 0
 
     # -- fills -------------------------------------------------------------
 
@@ -327,9 +332,61 @@ class V4Broker:
             symbol=symbol, entry=entry_px, stop=stop, tp=tp, qty=qty,
             entry_time=self.clock.ny_now(), strategy=strategy, score=score,
             init_stop=stop, atr_at_entry=atr, high_w=entry_px, low_w=entry_px,
-            entry_slip_usd=round((entry_px - raw_px) * qty, 2))
+            entry_slip_usd=round((entry_px - raw_px) * qty, 2),
+            init_risk_per_share=max(entry_px - stop, 0.0), high_water=entry_px)
         self.cash -= (entry_px * qty + comm)
         self.n_fills += 1
+        return True
+
+    def try_stack(self, symbol: str, limit: float, stop: float, tp: float,
+                  qty: int, atr: float) -> bool:
+        """Add a lot to a position already held, on live's terms.
+
+        Deliberately re-uses the fill path rather than assuming the add-on
+        lands: an add-on is an ordinary limit order at the broker and expires
+        the same way. It also spends cash a brand-new name could have used,
+        which is the whole point on a real account — so the cash wall gates it
+        exactly as it gates a first entry.
+        """
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return False
+        # Fill the add-on as if it were a fresh entry, then merge. Borrowing
+        # try_fill's model keeps ONE fill model in this engine; the position it
+        # writes is popped straight back off.
+        held_before = pos
+        self.positions.pop(symbol, None)
+        filled = self.try_fill(symbol, limit, stop, tp, qty,
+                               held_before.strategy, held_before.score, atr)
+        if not filled:
+            self.positions[symbol] = held_before
+            return False
+        addon = self.positions.pop(symbol)
+        lot = stacking.merge(
+            old_qty=held_before.qty, old_entry=held_before.entry,
+            old_stop=held_before.stop, old_tp=held_before.tp,
+            old_high_water=held_before.high_water,
+            old_stacks=held_before.stacks,
+            add_qty=addon.qty, add_entry=addon.entry,
+            add_stop=addon.stop, add_tp=addon.tp)
+        held_before.qty = lot.qty
+        held_before.entry = lot.entry
+        held_before.stop = lot.stop
+        held_before.tp = lot.take_profit
+        held_before.init_risk_per_share = lot.init_risk_per_share
+        held_before.high_water = lot.high_water
+        held_before.stacks = lot.stacks
+        # live sets atr = signal.atr on every fill, and re-anchors the initial
+        # stop with the merged lot so R-multiples describe the position that
+        # now exists rather than the one that used to.
+        held_before.atr_at_entry = atr
+        held_before.init_stop = lot.stop
+        held_before.entry_slip_usd += addon.entry_slip_usd
+        # Stacks only happen in profit, so the breakeven ratchet re-arms
+        # against the new average entry rather than staying latched.
+        held_before.breakeven_set = lot.stop >= lot.entry
+        self.positions[symbol] = held_before
+        self.n_stacks += 1
         return True
 
     def _next_bar(self, sym: str):
@@ -358,6 +415,7 @@ class V4Broker:
             cl, op = float(bar["close"]), float(bar["open"])
             pos.high_w = max(pos.high_w, hi)
             pos.low_w = min(pos.low_w, lo)
+            pos.high_water = max(pos.high_water, hi)
             self.last_close[sym] = cl
 
             atr0 = pos.atr_at_entry if pos.atr_at_entry > 0 else \
@@ -705,8 +763,22 @@ def run_v4(cfg: V4Config, progress_cb=None,
             if not is_stack and len(held) >= max_positions:
                 _skip("max_positions", sig.symbol, f"{len(held)}/{max_positions}")
                 continue
-            if sig.symbol in broker.positions:
-                continue
+            # A name already held is a STACK candidate, not a skip. This line
+            # used to `continue` unconditionally, so v4 modelled one lot where
+            # live presses up to MAX_STACKS_PER_SYMBOL — under-deploying capital
+            # into exactly the trades live is most confident in.
+            held_pos = broker.positions.get(sig.symbol)
+            if held_pos is not None:
+                d = stacking.can_stack(
+                    stacks=held_pos.stacks, entry=held_pos.entry,
+                    last_px=float(getattr(sig, "price", 0.0) or held_pos.entry),
+                    init_risk_per_share=held_pos.init_risk_per_share,
+                    current_stop=held_pos.stop,
+                    max_stacks=settings.max_stacks_per_symbol,
+                    min_r=settings.stack_min_r_multiple)
+                if not d:
+                    _skip("stack_gate", sig.symbol, d.reason)
+                    continue
 
             df_d = feed.get_kline(sig.symbol, bars=60, ktype=KLType.K_DAY)
             ok, gate, reason = entry_gates.daily_gates_ok(
@@ -765,6 +837,39 @@ def run_v4(cfg: V4Config, progress_cb=None,
                 price=price, stop_loss=stop, vix=vix, regime_mult=regime_mult)
             if not size:
                 _skip("qty_zero", sig.symbol, size.reason)
+                continue
+
+            # HOW BIG THIS IDEA MAY BECOME, not how big this order may be.
+            # Live has run this since 2026-06-26 and no engine modelled it. It
+            # is what stops a stack cascade: "five stacks of 36% were five
+            # separate legal decisions adding up to an illegal position,
+            # stopped only by running out of cash." Without it v4 stacked 49
+            # times over a window in which live stacked zero.
+            book = {p.symbol: p.qty * p.entry for p in broker.positions.values()}
+            ok, why = concentration.check_exposure(
+                sig.symbol, size.qty * price, holdings=book, budget=cfg.account_usd)
+            if ok:
+                try:
+                    # SimFeed exposes get_kline(sym, bars, ktype) — the same
+                    # interface the live client does, so the correlation cap
+                    # runs off replay bars with no adapter.
+                    cl_syms = concentration.correlated_cluster(
+                        feed, sig.symbol, holdings=book)
+                    ok, why = concentration.check_cluster(
+                        sig.symbol, size.qty * price, cl_syms,
+                        holdings=book, budget=cfg.account_usd)
+                except Exception:
+                    pass          # fail-open, exactly as live does
+            if not ok:
+                _skip("concentration", sig.symbol, why)
+                continue
+
+            if held_pos is not None:
+                # An add-on fills through the SAME TTL / chase / liquidity /
+                # cash model as a fresh entry — a stack that always fills would
+                # be the fiction this engine exists to remove.
+                if not broker.try_stack(sig.symbol, price, stop, tp, size.qty, atr):
+                    _skip("no_fill", sig.symbol, "stack: TTL expired / chase / cash")
                 continue
 
             if broker.try_fill(sig.symbol, price, stop, tp, size.qty,
@@ -830,6 +935,7 @@ def _report(cfg, broker, tickers, scans, eval_scans, signals_found,
         "fill_rate_pct": round(100 * broker.n_fills / broker.n_orders, 1)
                          if broker.n_orders else 0.0,
         "ttl_expired": broker.n_ttl_expired,
+        "stack_addons": broker.n_stacks,
         "cash_blocked": broker.n_cash_blocked,
         "cash_clipped": broker.n_cash_clipped,
         "ending_cash": round(broker.cash, 2),
