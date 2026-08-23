@@ -330,7 +330,7 @@ flowchart LR
 
 对 watchlist 每只股票，4 套独立策略各打 0–100 分，取最高分代表该股票。4 套共用同一个 `Signal` 接口，下游漏斗不关心信号来自哪套（只记 `strategy` 标签）。
 
-> **当前实盘只跑前两套（趋势 + 动量突破）；均值回归、形态识别默认关**——原因见[配置速览](#-配置速览)。入场门槛：综合分 ≥ `ENTRY_SCORE_THRESHOLD`（**70**，Optuna 调出，硬门槛无边缘带）。
+> **当前实盘只跑前两套（趋势 + 动量突破）；均值回归、形态识别默认关**——原因见[配置速览](#-配置速览)。入场门槛：综合分 ≥ `ENTRY_SCORE_THRESHOLD`（**65**，每周由 v4 网格搜索重调、经批准后生效；硬门槛无边缘带）。
 
 | 策略 | 模块 | 风格 | 状态 |
 |------|------|------|:----:|
@@ -585,7 +585,7 @@ python -m src.optimizer --days 180 --trials 20 --folds 3 --min-trades 60
 
 | 参数 | 值 | 参数 | 值 |
 |------|----|------|----|
-| `ENTRY_SCORE_THRESHOLD` | 70 | `TP_ATR_MULT` | 10.0 |
+| `ENTRY_SCORE_THRESHOLD` | 65 | `TP_ATR_MULT` | 10.0 |
 | `SCAN_INTERVAL_MIN` | 15 | `SL_ATR_MULT` | 3.5 |
 | `TIMEFRAME` | HOUR_1 | `MAX_GAP_PCT` | 4.0 |
 | `MAX_HOLD_DAYS` | 4 | `RISK_PER_TRADE` | 0.05 |

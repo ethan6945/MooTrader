@@ -226,6 +226,52 @@ def current(key: str):
     }[key]()
 
 
+def history_file():
+    from .config import ROOT
+    return ROOT / "config" / "parameters_history.jsonl"
+
+
+def history(key: str | None = None) -> list[dict]:
+    """The append-only parameter journal, oldest first.
+
+    THE JOURNAL MOVED AND TWO READERS DID NOT. Changes are written to
+    config/parameters_history.jsonl by _write_param; the db-state
+    `param_history` list is the store they used to live in and has received
+    nothing since 2026-08-17. revert_param and autopilot.check_and_rollback
+    both still looked there, so the auto-rollback was scanning a log that had
+    stopped growing — silently, because an empty scan looks exactly like
+    "nothing needs rolling back".
+    """
+    import json
+    f = history_file()
+    if not f.exists():
+        return []
+    out = []
+    for line in f.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if key is None or rec.get("key") == key:
+            out.append(rec)
+    return out
+
+
+def last_change(key: str) -> dict | None:
+    """The newest journalled change for `key` — the one currently in force.
+
+    An append-only log needs no mutable `active` flag: the last entry for a key
+    IS the active one. The old db list carried `active` booleans that had to be
+    flipped by hand, and two parameters ended up live with no active record at
+    all — two of the four contradictions config_baseline used to report.
+    """
+    recs = history(key)
+    return recs[-1] if recs else None
+
+
 def _write_param(key: str, value: float, rec: dict) -> None:
     """Persist one parameter to the file, and journal the change beside it.
 
@@ -315,44 +361,33 @@ def revert_param(key: str, reason: str, force: bool = False) -> dict | None:
     Also frozen in Phase 0: an automated rollback is still an automated write,
     and with the freeze on there is nothing for it to roll back anyway.
 
-    WHERE THE VALUE GOES
-      This wrote db-state `param_<key>` — the store parameters lived in before
-      they moved to config/parameters.json. Nothing reads that store any more:
-      the only param_* row left in the live database is param_history, which
-      is the audit log, not a value.
+    Reads the append-only journal (see history()). It used to read the
+    db-state `param_history` list, which stopped receiving writes when the
+    journal moved to a file — so it found nothing to revert and said so, which
+    is indistinguishable from there being nothing wrong.
 
-      So a rollback marked its history record rolled_back, returned the record,
-      and left the bot trading the value it had just reported reverting. On the
-      safety net for a bad automated change. It could not fire while
-      PARAMS_FROZEN is on, which is the only reason this was not already true
-      in production — and lifting that freeze is the plan.
-
-      Same fault as the settings panel writing .env: a write aimed at the store
-      that no longer decides. It goes through _write_param now, the way
-      set_param does, so there is one writer for one file.
+    The write goes through _write_param, so a rollback is journalled like any
+    other change and the next reader sees the reverted value as current.
     """
     if frozen() and not force:
         raise ParamsFrozen(
             f"param freeze active (PARAMS_FROZEN) — refused rollback of {key}"
         )
-    state = db.get_state()
-    hist = list(state.get("param_history", []))
-    for h in reversed(hist):
-        if h.get("key") == key and h.get("active"):
-            h["active"] = False
-            h["rolled_back"] = True
-            h["rollback_reason"] = reason
-            db.update_state({"param_history": hist})
-            old = h.get("old")
-            if old is not None:
-                from datetime import datetime, timezone
-                _write_param(key, float(old), {
-                    "key": key, "old": h.get("new"), "new": float(old),
-                    "source": f"rollback: {reason}"[:200],
-                    "applied_at": datetime.now(timezone.utc).isoformat(),
-                    "active": True})
-            return h
-    return None
+    rec = last_change(key)
+    if rec is None:
+        return None
+    if str(rec.get("source", "")).startswith("rollback:"):
+        return None          # already reverted; do not roll back a rollback
+    old = rec.get("old")
+    if old is None:
+        return None
+    from datetime import datetime, timezone
+    _write_param(key, float(old), {
+        "key": key, "old": rec.get("new"), "new": float(old),
+        "source": f"rollback: {reason}"[:200],
+        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "active": True})
+    return {**rec, "rolled_back": True, "rollback_reason": reason}
 
 
 # ── scale-out re-validation (2026-07-06) ──────────────────

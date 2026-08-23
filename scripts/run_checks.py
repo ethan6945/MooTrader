@@ -20,6 +20,11 @@ WHAT IT COVERS
                            through those guards. Unit-testing one function with
                            five different `source` strings did not catch three
                            holes that this found.
+  test_param_rollback    — the auto-rollback reads the log that is actually
+                           being written. The journal moved to a file and two
+                           readers did not follow, so for a week the rollback
+                           scanned a frozen log and found nothing — which looks
+                           exactly like a healthy account
   test_sessions          — extended trading hours: the cache cannot be shared
                            across sessions, the fetch window is scaled to the
                            session's length, and regular hours does not move
@@ -94,6 +99,7 @@ CHECKS = {
     "recovery":   ("scripts/test_startup_recovery.py", True,  True,  240),
     "settler":    ("scripts/test_fill_settler.py",     True,  True,  240),
     "concentr":   ("scripts/test_concentration.py",   True,  True,  180),
+    "rollback":   ("scripts/test_param_rollback.py",  True,  True,  120),
     "sessions":   ("scripts/test_sessions.py",           True,  True,  120),
     "migrations": ("scripts/test_migrations.py",         True,  True,  240),
     "formingbar": ("scripts/test_forming_bar.py",        True,  True,  120),

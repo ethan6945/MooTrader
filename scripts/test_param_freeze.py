@@ -90,9 +90,14 @@ check("rollback left the stored value alone", _STATE["param_sl_atr_mult"] == 3.0
 # true in production, and lifting that freeze is the plan.
 #
 # So this asserts on the READER, not on where the write landed.
-rc.set_param("sl_atr_mult", 3.5, "test-baseline", force=True)
-_STATE["param_history"] = [{"key": "sl_atr_mult", "old": 2.8, "new": 3.5,
-                            "source": "auto-optimizer", "active": True}]
+#
+# 2026-08-23: the lookup moved too. revert_param used to SEARCH the db-state
+# `param_history` list for the record to undo — the same dead store it wrote
+# to — so this test stubbed that list to drive it. It now reads the
+# append-only journal, where the newest entry for a key is by definition the
+# one in force, so the setup is just: write a baseline, write a change, revert.
+rc.set_param("sl_atr_mult", 2.8, "test-baseline", force=True)
+rc.set_param("sl_atr_mult", 3.5, "auto-optimizer", force=True)
 _before = rc.sl_atr_mult()
 _rec = rc.revert_param("sl_atr_mult", "test rollback", force=True)
 check("a permitted rollback returns the record it reverted",

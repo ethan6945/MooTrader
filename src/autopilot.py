@@ -434,23 +434,46 @@ def check_and_rollback() -> list[str]:
                 return None
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-        state = db.get_state()
-        hist = list(state.get("param_history", []))
+        # The APPEND-ONLY JOURNAL, not the db list. That list stopped receiving
+        # writes when the journal moved to config/parameters_history.jsonl, so
+        # this scan was reading a log frozen at 2026-08-17 and finding nothing —
+        # which looks exactly like "nothing needs rolling back". The safety net
+        # had been off for a week without saying so.
+        #
+        # One entry per key: in an append-only log the newest entry for a key is
+        # the value in force, and anything older has already been superseded.
+        latest: dict[str, dict] = {}
+        for rec in runtime_config.history():
+            if rec.get("key"):
+                latest[rec["key"]] = rec
+        hist = list(latest.values())
         rows = db.closed_trades(limit=200)
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=7)
         MIN_TRADES_SINCE = 5   # need a real post-change sample, not loss noise
 
-        # 2026-07-27: this used to match only source.startswith("autopilot_"),
-        # but optimizer_ai writes source="auto-optimizer" — so NO optimizer
-        # auto-apply was ever watched, even though its own Telegram promises
-        # "若后续实盘表现恶化将自动回滚并通知". Both autonomous sources are now
-        # covered; owner-approved and manual changes stay untouched on purpose.
+        # WHICH CHANGES ARE WATCHED (owner decision 2026-08-23).
+        #
+        # This watched only autonomous sources, on the reasoning that a person
+        # who chose a value should be the one to unchoose it. That reasoning
+        # died with the approval gate: every parameter change is now
+        # "owner-approved", because autopilot, optimizer_ai and hermes all queue
+        # instead of writing. So the exclusion covered 100% of changes and the
+        # rollback would have reverted nothing even against a live journal.
+        #
+        # Rolling back an approved change is not a bypass of the approval gate:
+        # it returns the account to a value the owner already ran, on measured
+        # evidence, and says so in Telegram. Introducing a NEW value would be a
+        # bypass; going back to the previous one is not.
+        #
+        # A rollback is itself journalled, so `rollback:` entries are skipped —
+        # otherwise a bad week would roll back the rollback.
         for h in reversed(hist):
-            if not h.get("active"):
-                continue
             src = str(h.get("source", ""))
-            if not (src.startswith("autopilot_") or src == "auto-optimizer"):
+            if src.startswith("rollback:"):
+                continue
+            if not (src.startswith("autopilot_") or src == "auto-optimizer"
+                    or src == "owner-approved"):
                 continue
             try:
                 at = datetime.fromisoformat(h.get("applied_at", ""))
