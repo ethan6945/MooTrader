@@ -47,7 +47,7 @@ KNOWN_JOBS: tuple[str, ...] = (
     "premarket_gap_sentinel",  # pre-open overnight gap check
     "open_gap_exit",           # at-open gap-risk execution
     "preopen_clock_check",     # daily 08:30 ET time sync + session confirmation
-    "sandbox_diff",            # weekly sandbox↔backtest diff — was in main.py's
+    "v4_calibration",          # weekly v4↔live calibration — was in main.py's
                                # catchup plan but never listed here, so on an
                                # install with no record it could not catch up
                                # (needs_catchup returns False for unknown names)
@@ -176,7 +176,7 @@ WEEKLY_SCHEDULE: dict[str, tuple[int, int, int]] = {
     "universe_refresh": (0, 20, 5),    # Mon 20:05 KL
     "weekly_backtest":  (0, 20, 10),   # Mon 20:10 KL
     "self_review":      (0, 20, 15),   # Mon 20:15 KL
-    "sandbox_diff":     (0, 20, 25),   # Mon 20:25 KL
+    "v4_calibration":   (0, 20, 25),   # Mon 20:25 KL — v4 scored against real fills
     # 2026-07-28: the grid sweep, moved off the user's crontab and into the
     # scheduler (see main._grid_sweep_job). Mon 07:00 KL == 19:00 ET Sunday —
     # market closed, which the sweep REQUIRES because it injects grid params
