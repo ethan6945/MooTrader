@@ -75,6 +75,7 @@
     "NEWS_DRIVEN_MIN_HOLD_MIN": "30",
     "SENTIMENT_SCORING_ENABLED": "false",
     "SENTIMENT_SIZING": "false",
-    "SENTIMENT_BUDGET": "8"
+    "SENTIMENT_BUDGET": "8",
+    "RS_MIN_PCT": "-10.0"
   }
 }

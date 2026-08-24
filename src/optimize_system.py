@@ -89,7 +89,13 @@ TRADES_FOR_FULL_CONFIDENCE = 12
 # not overturn a real difference in expectancy.
 WR_TILT_LO, WR_TILT_HI = 0.80, 1.20
 
-PARAM_KEYS = ("entry_threshold", "tp_atr_mult", "sl_atr_mult")
+# The tunables this sweep moves. rs_min_pct joined on 2026-08-24 and is
+# deliberately NOT in the weekly grid: a 4th axis would turn 27 combos into 81
+# and a 46-minute slot into two hours. It rides the DAILY neighbourhood walk
+# instead, which is the mechanism built for "should this one be tighter or
+# looser", one parameter at a time.
+PARAM_KEYS = ("entry_threshold", "tp_atr_mult", "sl_atr_mult", "rs_min_pct")
+GRID_KEYS = ("entry_threshold", "tp_atr_mult", "sl_atr_mult")
 
 # ── Daily mode (2026-07-07, owner request) ──────────────────────────────────
 # Every morning (09:00 MYT, market closed) the incremental cache tops up
@@ -100,28 +106,33 @@ PARAM_KEYS = ("entry_threshold", "tp_atr_mult", "sl_atr_mult")
 # beats it by DAILY_HYSTERESIS on the aggregate score, and at most ONE param
 # moves per day (single best axis step). The weekly Monday full grid remains
 # the broad search that can escape local optima.
-DAILY_STEPS = {"entry_threshold": 5.0, "tp_atr_mult": 1.0, "sl_atr_mult": 0.3}
+DAILY_STEPS = {"entry_threshold": 5.0, "tp_atr_mult": 1.0, "sl_atr_mult": 0.3,
+               # 2.5pp a step: the floor spans -10 (inert) to +5, so four steps
+               # take it from "off" to "must beat SPY", which is the whole range
+               # the June investigation left open.
+               "rs_min_pct": 2.5}
 DAILY_HYSTERESIS = 1.25          # challenger agg must be ≥ 1.25× baseline agg
 DAILY_LOG = ROOT / "data" / "optimizer_daily_log.jsonl"
 
 
-def _neighbor_combos(saved: dict) -> list[tuple[float, float, float]]:
+_ROUND = {"entry_threshold": 0, "tp_atr_mult": 1, "sl_atr_mult": 1,
+          "rs_min_pct": 2}
+
+
+def _neighbor_combos(saved: dict) -> list[tuple]:
     """Axis-wise ±1-step neighbors of the current params (each differs from
     the baseline in exactly ONE parameter), bounds-checked and deduped."""
-    th0, tp0, sl0 = (saved["entry_threshold"], saved["tp_atr_mult"],
-                     saved["sl_atr_mult"])
-    out: list[tuple[float, float, float]] = []
-    for key, step in DAILY_STEPS.items():
+    base = tuple(float(saved[k]) for k in PARAM_KEYS)
+    out: list[tuple] = []
+    for i, key in enumerate(PARAM_KEYS):
+        step = DAILY_STEPS.get(key)
+        if step is None:
+            continue
         for sign in (-1.0, +1.0):
-            th, tp, sl = th0, tp0, sl0
-            if key == "entry_threshold":
-                th = round(th0 + sign * step)
-            elif key == "tp_atr_mult":
-                tp = round(tp0 + sign * step, 1)
-            else:
-                sl = round(sl0 + sign * step, 1)
-            c = (float(th), float(tp), float(sl))
-            if c == (th0, tp0, sl0) or c in out:
+            c = list(base)
+            c[i] = round(base[i] + sign * step, _ROUND[key])
+            c = tuple(float(x) for x in c)
+            if c == base or c in out:
                 continue
             if all(runtime_config.is_valid(k, v)
                    for k, v in zip(PARAM_KEYS, c)):
@@ -223,7 +234,7 @@ def _snap_weekdays(w_start: datetime, w_end: datetime) -> tuple[datetime, dateti
 
 # ── Combo evaluation ────────────────────────────────────
 
-def _inject(th: float, tp: float, sl: float) -> None:
+def _inject(*values) -> None:
     """Make the sandbox evaluate this combo — WITHOUT touching db-state.
 
     2026-08-10: this used to write param_* straight into live db-state, so the
@@ -240,17 +251,20 @@ def _inject(th: float, tp: float, sl: float) -> None:
     runtime_config in this thread) but cannot survive the process, so a crash
     now degrades to "sweep produced no result" instead of "live account is
     trading a grid combo nobody chose"."""
-    runtime_config.push_overrides({
-        "entry_threshold": float(th),
-        "tp_atr_mult": float(tp),
-        "sl_atr_mult": float(sl),
-    })
+    runtime_config.push_overrides(
+        {k: float(v) for k, v in zip(PARAM_KEYS, values)})
 
 
-def _eval_combo(th: float, tp: float, sl: float,
-                windows: list, pool: list[str], quiet: bool) -> dict:
-    """Run one combo across ALL windows; return the aggregate record."""
-    _inject(th, tp, sl)
+def _eval_combo(*args, windows: list, pool: list[str], quiet: bool) -> dict:
+    """Run one combo across ALL windows; return the aggregate record.
+
+    Takes the combo positionally in PARAM_KEYS order, so a new tunable joins by
+    being added to PARAM_KEYS rather than by threading another argument through
+    four call sites.
+    """
+    combo = tuple(float(a) for a in args)
+    th, tp, sl = combo[0], combo[1], combo[2]
+    _inject(*combo)
     per_window, scores, pnls = [], [], []
     for w_start, w_end in windows:
         cfg = V4Config(
@@ -281,6 +295,7 @@ def _eval_combo(th: float, tp: float, sl: float,
     eligible = len(scores) >= MIN_VALID_WINDOWS
     return {
         "th": float(th), "tp": float(tp), "sl": float(sl),
+        "params": {k: v for k, v in zip(PARAM_KEYS, combo)},
         "agg_score": round(sum(scores) / len(scores), 2) if eligible else -1.0,
         "mean_pnl": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
         "valid_windows": len(scores), "windows": per_window,
@@ -347,17 +362,21 @@ def optimize(quick: bool = False, quiet: bool = False,
         windows = picked or windows[:1]
 
     saved = {k: float(runtime_config.current(k)) for k in PARAM_KEYS}
-    baseline_combo = (saved["entry_threshold"], saved["tp_atr_mult"], saved["sl_atr_mult"])
+    baseline_combo = tuple(float(saved[k]) for k in PARAM_KEYS)
 
     combos: list[tuple[float, float, float]] = [baseline_combo]
     if daily:
         combos += _neighbor_combos(saved)
     else:
+        # The weekly grid varies GRID_KEYS only; every other tunable rides at
+        # its current value. A 4th axis would triple the combo count and the
+        # 46-minute Sunday slot with it.
         grid = GRID_QUICK if quick else GRID_FULL
+        _rest = tuple(float(saved[k]) for k in PARAM_KEYS[len(GRID_KEYS):])
         for th in grid["entry_threshold"]:
             for tp in grid["tp_atr_mult"]:
                 for sl in grid["sl_atr_mult"]:
-                    c = (float(th), float(tp), float(sl))
+                    c = (float(th), float(tp), float(sl)) + _rest
                     if c != baseline_combo and all(
                         runtime_config.is_valid(k, v)
                         for k, v in zip(PARAM_KEYS, c)
@@ -373,13 +392,15 @@ def optimize(quick: bool = False, quiet: bool = False,
     t0 = _time.time()
     results: list[dict] = []
     try:
-        for i, (th, tp, sl) in enumerate(combos):
-            rec = _eval_combo(th, tp, sl, windows, pool, quiet)
-            rec["is_baseline"] = (th, tp, sl) == baseline_combo
+        for i, combo in enumerate(combos):
+            rec = _eval_combo(*combo, windows=windows, pool=pool, quiet=quiet)
+            rec["is_baseline"] = combo == baseline_combo
             results.append(rec)
             if not quiet and rec["eligible"]:
                 tag = "BASELINE" if rec["is_baseline"] else f"combo {i}"
-                print(f"  [{tag}] th={th:g} tp={tp:g} sl={sl:g} → "
+                desc = " ".join(f"{k.split('_')[0]}={v:g}"
+                                for k, v in zip(PARAM_KEYS, combo))
+                print(f"  [{tag}] {desc} → "
                       f"agg={rec['agg_score']:.1f} meanPnL=${rec['mean_pnl']:.0f} "
                       f"({rec['valid_windows']}/{len(windows)} windows)")
     finally:
@@ -436,7 +457,10 @@ def optimize(quick: bool = False, quiet: bool = False,
         # that path is still gated by the freeze.
         changes = []
         payload_params = {}
-        for key, val in zip(PARAM_KEYS, (best["th"], best["tp"], best["sl"])):
+        _best_params = best.get("params") or dict(
+            zip(GRID_KEYS, (best["th"], best["tp"], best["sl"])))
+        for key in PARAM_KEYS:
+            val = _best_params.get(key, saved[key])
             if float(val) != saved[key]:
                 changes.append(f"{key}: {saved[key]:g} → {val:g}")
                 payload_params[key] = float(val)

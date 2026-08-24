@@ -70,6 +70,7 @@ def frozen() -> bool:
 # Two spellings of one parameter is how this went wrong before; the mapping
 # lives here so there is exactly one place that knows both.
 _FILE_KEY = {
+    "rs_min_pct": "RS_MIN_PCT",
     "entry_threshold": "ENTRY_SCORE_THRESHOLD", "sl_atr_mult": "SL_ATR_MULT",
     "tp_atr_mult": "TP_ATR_MULT", "risk_per_trade": "RISK_PER_TRADE",
     "max_position_pct": "MAX_POSITION_PCT", "max_hold_days": "MAX_HOLD_DAYS",
@@ -106,6 +107,15 @@ def _param(key: str):
     if not fk:
         return None
     return (_read_file().get("params") or {}).get(fk)
+
+
+def rs_min_pct() -> float:
+    """Relative-strength entry floor. Inert at the default — see src/rs_gate.py."""
+    v = _param("rs_min_pct")
+    try:
+        return float(v) if v is not None else settings.rs_min_pct
+    except (TypeError, ValueError):
+        return settings.rs_min_pct
 
 
 def entry_threshold() -> float:
@@ -199,6 +209,13 @@ ALLOWED_PARAMS = {
     # contains no blowup), so the upper bound is the tail-risk guard the
     # in-sample gate structurally cannot provide.
     "max_position_pct": (0.10, 0.55),
+    # Relative-strength entry floor, in percentage points of 20-day excess
+    # return against SPY. The LOW end is the important one: at -10 the gate is
+    # inert (see rs_gate.INERT_BELOW_PCT), so the sweep can propose turning it
+    # OFF as readily as turning it up. The default is inert on purpose — the
+    # evidence for it is 31 in-sample trades, and this codebase has been burned
+    # before by a filter that read as validated because it was written down.
+    "rs_min_pct": (-10.0, 5.0),
 }
 
 
@@ -223,6 +240,7 @@ def current(key: str):
         "max_hold_days": max_hold_days,
         "universe_top_n": universe_top_n,
         "max_position_pct": max_position_pct,
+        "rs_min_pct": rs_min_pct,
     }[key]()
 
 

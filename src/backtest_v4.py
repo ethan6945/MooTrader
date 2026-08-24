@@ -83,7 +83,7 @@ from src.config import ROOT, derive_max_positions, settings
 from src import (blacklist, entry_gates, entry_threshold, indicators,
                  regime as regime_mod, risk_manager, runtime_config, sector,
                  sizing_rule, strategy_momentum, strategy_mr, strategy_pattern)
-from src import concentration, stacking
+from src import concentration, rs_gate, stacking
 from src.sim_feed import (SimClock, SimFeed, _bar_session, _note_fill,
                           reset_fill_stats)
 
@@ -856,6 +856,17 @@ def run_v4(cfg: V4Config, progress_cb=None,
                 _skip(gate, sig.symbol, reason)
                 continue
 
+            # Relative strength — the SAME rule live calls, on replay bars.
+            # Inert unless RS_MIN_PCT has been tuned above the floor.
+            _rs_floor = runtime_config.rs_min_pct()
+            if _rs_floor > rs_gate.INERT_BELOW_PCT:
+                _spy_d = feed.get_kline("SPY", bars=rs_gate.RS_LOOKBACK_DAYS + 10,
+                                        ktype=KLType.K_DAY)
+                _rs_ok, _rs_why = rs_gate.passes(df_d, _spy_d, min_pct=_rs_floor)
+                if not _rs_ok:
+                    _skip("relative_strength", sig.symbol, _rs_why)
+                    continue
+
             if _cooldown_active(sig.symbol, broker, now):
                 _skip("cooldown", sig.symbol, f"SL'd within {_COOLDOWN_MINUTES}min")
                 continue
@@ -1043,6 +1054,7 @@ def _report(cfg, broker, tickers, scans, eval_scans, signals_found,
             "max_hold_days": runtime_config.max_hold_days(),
             "risk_per_trade": runtime_config.risk_per_trade(),
             "max_position_pct": runtime_config.max_position_pct(),
+            "rs_min_pct": runtime_config.rs_min_pct(),
             "account_usd": cfg.account_usd,
             "enforce_cash": cfg.enforce_cash, "soft_stops": cfg.soft_stops,
             "entry_ttl": cfg.entry_ttl,

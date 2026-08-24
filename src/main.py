@@ -22,6 +22,7 @@ from moomoo import KLType
 from . import (
     adaptive_sizing, ai, ai_validator, approvals, audit, blacklist, breadth,
     clock, cron_state, db, entry_gates, executor, gap_sentinel, history,
+    rs_gate,
     indicators, kill_switch, news_driven, notifier, options_stats, portfolio,
     regime as regime_mod, risk_manager, runtime_config, sector, self_improve,
     self_review, strategy_momentum, strategy_mr, strategy_pattern,
@@ -798,6 +799,28 @@ def scan_once() -> None:
                     max_gap_pct=settings.max_gap_pct)
                 if not gap_ok:
                     _skip("gap", gap_reason)
+                    continue
+
+            # --- Relative strength (2026-08-24) ---
+            # Is this name beating the index it is being bought in? A long into
+            # something underperforming SPY over the last month is a bet against
+            # the trend the strategy claims to follow. INERT by default; the
+            # weekly sweep tunes RS_MIN_PCT and the owner approves it.
+            _rs_floor = runtime_config.rs_min_pct()
+            if _rs_floor > rs_gate.INERT_BELOW_PCT:
+                try:
+                    _spy_d = c.get_kline("SPY", bars=rs_gate.RS_LOOKBACK_DAYS + 10,
+                                         ktype=KLType.K_DAY)
+                    _sym_d = c.get_kline(sig.symbol,
+                                         bars=rs_gate.RS_LOOKBACK_DAYS + 10,
+                                         ktype=KLType.K_DAY)
+                    _rs_ok, _rs_why = rs_gate.passes(_sym_d, _spy_d,
+                                                     min_pct=_rs_floor)
+                except Exception as e:
+                    # Fail OPEN: a quote outage is not evidence of weakness.
+                    _rs_ok, _rs_why = True, f"RS check failed: {e} (pass)"
+                if not _rs_ok:
+                    _skip("relative_strength", _rs_why)
                     continue
 
             # --- Earnings / spread / sector (cheap context veto) ---

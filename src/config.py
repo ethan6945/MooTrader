@@ -673,6 +673,13 @@ class Settings:
     # weekly calibration ever starts failing.
     params_frozen: bool = os.getenv("PARAMS_FROZEN", "true").lower() in ("1", "true", "yes")
 
+    # Relative-strength entry floor (2026-08-24): block a long whose 20-day
+    # return trails SPY's by more than this many percentage points. DEFAULT
+    # INERT (-10.0) — the June investigation that motivated it produced 31
+    # in-sample trades, which is a hypothesis, not a validated filter. The
+    # weekly sweep tunes it from independent windows and the owner approves it.
+    rs_min_pct: float = float(os.getenv("RS_MIN_PCT", "-10.0"))
+
     # ── Phase 1 (2026-06-11): rule-based dynamic universe ──
     # Weekly: watchlist := top N of the liquidity pool (config/universe_pool.json)
     # by 6-1 momentum (src/universe.py). OFF by default — flip
