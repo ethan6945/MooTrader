@@ -16,6 +16,14 @@
 cd "$(dirname "$0")" || exit 1
 mkdir -p logs
 
+# macOS hands launchd-spawned processes a 256-fd soft limit, and both the panel
+# and the scheduler it spawns are long-lived processes that talk to yfinance —
+# whose worker threads open a SQLite connection each. The leak itself is fixed
+# at the call sites (gc after the batch download), but 256 is a thin margin for
+# any all-day process, so raise the ceiling for everything started from here.
+# Hard limit on macOS is unlimited, so this needs no privileges.
+ulimit -n 4096 2>/dev/null || true
+
 PORT=${WEB_PORT:-8770}
 PY=".venv/bin/python3"
 say() { printf '  %s\n' "$*"; }

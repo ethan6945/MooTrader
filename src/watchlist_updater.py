@@ -12,6 +12,7 @@ Run weekly via scheduler (Sun 22:00 ET) or manually:
 """
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
@@ -138,6 +139,16 @@ def screen_universe(tickers: list[str]) -> pd.DataFrame:
         threads=True,
     )
     log.info("yfinance batch done in %.1fs", time.time() - t0)
+
+    # threads=True stays — 500 tickers serially is not an option. The cost is
+    # that every yfinance worker thread opens its own SQLite connection to the
+    # tz cache (peewee keeps connection state in a threading.local) and those
+    # objects sit in reference cycles until a gen-2 GC pass breaks them. The
+    # scheduler is a long-lived process under macOS's default 256-fd soft
+    # limit, so waiting for that pass is how you get EMFILE a few refreshes in.
+    # Collecting here keeps the fd count flat. `data` stays referenced, so only
+    # garbage is freed.
+    gc.collect()
 
     # SPY anchor for relative strength calc.
     try:

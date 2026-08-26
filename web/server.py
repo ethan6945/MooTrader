@@ -24,6 +24,7 @@ Endpoints (JSON):
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import hmac
 import json
@@ -726,8 +727,19 @@ def _fetch_sectors() -> dict:
     import yfinance as yf
 
     syms = [r[0] for r in _SECTOR_ETFS + _INDEX_ETFS]
+    # threads=False on purpose. Each yfinance worker thread opens its OWN
+    # SQLite connection to the tz cache (peewee parks connection state in a
+    # threading.local), and those objects land in reference cycles that only a
+    # generational GC pass breaks. A mostly-idle Flask process allocates far
+    # too little to trigger a gen-2 collection, so at ~28 leaked fds per call
+    # and one call per minute this panel walked straight into EMFILE — see the
+    # 22 "Too many open files" tracebacks in logs/web.log. 15 symbols sitting
+    # behind a 60s cache do not need the parallelism.
     df = yf.download(syms, period="5d", interval="1d",
-                     progress=False, auto_adjust=False, threads=True)
+                     progress=False, auto_adjust=False, threads=False)
+    # Belt and braces: reclaim those cycles now instead of whenever a gen-2
+    # pass happens to fire. df stays referenced, so this only frees garbage.
+    gc.collect()
     closes = df["Close"]
 
     def pack(spec):
