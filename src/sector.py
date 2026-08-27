@@ -109,7 +109,7 @@ MAX_PER_SECTOR = 3
 
 
 # Sector → tracking-ETF map. Used by:
-#   • signal_reporter for "vs sector strength" context line
+#   • the signal desk for the "vs sector strength" context line
 #   • ml.features for the rs_vs_sector_5d feature
 # Sectors without a clean single-ETF proxy fall back to a near-cousin
 # (auto/mobility → XLY consumer discretionary).

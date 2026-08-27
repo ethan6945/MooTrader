@@ -13,14 +13,12 @@ Endpoints (JSON):
   GET  /api/closed?n=        → recent closed trades (History + Equity)
   GET  /api/sectors          → live US sector ETF overview (60s cache)
   GET  /api/log?n=           → tail of logs/trader.log (compact activity)
-  GET  /api/signal-log?n=    → tail of logs/signal_reporter.log
-  GET  /api/signal-monitor   → per-symbol latest monitor tick (盯盘磁贴数据)
-  GET  /api/signal-alerts?n= → alert feed, newest first (盯盘警报流)
   POST /api/budget           → {value} set runtime budget (no restart)
   POST /api/scheduler/<start|stop>
-  POST /api/signal-run       → fire the signal reporter once (background)
-  POST /api/backtest         → run a 180d honest backtest (background thread)
-  GET  /api/backtest         → last backtest result/status
+  POST /api/param-tune/run   → run the backtest tuning chain (background thread)
+  POST /api/param-tune/stop  → stop it at the next checkpoint, keeping partials
+  GET  /api/param-tune       → its progress, and the survivors awaiting confirm
+  POST /api/param-tune/apply → write the changes the owner ticked
 """
 from __future__ import annotations
 
@@ -47,6 +45,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import ai, approvals, clock, db, keepawake, risk_manager  # noqa: E402
 from src.config import BUNDLE_DIR, IS_FROZEN, ROOT, settings  # noqa: E402
 
+# This module had no logger, while api_exit's error path already called
+# log.warning — a NameError waiting for the one case it was written for. Note
+# that three handlers bind a LOCAL `log` to an open file; those are unaffected.
+log = logging.getLogger(__name__)
+
 # In the frozen .app the static assets ship inside the bundle; in dev
 # BUNDLE_DIR == repo root, so this resolves to web/static either way.
 STATIC = BUNDLE_DIR / "web" / "static"
@@ -54,11 +57,7 @@ STATIC = BUNDLE_DIR / "web" / "static"
 ENV_FILE = Path(os.getenv("WEB_ENV_FILE") or (ROOT / ".env"))
 ACCOUNT_FILE = ROOT / "data" / "account.json"
 TRADER_LOG = ROOT / "logs" / "trader.log"
-SIGNAL_LOG = ROOT / "logs" / "signal_reporter.log"
-SIGNAL_PID = ROOT / "logs" / "signal_reporter.pid"
 SIGNAL_WL_FILE = ROOT / "config" / "signal_watchlist.json"
-SIGNAL_MONITOR_FILE = ROOT / "data" / "signal_monitor_state.json"
-SIGNAL_ALERTS_FILE = ROOT / "data" / "signal_alerts.json"
 SELF_REVIEW_FILE = ROOT / "data" / "self_review_last.json"
 OPEND_PID = ROOT / "logs" / "opend.pid"
 VENV_PY = ROOT / ".venv" / "bin" / "python"
@@ -408,7 +407,8 @@ def _stop_pid(pid_file: Path) -> bool:
     return True
 
 
-def _opend_status(acct: dict, sched_running: bool) -> tuple[str, str]:
+def _opend_status(acct: dict, sched_running: bool,
+                  lang: str = "zh") -> tuple[str, str]:
     """OpenD light, inferred WITHOUT opening a second broker connection (a fresh
     connection has its own unlock state and wouldn't reflect the scheduler's).
 
@@ -430,12 +430,22 @@ def _opend_status(acct: dict, sched_running: bool) -> tuple[str, str]:
       green  — pipeline OK + market open + snapshot fresh (+ REAL: unlock proven)
       blue   — pipeline OK but market closed → snapshot ages out BY DESIGN
       yellow — reachable but worth a look (label says why)
+
+    The label is the only pill in the top bar whose text is the server's, so it
+    takes `lang` like everything else the panel renders. It used to be Chinese
+    unconditionally, which put one Chinese pill in the middle of an otherwise
+    English top bar.
     """
+    en = lang == "en"
+
+    def L(zh: str, en_: str) -> str:
+        return en_ if en else zh
+
     try:
         with socket.create_connection((settings.moo_host, settings.moo_port), timeout=0.6):
             pass
     except Exception:
-        return "red", "OpenD 未启动"
+        return "red", L("OpenD 未启动", "OpenD not running")
 
     # A written snapshot proves a SUCCESSFUL accinfo query (the writer bails
     # before writing if the query raises) — i.e. the data pipeline works. It
@@ -458,36 +468,48 @@ def _opend_status(acct: dict, sched_running: bool) -> tuple[str, str]:
     #   SIMULATE        → 模拟盘 (no unlock exists; orders always work)
     #   REAL, proven    → 已解锁
     #   REAL, unproven  → handled separately below (warning state)
-    prefix = "模拟盘" if not is_real else "已解锁"
+    prefix = (L("模拟盘", "paper") if not is_real
+              else L("已解锁", "unlocked"))
 
     if sched_running and snapshot_ok and market_open and fresh:
         if is_real and not unlock_ok:
-            return "yellow", "已连接 · 解锁未确认 — 请在 OpenD 窗口点击解锁"
-        return "green", f"{prefix} · 可交易"
+            return "yellow", L("已连接 · 解锁未确认 — 请在 OpenD 窗口点击解锁",
+                               "connected · unlock unconfirmed — click unlock in "
+                               "the OpenD window")
+        return "green", prefix + L(" · 可交易", " · can trade")
 
     # Off-hours: scanning intentionally pauses, so a stale snapshot is expected.
     # Tolerate a Fri-close→Mon-open weekend plus an adjacent holiday.
     OFF_HOURS_GRACE = 4 * 24 * 3600   # 4 days
     if sched_running and snapshot_ok and not market_open and age < OFF_HOURS_GRACE:
-        rest = {
+        rest = ({
+            "premarket":  "pre-market",
+            "afterhours": "closed",
+            "weekend":    "weekend",
+            "holiday":    "holiday",
+        } if en else {
             "premarket":  "待开盘",
             "afterhours": "已收盘",
             "weekend":    "周末休市",
             "holiday":    "假期休市",
-        }.get(session, "休市")
+        }).get(session, L("休市", "market closed"))
         if is_real and not unlock_ok:
             # Nothing trades off-hours, so blue (not alarming) — but flag that
             # the unlock still needs doing before the next open.
-            return "blue", f"{rest} · 解锁未确认(开盘前请解锁)"
+            return "blue", rest + L(" · 解锁未确认(开盘前请解锁)",
+                                    " · unlock unconfirmed (unlock before the open)")
         return "blue", f"{prefix} · {rest}"
 
     # 走到这里 = 既非绿(可交易)也非蓝(休市)。真正的问题在调度器/快照管道,
     # 不在锁本身 —— 前缀只报能证实的事。
     if snapshot_ok:
+        head = (prefix if unlock_ok or not is_real
+                else L("已连接", "connected"))
         if not sched_running:
-            return "yellow", f"{prefix if unlock_ok or not is_real else '已连接'} · 调度器已停"
-        return "yellow", f"{prefix if unlock_ok or not is_real else '已连接'} · 连接中…"
-    return "yellow", "已连接 · 等待首次账户查询"
+            return "yellow", head + L(" · 调度器已停", " · scheduler stopped")
+        return "yellow", head + L(" · 连接中…", " · connecting…")
+    return "yellow", L("已连接 · 等待首次账户查询",
+                       "connected · waiting for the first account query")
 
 
 def _trade_summary() -> dict:
@@ -563,7 +585,7 @@ def api_status():
     # holding the lease and trading. _scheduler_running fixed exactly this on
     # the Python side and the Swift side never got the fix.
     acct["scheduler_pid"] = _scheduler_pid() if sched else None
-    acct["opend_status"], acct["opend_label"] = _opend_status(acct, sched)
+    acct["opend_status"], acct["opend_label"] = _opend_status(acct, sched, _lang())
     # Build identity. `version` is what the settings panels show; `running_from`
     # and `home` are here because a version alone cannot tell you WHICH copy is
     # executing — the 2026-08-05 incident was an app running out of a build
@@ -687,12 +709,6 @@ def api_closed():
 def api_log():
     n = int(request.args.get("n", 40))
     return jsonify(_tail(TRADER_LOG, n))
-
-
-@app.route("/api/signal-log")
-def api_signal_log():
-    n = int(request.args.get("n", 120))
-    return jsonify(_tail(SIGNAL_LOG, n))
 
 
 # ── live US sector overview (dashboard panel) ─────────────────────────────────
@@ -892,14 +908,32 @@ def api_reset_stats():
 
 
 # ── settings: .env key management ─────────────────────────────────────────────
+# (中文, English) — same rule as PARAM_SECTIONS: the row carries both and the
+# panel asks for one.
 SETTING_KEYS = {
-    "WEB_PASSWORD": "网页访问密码 — 设了之后，从手机/局域网打开面板要先登录(本机也是)。空=不需要密码(仅本机可用)。这是开放手机访问的前提。",
-    "DEEPSEEK_API_KEY": "DeepSeek API Key(可逗号分隔多个)— 所有 AI 分析(信号/情绪/退出/优化/入场验证)都用它。",
-    "TAVILY_API_KEY": "Tavily 新闻搜索 Key — 给 AI 提供实时新闻上下文。",
-    "FINNHUB_API_KEY": "Finnhub Key(免费 60次/分)— 按股票代码标注的新闻，"
-                       "且能查历史某一天(Tavily 只能查\"现在\")。需 FINNHUB_ENABLED=true。",
-    "TELEGRAM_TOKEN": "Telegram Bot Token — 推送交易通知 + 审批卡片。",
-    "TELEGRAM_CHAT_ID": "Telegram Chat ID — 接收通知的聊天 ID。",
+    "WEB_PASSWORD": (
+        "网页访问密码 — 设了之后，从手机/局域网打开面板要先登录(本机也是)。空=不需要密码(仅本机可用)。这是开放手机访问的前提。",
+        "Panel access password — with one set, opening the panel from a phone or "
+        "the LAN (and from this Mac) requires signing in. Empty = no password, "
+        "this machine only. Phone access cannot be turned on without it."),
+    "DEEPSEEK_API_KEY": (
+        "DeepSeek API Key(可逗号分隔多个)— 所有 AI 分析(信号/情绪/退出/优化/入场验证)都用它。",
+        "DeepSeek API key (comma-separate several) — every AI step runs on it: "
+        "signals, sentiment, exits, tuning, entry validation."),
+    "TAVILY_API_KEY": (
+        "Tavily 新闻搜索 Key — 给 AI 提供实时新闻上下文。",
+        "Tavily news-search key — gives the AI live news context."),
+    "FINNHUB_API_KEY": (
+        "Finnhub Key(免费 60次/分)— 按股票代码标注的新闻，"
+        "且能查历史某一天(Tavily 只能查\"现在\")。需 FINNHUB_ENABLED=true。",
+        "Finnhub key (free tier: 60/min) — news tagged by ticker, and queryable "
+        "for a past date, which Tavily cannot do. Needs FINNHUB_ENABLED=true."),
+    "TELEGRAM_TOKEN": (
+        "Telegram Bot Token — 推送交易通知 + 审批卡片。",
+        "Telegram bot token — pushes trade notifications and approval cards."),
+    "TELEGRAM_CHAT_ID": (
+        "Telegram Chat ID — 接收通知的聊天 ID。",
+        "Telegram chat ID — the chat that receives them."),
 }
 
 # Not every .env value is a secret, and a password field for one that isn't is
@@ -1042,7 +1076,8 @@ def api_setup_status():
 @app.route("/api/settings")
 def api_settings():
     env = _read_env()
-    keys = [{"key": k, "desc": d,
+    en = _lang() == "en"
+    keys = [{"key": k, "desc": d[1] if en else d[0],
              "masked": (env.get(k, "") if k in _PLAIN_KEYS else _mask(env.get(k, ""))),
              "secret": k not in _PLAIN_KEYS,
              "set": bool(env.get(k))}
@@ -1060,11 +1095,19 @@ STRATEGY_MODE_INFO = {
         "label": "技术指标模式", "label_en": "Technical",
         "desc": "指标评分选股和定仓位，新闻/AI 只做注释和否决。"
                 "回测描述的就是这个模式 —— 回测引擎故意不跑 LLM。",
+        "desc_en": "Indicators score the names and size the positions; news and "
+                   "the AI only annotate and veto. This is the mode the backtest "
+                   "describes — the engine deliberately runs no LLM.",
     },
     "news": {
         "label": "新闻主导模式", "label_en": "News-driven",
         "desc": "AI 的新闻读数选股和定仓位，指标评分降级为预筛(硬地板 50)，"
                 "收盘前平掉全部持仓。没有任何回测描述这个模式 —— 实盘结果本身就是实验。",
+        "desc_en": "The AI's read of the news picks the names and sizes the "
+                   "positions; the indicator score drops to a pre-filter (hard "
+                   "floor 50), and everything is flattened before the close. NO "
+                   "backtest describes this mode — the live results are the "
+                   "experiment.",
     },
 }
 
@@ -1153,109 +1196,274 @@ def api_set_strategy_mode():
 # lands, because main.py's finbert_crosscheck call is inside that branch.
 # technical-only means the readers sit under `not news_driven.enabled()`.
 # Everything else applies to whatever the selected layer picked.
+def _lang() -> str:
+    """Which language the panel is asking for. The selector is client-side, so
+    it travels as ?lang=; anything else falls back to Chinese, the language the
+    page was written in."""
+    return "en" if (request.args.get("lang") or "").lower() == "en" else "zh"
+
+
+# Every row carries BOTH languages: (KEY, 中文, English). Section and group
+# names are (中文, English) pairs. The panel asks for one with ?lang= and gets
+# that one — it used to get Chinese whatever the language selector said, so the
+# English UI had an English frame around a Chinese page.
 PARAM_SECTIONS = [
- ("mode", "策略模式 — 由哪一层选股", [
-   ("策略模式", [
-     ("STRATEGY_MODE", "technical=指标评分选股，新闻只做注释；news=新闻主导选股。"
-                       "这是这一页唯一会<b>换掉策略</b>的设置，下面两组各自只在对应模式下生效。"),
+ ("mode", ("策略模式 — 由哪一层选股",
+           "Strategy mode — which layer picks the stocks"), [
+   (("策略模式", "Strategy mode"), [
+     ("STRATEGY_MODE",
+      "technical=指标评分选股，新闻只做注释；news=新闻主导选股。"
+      "这是这一页唯一会<b>换掉策略</b>的设置，下面两组各自只在对应模式下生效。",
+      "technical = indicators score and pick; news only annotates. "
+      "news = the news read picks. This is the one setting on this page that "
+      "<b>swaps the strategy</b>; each of the two sections below is live only "
+      "under its own mode."),
    ]),
  ]),
- ("shared", "共用参数 — 两个模式都生效", [
-   ("入场 Entry", [
-     ("ENTRY_SCORE_THRESHOLD", "指标总分门槛。新闻模式下它仍是底线，再加上 NEWS_DRIVEN_THRESHOLD_DELTA。"),
-     ("TIMEFRAME", "K 线周期。改这个等于换一套指标周期，回测口径也跟着变。"),
-     ("MAX_GAP_PCT", "跳空上限 %。开盘跳空超过它就不追。"),
-     ("BREADTH_BLOCKING", "市场广度不健康时是否阻止开新仓（false=仅提示）。"),
-     ("SMART_REGIME_ENABLED", "启用带滞回的市场状态判定（而非裸标签）。"),
-     ("REGIME_BULL_MULT", "牛市时的仓位放大系数。"),
-     ("REGIME_VIX_CALM", "VIX 低于此值算「平静」。"),
+ ("shared", ("共用参数 — 两个模式都生效",
+             "Shared — live under both modes"), [
+   (("入场 Entry", "Entry"), [
+     ("ENTRY_SCORE_THRESHOLD",
+      "指标总分门槛。新闻模式下它仍是底线，再加上 NEWS_DRIVEN_THRESHOLD_DELTA。",
+      "Indicator score a name must clear. Still the floor under news mode, "
+      "plus NEWS_DRIVEN_THRESHOLD_DELTA."),
+     ("TIMEFRAME",
+      "K 线周期。改这个等于换一套指标周期，回测口径也跟着变。",
+      "Candle period. Changing it changes every indicator's period, and the "
+      "basis the backtest measures on."),
+     ("MAX_GAP_PCT",
+      "跳空上限 %。开盘跳空超过它就不追。",
+      "Gap ceiling, %. A name that opens gapped wider than this is not chased."),
+     ("BREADTH_BLOCKING",
+      "市场广度不健康时是否阻止开新仓（false=仅提示）。",
+      "Whether unhealthy market breadth blocks new entries (false = warn only)."),
+     ("SMART_REGIME_ENABLED",
+      "启用带滞回的市场状态判定（而非裸标签）。",
+      "Regime detection with hysteresis, rather than a bare label."),
+     ("REGIME_BULL_MULT",
+      "牛市时的仓位放大系数。",
+      "Position multiplier while the regime reads bull."),
+     ("REGIME_VIX_CALM",
+      "VIX 低于此值算「平静」。",
+      "VIX below this counts as calm."),
    ]),
-   ("出场 Exit", [
-     ("SL_ATR_MULT", "止损距离 = 这个倍数 × ATR（Wilder）。"),
-     ("TP_ATR_MULT", "止盈距离 = 这个倍数 × ATR。"),
-     ("MAX_HOLD_DAYS", "最长持仓天数，到期无条件平仓。"),
-     ("USE_SCALE_OUT", "分批止盈。关着的时候 TP1_R / TP2_R 不起作用。"),
-     ("TP1_R", "第一批止盈的 R 倍数。"),
-     ("TP2_R", "第二批止盈的 R 倍数。"),
-     ("USE_BREAKEVEN_STOP", "到 +1R 后把止损上移到成本价。"),
-     ("REAL_USE_SOFT_EXITS", "实盘用软出场（本地循环）而非券商挂单。"),
+   (("出场 Exit", "Exit"), [
+     ("SL_ATR_MULT",
+      "止损距离 = 这个倍数 × ATR（Wilder）。",
+      "Stop distance = this multiple × ATR (Wilder)."),
+     ("TP_ATR_MULT",
+      "止盈距离 = 这个倍数 × ATR。",
+      "Target distance = this multiple × ATR."),
+     ("MAX_HOLD_DAYS",
+      "最长持仓天数，到期无条件平仓。",
+      "Longest hold in days; the position is closed when it expires, "
+      "unconditionally."),
+     ("USE_SCALE_OUT",
+      "分批止盈。关着的时候 TP1_R / TP2_R 不起作用。",
+      "Scale out in tranches. TP1_R / TP2_R do nothing while this is off."),
+     ("TP1_R", "第一批止盈的 R 倍数。", "R multiple for the first tranche."),
+     ("TP2_R", "第二批止盈的 R 倍数。", "R multiple for the second tranche."),
+     ("USE_BREAKEVEN_STOP",
+      "到 +1R 后把止损上移到成本价。",
+      "Move the stop to entry once the trade reaches +1R."),
+     ("REAL_USE_SOFT_EXITS",
+      "实盘用软出场（本地循环）而非券商挂单。",
+      "In live trading, exit from the local loop rather than through a resting "
+      "broker order."),
    ]),
-   ("风控与资金 Risk & Capital", [
-     ("__BUDGET__", "分配给交易的本金。改了下次扫描生效（免重启）；仓位与风控都由它派生，"
-                    "并且会同步重锚回撤高水位 —— 不重锚的话回撤熔断会失效。"),
-     ("RISK_PER_TRADE", "单笔风险占预算比例。仓位大小由它和止损距离反推。"),
-     ("MAX_POSITION_PCT", "单个标的最大仓位占预算比例。"),
-     ("MAX_POSITIONS", "同时最多持有几个标的。"),
-     ("ACCOUNT_USD", "账户资金基数（回测与派生上限用）。"),
-     ("DAILY_DRAWDOWN_STOP", "当日回撤达到此比例停止开新仓。"),
-     ("DD_HALT_PCT", "总回撤达到此百分比触发 halt。"),
-     ("DD_SIZE_CUT_PCT", "总回撤达到此百分比开始减半仓位。"),
-     ("PARAMS_FROZEN", "参数冻结：挡住一切自动化写入。你在这一页的修改不受它限制。"),
-     ("AUTO_APPLY_PARAMS", "允许优化器自动应用参数。"),
-     ("AUTO_BUDGET_ENABLED", "自动复利调整预算。"),
+   (("风控与资金 Risk & Capital", "Risk & capital"), [
+     ("__BUDGET__",
+      "分配给交易的本金。改了下次扫描生效（免重启）；仓位与风控都由它派生，"
+      "并且会同步重锚回撤高水位 —— 不重锚的话回撤熔断会失效。",
+      "Capital allocated to trading. Effective next scan, no restart. Position "
+      "sizes and every risk limit derive from it, and changing it re-anchors "
+      "the drawdown high-water mark — without that re-anchor the drawdown "
+      "breaker stops working in both directions."),
+     ("RISK_PER_TRADE",
+      "单笔风险占预算比例。仓位大小由它和止损距离反推。",
+      "Risk per trade as a fraction of the budget. Position size is derived "
+      "from it and the stop distance."),
+     ("MAX_POSITION_PCT",
+      "单个标的最大仓位占预算比例。",
+      "Largest share of the budget any one name may hold."),
+     ("MAX_POSITIONS",
+      "同时最多持有几个标的。",
+      "How many names may be held at once."),
+     ("ACCOUNT_USD",
+      "账户资金基数（回测与派生上限用）。",
+      "Account size used by the backtest and by derived caps."),
+     ("DAILY_DRAWDOWN_STOP",
+      "当日回撤达到此比例停止开新仓。",
+      "Stop opening new positions once the day is down this much."),
+     ("DD_HALT_PCT",
+      "总回撤达到此百分比触发 halt。",
+      "Total drawdown that triggers a halt, in percent."),
+     ("DD_SIZE_CUT_PCT",
+      "总回撤达到此百分比开始减半仓位。",
+      "Total drawdown at which position sizes are halved, in percent."),
+     ("PARAMS_FROZEN",
+      "参数冻结：挡住一切自动化写入。你在这一页的修改不受它限制。",
+      "Parameter freeze: blocks every automated write. Your own edits on this "
+      "page are not affected."),
+     ("AUTO_APPLY_PARAMS",
+      "允许优化器自动应用参数。",
+      "Let the optimizer apply parameters on its own."),
+     ("PARAM_TUNE_MODE",
+      "<b>谁来发起回测调参</b>。"
+      "<b>manual 手动</b>=没人自动动参数；每周的 AI 优化器、half-Kelly、"
+      "网格搜索、月度 lever 复核全部停手，改由你点下面的按钮跑同一套流程，"
+      "跑完当场逐条确认。<b>weekly 每周</b>=周一自动跑，结果进审批队列等你批。<br>"
+      "默认 manual —— 建议是进队列的，一个会自己变长的队列只会让人养成"
+      "「清掉」而不是「读完」的习惯。",
+      "<b>Who starts a tuning run</b>. "
+      "<b>manual</b> = nothing tunes on its own. The weekly AI optimizer, "
+      "half-Kelly, the grid sweep and the monthly lever recheck all stand "
+      "down; you run the same chain from the button below and confirm each "
+      "change on the spot. <b>weekly</b> = it runs itself on Monday and the "
+      "survivors wait in the approval queue.<br>"
+      "manual is the default because the proposals go to a queue, and a queue "
+      "that fills itself between visits trains you to clear it rather than "
+      "read it."),
+     ("AUTO_BUDGET_ENABLED",
+      "自动复利调整预算。",
+      "Compound the budget automatically."),
    ]),
-   ("选股池 Universe", [
-     ("SCAN_INTERVAL_MIN", "扫描间隔（分钟）。"),
-     ("DYNAMIC_UNIVERSE_ENABLED", "按规则定期重建观察池（关=用固定 watchlist）。"),
-     ("UNIVERSE_TOP_N", "观察池保留前 N 个标的。"),
-     ("UNIVERSE_REFRESH_FREQ", "重建频率。"),
-     ("UNIVERSE_ETF_SLOTS", "观察池里留给 ETF 的名额。"),
-     ("UNIVERSE_EXIT_RANK", "跌出这个排名才移出观察池（滞回，避免反复进出）。"),
-     ("SIGNAL_WATCHLIST", "盯盘信号台的额外关注列表。"),
+   (("选股池 Universe", "Universe"), [
+     ("SCAN_INTERVAL_MIN", "扫描间隔（分钟）。", "Scan interval, in minutes."),
+     ("DYNAMIC_UNIVERSE_ENABLED",
+      "按规则定期重建观察池（关=用固定 watchlist）。",
+      "Rebuild the watch pool on a schedule (off = use the fixed watchlist)."),
+     ("UNIVERSE_TOP_N",
+      "观察池保留前 N 个标的。",
+      "Keep the top N names in the pool."),
+     ("UNIVERSE_REFRESH_FREQ", "重建频率。", "How often the pool is rebuilt."),
+     ("UNIVERSE_ETF_SLOTS",
+      "观察池里留给 ETF 的名额。",
+      "Slots in the pool reserved for ETFs."),
+     ("UNIVERSE_EXIT_RANK",
+      "跌出这个排名才移出观察池（滞回，避免反复进出）。",
+      "A name leaves the pool only after falling past this rank — hysteresis, "
+      "so names don't churn in and out."),
+     ("SIGNAL_WATCHLIST",
+      "盯盘信号台的额外关注列表。",
+      "Extra names watched by the signal desk."),
    ]),
-   ("持仓保护 Gap sentinel", [
-     ("GAP_SENTINEL_ENABLED", "持仓跳空哨兵。"),
-     ("GAP_SENTINEL_AI", "哨兵调用 AI 判断跳空原因。"),
-     ("GAP_SENTINEL_AI_INTRADAY", "盘中也跑哨兵。"),
-     ("GAP_SENTINEL_AI_MIN_CONF", "哨兵采信 AI 结论的最低置信度。"),
-     ("GAP_EXIT_EARNINGS_DAYS", "财报前几天开始规避跳空风险。"),
+   (("持仓保护 Gap sentinel", "Gap sentinel"), [
+     ("GAP_SENTINEL_ENABLED",
+      "持仓跳空哨兵。",
+      "Overnight gap sentinel for open positions."),
+     ("GAP_SENTINEL_AI",
+      "哨兵调用 AI 判断跳空原因。",
+      "Let the sentinel ask the AI why a name gapped."),
+     ("GAP_SENTINEL_AI_INTRADAY",
+      "盘中也跑哨兵。",
+      "Run the sentinel intraday as well."),
+     ("GAP_SENTINEL_AI_MIN_CONF",
+      "哨兵采信 AI 结论的最低置信度。",
+      "Lowest AI confidence the sentinel will act on."),
+     ("GAP_EXIT_EARNINGS_DAYS",
+      "财报前几天开始规避跳空风险。",
+      "How many days before earnings to start avoiding gap risk."),
    ]),
-   ("AI 引擎 AI Engine", [
-     ("AI_PROVIDER", "AI 供应商。当前只接 DeepSeek。"),
-     ("__AI_MODEL__", "所选引擎当前可用的模型（实时从 API 拉取）。改了下次扫描即生效，无需重启。"),
-     ("AI_VETO_BLOCKING", "AI 否决是否真的挡下单。false=咨询发生在下单之后，改不了决策。"),
+   (("AI 引擎 AI Engine", "AI engine"), [
+     ("AI_PROVIDER",
+      "AI 供应商。当前只接 DeepSeek。",
+      "AI provider. DeepSeek is the only one wired up."),
+     ("__AI_MODEL__",
+      "所选引擎当前可用的模型（实时从 API 拉取）。改了下次扫描即生效，无需重启。",
+      "Models the selected provider currently offers, fetched live from its "
+      "API. Effective next scan, no restart."),
+     ("AI_VETO_BLOCKING",
+      "AI 否决是否真的挡下单。false=咨询发生在下单之后，改不了决策。",
+      "Whether an AI veto actually blocks the order. false = the consult "
+      "happens after the order and cannot change the decision."),
    ]),
-   ("新闻源 News sources", [
-     ("FINNHUB_ENABLED", "Finnhub 新闻源 — 按代码标注、可查历史某一天。需先填 FINNHUB_API_KEY。"),
-     ("MOO_NOTICES_ENABLED", "moomoo 转发的 SEC 申报与评级变动。只知道「发了 8-K」，不知道内容。"),
+   (("新闻源 News sources", "News sources"), [
+     ("FINNHUB_ENABLED",
+      "Finnhub 新闻源 — 按代码标注、可查历史某一天。需先填 FINNHUB_API_KEY。",
+      "Finnhub news — tagged by ticker, and queryable for a past date. Needs "
+      "FINNHUB_API_KEY."),
+     ("MOO_NOTICES_ENABLED",
+      "moomoo 转发的 SEC 申报与评级变动。只知道「发了 8-K」，不知道内容。",
+      "SEC filings and rating changes relayed by moomoo. It tells you an 8-K "
+      "was filed, not what is in it."),
    ]),
-   ("期权信号 Options", [
-     ("OPTIONS_STATS_ENABLED", "启用期权统计因子。"),
-     ("OPTIONS_STATS_SIZING", "让期权因子参与仓位大小。"),
-     ("OPTIONS_STATS_MIN_RVOL", "期权相对成交量下限。"),
-     ("OPTIONS_STATS_MAX_MULT", "期权因子对仓位的最大放大倍数。"),
+   (("期权信号 Options", "Options"), [
+     ("OPTIONS_STATS_ENABLED",
+      "启用期权统计因子。",
+      "Enable the options-statistics factor."),
+     ("OPTIONS_STATS_SIZING",
+      "让期权因子参与仓位大小。",
+      "Let the options factor affect position size."),
+     ("OPTIONS_STATS_MIN_RVOL",
+      "期权相对成交量下限。",
+      "Minimum relative options volume."),
+     ("OPTIONS_STATS_MAX_MULT",
+      "期权因子对仓位的最大放大倍数。",
+      "Most the options factor may scale a position up by."),
    ]),
  ]),
- ("technical", "技术指标模式专属", [
-   ("情绪打分 Sentiment", [
-     ("SENTIMENT_SCORING_ENABLED", "对候选标的做 AI 情绪打分。<b>只在技术指标模式下调用</b> —— "
-                                   "新闻模式有自己的新闻打分，不会再跑这个。"),
-     ("SENTIMENT_SIZING", "让情绪分参与仓位大小（最多放大 1.25×）。"),
-     ("SENTIMENT_BUDGET", "每轮扫描最多几次情绪 AI 调用。"),
+ ("technical", ("技术指标模式专属", "Technical mode only"), [
+   (("情绪打分 Sentiment", "Sentiment"), [
+     ("SENTIMENT_SCORING_ENABLED",
+      "对候选标的做 AI 情绪打分。<b>只在技术指标模式下调用</b> —— "
+      "新闻模式有自己的新闻打分，不会再跑这个。",
+      "Score candidates for sentiment with the AI. <b>Called only under "
+      "technical mode</b> — news mode has its own news score and never runs "
+      "this one."),
+     ("SENTIMENT_SIZING",
+      "让情绪分参与仓位大小（最多放大 1.25×）。",
+      "Let the sentiment score affect position size (up to 1.25×)."),
+     ("SENTIMENT_BUDGET",
+      "每轮扫描最多几次情绪 AI 调用。",
+      "Most sentiment AI calls allowed per scan."),
    ]),
  ]),
- ("news", "新闻指标模式专属", [
-   ("入场门槛 Entry gate", [
-     ("NEWS_DRIVEN_MIN_SCORE", "新闻分低于它就不入场（0–100）。"),
-     ("NEWS_DRIVEN_REQUIRE_CATALYST", "是否必须有明确催化剂事件。"),
-     ("NEWS_DRIVEN_THRESHOLD_DELTA", "在指标门槛上的增减。负数=新闻模式对指标分更宽松。"),
-     ("NEWS_DRIVEN_MAX_MULT", "新闻分很高时，仓位最多放大到几倍。"),
-     ("NEWS_DRIVEN_BUDGET", "每轮扫描最多几次新闻 AI 调用。"),
+ ("news", ("新闻指标模式专属", "News mode only"), [
+   (("入场门槛 Entry gate", "Entry gate"), [
+     ("NEWS_DRIVEN_MIN_SCORE",
+      "新闻分低于它就不入场（0–100）。",
+      "No entry below this news score (0–100)."),
+     ("NEWS_DRIVEN_REQUIRE_CATALYST",
+      "是否必须有明确催化剂事件。",
+      "Whether an explicit catalyst event is required."),
+     ("NEWS_DRIVEN_THRESHOLD_DELTA",
+      "在指标门槛上的增减。负数=新闻模式对指标分更宽松。",
+      "Added to the indicator threshold. Negative means news mode is more "
+      "forgiving of the indicator score."),
+     ("NEWS_DRIVEN_MAX_MULT",
+      "新闻分很高时，仓位最多放大到几倍。",
+      "Most a very high news score may scale a position up by."),
+     ("NEWS_DRIVEN_BUDGET",
+      "每轮扫描最多几次新闻 AI 调用。",
+      "Most news AI calls allowed per scan."),
    ]),
-   ("日内平仓 Intraday flatten", [
-     ("NEWS_DRIVEN_EOD_FLATTEN", "收盘前平掉新闻模式开的仓（不留隔夜）。"),
-     ("NEWS_DRIVEN_FLATTEN_ET", "平仓时刻（美东时间 HH:MM）。"),
-     ("NEWS_DRIVEN_MIN_HOLD_MIN", "最短持有分钟数，避免刚开就被平仓时刻扫掉。"),
+   (("日内平仓 Intraday flatten", "Intraday flatten"), [
+     ("NEWS_DRIVEN_EOD_FLATTEN",
+      "收盘前平掉新闻模式开的仓（不留隔夜）。",
+      "Close news-mode positions before the bell — nothing held overnight."),
+     ("NEWS_DRIVEN_FLATTEN_ET",
+      "平仓时刻（美东时间 HH:MM）。",
+      "When to flatten (US Eastern, HH:MM)."),
+     ("NEWS_DRIVEN_MIN_HOLD_MIN",
+      "最短持有分钟数，避免刚开就被平仓时刻扫掉。",
+      "Shortest hold in minutes, so a fresh entry is not swept out by the "
+      "flatten time."),
    ]),
-   ("本地打分模型 FinBERT", [
-     ("FINBERT_ENABLED", "本地 FinBERT 对 AI 读过的<b>同一批</b>标题给确定性的第二意见，"
-                         "两个分数一起记进成交记录。<b>仅供参考，不参与下单决策。</b>"
-                         "需先在下方下载模型（约 120 MB）。"),
+   (("本地打分模型 FinBERT", "FinBERT (local model)"), [
+     ("FINBERT_ENABLED",
+      "本地 FinBERT 对 AI 读过的<b>同一批</b>标题给确定性的第二意见，"
+      "两个分数一起记进成交记录。<b>仅供参考，不参与下单决策。</b>"
+      "需先在下方下载模型（约 120 MB）。",
+      "A local FinBERT gives a deterministic second opinion on the <b>same</b> "
+      "headlines the AI read, and both scores are recorded with the trade. "
+      "<b>Reference only — it takes no part in the order decision.</b> "
+      "Download the model below first (~120 MB)."),
    ]),
  ]),
 ]
 
-# Flattened for the code that only needs "key → description".
+# Flattened for the code that only needs "key -> description".
 PARAM_GROUPS = [(g, items) for _, _, groups in PARAM_SECTIONS
                 for g, items in groups]
 
@@ -1292,8 +1500,8 @@ PARAM_INERT_WHEN = {
 }
 
 
-def _param_rows():
-    """The console's contents: sections → groups → rows.
+def _param_rows(lang: str = "zh"):
+    """The console's contents: sections → groups → rows, in `lang`.
 
     Two rows are not parameters and are marked `special`. The budget lives in
     db-state and must go through risk_manager.set_budget, which re-anchors the
@@ -1309,21 +1517,29 @@ def _param_rows():
     hot = set(rc._FILE_KEY.values())
     bounds = {rc._FILE_KEY[k]: v for k, v in rc.ALLOWED_PARAMS.items()
               if k in rc._FILE_KEY}
-    described = {k for _, items in PARAM_GROUPS for k, _ in items}
+    described = {k for _, items in PARAM_GROUPS for k, _, _ in items}
+    en = lang == "en"
+    pick = (lambda pair: pair[1] if en else pair[0])
 
-    def row(key, desc):
+    def row(key, desc_zh, desc_en):
+        desc = desc_en if en else desc_zh
         if key == "__BUDGET__":
             return {"key": key, "value": f"{risk_manager.budget_usd():.0f}",
                     "desc": desc, "kind": "num", "hot": True, "inert": None,
-                    "band": None, "special": "budget", "label": "预算 Budget"}
+                    "band": None, "special": "budget",
+                    "label": "Budget" if en else "预算 Budget"}
         if key == "__AI_MODEL__":
             return {"key": key, "value": ai.active_model(), "desc": desc,
                     "kind": "choice", "hot": True, "inert": None, "band": None,
-                    "special": "ai_model", "label": "模型 Model", "options": []}
+                    "special": "ai_model",
+                    "label": "Model" if en else "模型 Model", "options": []}
         raw = str(vals.get(key, ""))
         low = raw.strip().lower()
         if key == "STRATEGY_MODE":
             kind, opts = "choice", list(STRATEGY_MODE_INFO)
+        elif key == "PARAM_TUNE_MODE":
+            from src import param_tune
+            kind, opts = "choice", list(param_tune.MODES)
         elif low in ("true", "false"):
             kind, opts = "bool", []
         else:
@@ -1339,6 +1555,9 @@ def _param_rows():
         if key == "REAL_USE_SOFT_EXITS" and \
                 (settings.moo_trade_env or "").upper() == "SIMULATE":
             inert = "MOO_TRADE_ENV=SIMULATE"
+        # `inert` is a KEY=VALUE, the same in both languages on purpose: it
+        # names the switch responsible, and a translated switch name would not
+        # be findable on this page.
         return {"key": key, "value": raw, "desc": desc, "kind": kind,
                 "hot": key in hot, "inert": inert, "options": opts,
                 "band": [b[0], b[1]] if b else None, "special": None,
@@ -1349,21 +1568,23 @@ def _param_rows():
     for sid, label, groups in PARAM_SECTIONS:
         gs = []
         for gname, items in groups:
-            rows = [row(k, d) for k, d in items
+            rows = [row(k, dz, de) for k, dz, de in items
                     if k.startswith("__") or k in vals]
             if rows:
-                gs.append({"name": gname, "params": rows})
+                gs.append({"name": pick(gname), "params": rows})
         if gs:
-            out.append({"id": sid, "label": label, "groups": gs,
+            out.append({"id": sid, "label": pick(label), "groups": gs,
                         # A whole section can be inert: everything under
                         # 新闻指标模式 does nothing while the mode is technical.
                         # Greyed rather than hidden — hiding it is how a setting
                         # becomes something nobody remembers is there.
                         "inert": (sid in ("technical", "news") and sid != mode)})
 
-    extra = [row(k, "") for k in sorted(vals) if k not in described]
+    extra = [row(k, "", "") for k in sorted(vals) if k not in described]
     if extra:
-        out.append({"id": "other", "label": "其它 Other（这一页尚未描述的键）",
+        out.append({"id": "other",
+                    "label": ("Other (keys this page has not described yet)"
+                              if en else "其它 Other（这一页尚未描述的键）"),
                     "groups": [{"name": "", "params": extra}], "inert": False})
     return out
 
@@ -1384,7 +1605,7 @@ def api_params():
     if cur and cur not in models:
         models = [cur] + models
     return jsonify({
-        "sections": _param_rows(),
+        "sections": _param_rows(_lang()),
         "ai_models": models,
         "worker_running": bool(_db.get_state().get("worker_strategy_mode")),
     })
@@ -2079,60 +2300,6 @@ def api_web_access():
     return jsonify({"ok": True, "mode": mode, "restarting": True})
 
 
-@app.route("/api/signal-run/<mode>", methods=["POST"])
-def api_signal_run(mode):
-    if mode not in ("brief", "review", "close", "premarket", "intraday", "monitor"):
-        return jsonify({"ok": False,
-                        "error": "mode must be brief|review|close|premarket|intraday|monitor"}), 400
-    subprocess.Popen(_worker_cmd("src.signal_reporter", mode),
-                     cwd=str(ROOT), start_new_session=True)
-    return jsonify({"ok": True, "mode": mode})
-
-
-# ── 盯盘监控数据（由 src.signal_reporter.run_monitor 每 5 分钟写盘）────────────
-@app.route("/api/signal-monitor")
-def api_signal_monitor():
-    """每支股票最新 tick 快照（价格/RSI/量比/评分/日内高低/最近警报）。"""
-    return jsonify(_read_json(SIGNAL_MONITOR_FILE, {}))
-
-
-@app.route("/api/signal-alerts")
-def api_signal_alerts():
-    """警报流，最新在前。web 展示全量（push+info）；Telegram 只推 push 级。"""
-    n = max(1, min(int(request.args.get("n", 80)), 400))
-    feed = _read_json(SIGNAL_ALERTS_FILE, [])
-    if not isinstance(feed, list):
-        feed = []
-    return jsonify(feed[-n:][::-1])
-
-
-# ── signal reporter scheduler (persistent loop) — mirrors the desktop GUI ──────
-@app.route("/api/signal-status")
-def api_signal_status():
-    pid = _pid_running(SIGNAL_PID)
-    return jsonify({"running": pid is not None, "pid": pid})
-
-
-@app.route("/api/signal-scheduler/<action>", methods=["POST"])
-def api_signal_scheduler(action):
-    if action == "start":
-        if _pid_running(SIGNAL_PID) is not None:
-            return jsonify({"ok": True, "running": True, "note": "already running"})
-        SIGNAL_LOG.parent.mkdir(parents=True, exist_ok=True)
-        log = SIGNAL_LOG.open("a")
-        proc = subprocess.Popen(
-            _worker_cmd("src.signal_reporter", "run"),
-            cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
-        )
-        SIGNAL_PID.write_text(str(proc.pid))
-        return jsonify({"ok": True, "running": True, "pid": proc.pid})
-    if action == "stop":
-        had = _stop_pid(SIGNAL_PID)
-        return jsonify({"ok": True, "running": _pid_running(SIGNAL_PID) is not None,
-                        "note": "not running" if not had else "stopped"})
-    return jsonify({"ok": False, "error": "bad action"}), 400
-
-
 # ── signal watchlist editor (config/signal_watchlist.json) ─────────────────────
 @app.route("/api/signal-watchlist", methods=["GET", "POST"])
 def api_signal_watchlist():
@@ -2160,6 +2327,153 @@ def api_signal_watchlist():
     return jsonify({"ok": True, "tickers": tickers})
 
 
+# ── 三日概率预测面板（merged from the Stock Probability Prediction Platform）───
+#
+# The forecast is RESEARCH ONLY and every payload says so: `actionable` is False
+# and no execution path imports src.signal_service. These routes read the broker
+# and write the research SQLite store; they never touch an order.
+#
+# Each forecast costs ~3 broker kline requests and ~0.5s of numpy, and the kline
+# rate limiter is shared process-wide with the live trading loop. A short TTL
+# cache in front, plus a single-flight lock, keeps a user clicking Refresh from
+# spending the execution loop's request budget.
+_FORECAST_TTL = 120.0
+_forecast_lock = threading.Lock()
+_forecast_cache: dict = {"ts": {}, "data": {}}
+
+
+def _signal_service():
+    from src.signal_service import service
+    return service()
+
+
+def _bad_symbol(raw):
+    sym = (raw or "").strip().upper()
+    if not sym or len(sym) > 12 or not all(c.isalnum() or c in ".-" for c in sym):
+        return None
+    return sym
+
+
+# Symbol lives in the path, not the query string, matching /api/options/<symbol>.
+# It also keeps these out of test_web_smoke's parameterless-GET sweep, which
+# requires every such route to answer < 400 — one that demands a symbol cannot.
+@app.route("/api/signal-forecast/<symbol>")
+def api_signal_forecast(symbol):
+    """One symbol's three-day probability forecast, with context and quality."""
+    sym = _bad_symbol(symbol)
+    if not sym:
+        return jsonify({"ok": False, "error": "bad symbol"}), 400
+    force = request.args.get("force") in ("1", "true", "yes")
+    now = time.time()
+    if not force:
+        with _forecast_lock:
+            if now - _forecast_cache["ts"].get(sym, 0.0) < _FORECAST_TTL:
+                return jsonify(_forecast_cache["data"][sym])
+    try:
+        from src.moo_client import client as _mc
+        with _mc() as c:
+            data = _signal_service().forecast(c, sym, force=force)
+    except Exception as e:
+        return jsonify({"ok": False, "symbol": sym,
+                        "error": {"code": "service_failure", "message": str(e)}}), 500
+    with _forecast_lock:
+        _forecast_cache["ts"][sym] = time.time()
+        _forecast_cache["data"][sym] = data
+    return jsonify(data)
+
+
+@app.route("/api/signal-scan")
+def api_signal_scan():
+    """Watchlist + bounded discovery ranking. Cached once per NY trading day."""
+    force = request.args.get("force") in ("1", "true", "yes")
+    try:
+        from src.moo_client import client as _mc
+        with _mc() as c:
+            return jsonify(_signal_service().scan(c, force=force))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/signal-forecast-history/<symbol>")
+def api_signal_forecast_history(symbol):
+    """Prior trading days' frozen forecasts and, where settled, their errors."""
+    sym = _bad_symbol(symbol)
+    if not sym:
+        return jsonify({"ok": False, "error": "bad symbol"}), 400
+    n = max(1, min(int(request.args.get("n", 40)), 200))
+    try:
+        svc = _signal_service()
+        return jsonify({"ok": True, "symbol": sym,
+                        "history": svc.history(sym, limit=n),
+                        "learning": svc.store.learning_summary(sym, "3D")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/signal-settle", methods=["POST"])
+def api_signal_settle():
+    """Pull the newest bars and score whatever forecasts they now settle."""
+    sym = _bad_symbol((request.get_json(silent=True) or {}).get("symbol"))
+    if not sym:
+        return jsonify({"ok": False, "error": "bad symbol"}), 400
+    try:
+        from src.moo_client import client as _mc
+        with _mc() as c:
+            return jsonify(_signal_service().settle(c, sym))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/signal-optimizer/<symbol>")
+def api_signal_optimizer(symbol):
+    """The weekly factor-error optimizer's state and any pending proposal."""
+    sym = _bad_symbol(symbol)
+    if not sym:
+        return jsonify({"ok": False, "error": "bad symbol"}), 400
+    try:
+        return jsonify({"ok": True, **_signal_service().optimizer_status(sym)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/signal-proposal/propose", methods=["POST"])
+def api_signal_optimizer_propose():
+    sym = _bad_symbol((request.get_json(silent=True) or {}).get("symbol"))
+    if not sym:
+        return jsonify({"ok": False, "error": "bad symbol"}), 400
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    try:
+        return jsonify({"ok": True, **_signal_service().propose(sym, force=force)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/signal-proposal/decide", methods=["POST"])
+def api_signal_optimizer_decide():
+    """Approve or reject a from-to parameter proposal. Nothing else activates one."""
+    body = request.get_json(silent=True) or {}
+    proposal_id = str(body.get("proposal_id") or "").strip()
+    if not proposal_id or len(proposal_id) > 64:
+        return jsonify({"ok": False, "error": "bad proposal_id"}), 400
+    if "approve" not in body:
+        return jsonify({"ok": False, "error": "approve must be true or false"}), 400
+    try:
+        return jsonify({"ok": True,
+                        **_signal_service().decide(proposal_id, bool(body["approve"]))})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 409
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/signal-forecast-health")
+def api_signal_forecast_health():
+    try:
+        return jsonify({"ok": True, **_signal_service().health()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ── weekly self-review ("retrain") — analyze real fills → suggestions ──────────
 @app.route("/api/self-review")
 def api_self_review():
@@ -2181,42 +2495,178 @@ def api_self_review_run():
     return jsonify({"ok": True, "started": True})
 
 
-# ── backtest (background thread) ──────────────────────────────────────────────
-_bt = {"status": "idle", "result": None}
+# ── on-demand backtest tuning run ─────────────────────────────────────────────
+# The weekly chain (real fills → AI candidates → honest-engine backtest of each
+# → survivors), started by hand and narrated while it runs.
+#
+# It replaced the "Honest Backtest" tab, which ran the same engine and printed
+# four numbers you could not act on. This runs it for the reason the numbers
+# existed — to decide whether a parameter should move — and ends on that
+# decision, one row at a time.
+#
+# One run at a time: each candidate costs a full engine pass over the prefetched
+# window, and two concurrent runs would fight over OpenD and hand back deltas
+# measured against two different baselines.
+_TUNE = {
+    "status": "idle",       # idle | running | stopping | stopped | done | error
+    "stage": "",
+    "log": [],              # [{"t": "HH:MM:SS", "msg": ...}]
+    "candidates": [],
+    "notes": [],
+    "review": {},
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+    "decided": {},          # key → "applied" / "rejected" / a refusal string
+    "lang": "zh",           # the language its progress lines were written in
+}
+_TUNE_LOCK = threading.Lock()
+_TUNE_LOG_CAP = 400
+# Cooperative, because a thread cannot be killed and one engine pass over the
+# prefetched window is a single uninterruptible call. Stopping therefore lands
+# at the next checkpoint — after the candidate being measured finishes — and
+# what was already measured comes back rather than being discarded.
+_TUNE_CANCEL = threading.Event()
+
+# "in flight" is BOTH of these: while a run is winding down from a stop request
+# it still owns OpenD, so a second run must not start beside it.
+_TUNE_BUSY = ("running", "stopping")
 
 
-def _run_bt(days: int):
-    _bt["status"] = "running"
+def _tune_say(msg: str) -> None:
+    _TUNE["stage"] = msg
+    _TUNE["log"].append({"t": time.strftime("%H:%M:%S"), "msg": str(msg)})
+    del _TUNE["log"][:-_TUNE_LOG_CAP]
+
+
+def _run_tune() -> None:
+    from src import param_tune
     try:
-        from src.backtest import prefetch_data, _run_live_engine
-        # 2026-07-07: use _base_cfg — the SAME runtime-effective config the
-        # weekly health check scores (db-state overrides for threshold/tp/sl/
-        # risk/budget + the walk-forward universe). The old hand-built cfg here
-        # used frozen .env values and a hardcoded 10-ticker list, so the panel
-        # backtested a strategy the bot wasn't actually running.
-        from src.optimizer_ai import _base_cfg
-        cfg = _base_cfg(days=days)
-        m = _run_live_engine(cfg, prefetch_data(cfg), rich_metrics=True)["metrics"]
-        _bt["result"] = {
-            "days": days, "per_day": round(m["net_pnl_usd"] / days, 2),
-            "net": m["net_pnl_usd"], "trades": m.get("total_trades", 0),
-            "win": m.get("win_rate_pct", 0), "dd": m.get("max_dd_mtm_pct", 0),
-            "pf": m.get("profit_factor", 0), "sortino": m.get("sortino_ratio", 0),
-        }
-        _bt["status"] = "done"
+        out = param_tune.run(on_progress=_tune_say,
+                             should_cancel=_TUNE_CANCEL.is_set,
+                             lang=_TUNE["lang"])
+        _TUNE["candidates"] = out["candidates"]
+        _TUNE["notes"] = out["notes"]
+        _TUNE["review"] = out["review"]
+        # A stopped run is not a failed one: the candidates it did measure are
+        # as real as any, and they stay confirmable.
+        _TUNE["status"] = "stopped" if out.get("cancelled") else "done"
     except Exception as e:
-        _bt["status"] = "error"
-        _bt["result"] = {"error": str(e)}
+        log.exception("param tuning run failed")
+        _TUNE["error"] = f"{type(e).__name__}: {e}"
+        _TUNE["status"] = "error"
+        _tune_say((f"✗ Run failed: {_TUNE['error']}") if _TUNE["lang"] == "en"
+                  else f"✗ 运行失败：{_TUNE['error']}")
+    finally:
+        _TUNE["finished_at"] = _now_iso()
 
 
-@app.route("/api/backtest", methods=["GET", "POST"])
-def api_backtest():
-    if request.method == "POST":
-        if _bt["status"] != "running":
-            days = int((request.json or {}).get("days", 180))
-            threading.Thread(target=_run_bt, args=(days,), daemon=True).start()
-        return jsonify({"ok": True, "status": _bt["status"]})
-    return jsonify(_bt)
+def _now_iso() -> str:
+    from datetime import datetime
+    return datetime.now().isoformat(timespec="seconds")
+
+
+@app.route("/api/param-tune")
+def api_param_tune():
+    from src import param_tune, runtime_config
+    return jsonify({**_TUNE, "mode": param_tune.mode(),
+                    "frozen": runtime_config.frozen()})
+
+
+@app.route("/api/param-tune/run", methods=["POST"])
+def api_param_tune_run():
+    """Start a run. Idempotent while one is in flight — the button can be
+    double-clicked and the second click reports the run already going rather
+    than starting a second one against the same OpenD session."""
+    with _TUNE_LOCK:
+        if _TUNE["status"] in _TUNE_BUSY:
+            return jsonify({"ok": True, "already_running": True,
+                            "status": _TUNE["status"]})
+        _TUNE_CANCEL.clear()
+        lang = _lang()
+        _TUNE.update({"status": "running", "log": [],
+                      "stage": "Starting…" if lang == "en" else "启动…",
+                      "candidates": [], "notes": [], "review": {},
+                      "error": None, "decided": {}, "lang": lang,
+                      "started_at": _now_iso(), "finished_at": None})
+        _tune_say("Starting the tuning run — it changes nothing on its own; "
+                  "you confirm each result afterwards."
+                  if lang == "en" else
+                  "开始回测调参 —— 这一轮不会自动改任何参数，跑完由你逐条确认。")
+        threading.Thread(target=_run_tune, daemon=True).start()
+    return jsonify({"ok": True, "status": "running"})
+
+
+@app.route("/api/param-tune/stop", methods=["POST"])
+def api_param_tune_stop():
+    """Ask the run to stop at its next checkpoint.
+
+    Deliberately NOT a kill. The thread is inside an engine pass more often than
+    not, and there is no way to interrupt one — so this raises the flag, says so
+    in the log, and the run ends after the candidate it is measuring. Promising
+    an instant stop and then taking forty seconds is worse than saying which it
+    is.
+    """
+    with _TUNE_LOCK:
+        if _TUNE["status"] not in _TUNE_BUSY:
+            return jsonify({"ok": True, "status": _TUNE["status"],
+                            "note": "没有正在运行的回测"})
+        if _TUNE["status"] == "stopping":
+            return jsonify({"ok": True, "status": "stopping",
+                            "note": "已经在停了"})
+        _TUNE_CANCEL.set()
+        _TUNE["status"] = "stopping"
+        _tune_say("■ Stop requested — it will stop after the candidate it is "
+                  "measuring (one engine pass cannot be interrupted). "
+                  "Whatever finished is kept."
+                  if _TUNE["lang"] == "en" else
+                  "■ 收到停止请求 —— 当前这一条回测跑完就停"
+                  "（引擎的单次回测无法中途打断）。已测完的结果会保留。")
+    return jsonify({"ok": True, "status": "stopping"})
+
+
+@app.route("/api/param-tune/apply", methods=["POST"])
+def api_param_tune_apply():
+    """Write the changes the owner ticked; record the ones they crossed out.
+
+    Only keys from THIS run's candidate list are writable — the payload names a
+    key and a value, and without that check the endpoint would be a general
+    "set any tunable to anything" write path wearing a confirmation dialog. The
+    value is taken from the candidate too, not from the request, for the same
+    reason.
+    """
+    from src import param_tune
+    body = request.json or {}
+    want = {str(k) for k in (body.get("accept") or [])}
+    rejected = [str(k) for k in (body.get("reject") or [])]
+    by_key = {c["key"]: c for c in _TUNE["candidates"]}
+    unknown = sorted(want - set(by_key))
+    accepted = [{"key": k, "value": by_key[k]["value"]}
+                for k in by_key if k in want]
+
+    result = param_tune.apply_confirmed(accepted) if accepted else \
+        {"applied": [], "failed": {}}
+    for a in result["applied"]:
+        _TUNE["decided"][a["key"]] = "applied"
+    for k, why in result["failed"].items():
+        _TUNE["decided"][k] = why
+    for k in rejected:
+        _TUNE["decided"].setdefault(k, "rejected")
+    if unknown:
+        for k in unknown:
+            result["failed"][k] = (
+                "not among this run's candidates — run it again"
+                if _TUNE["lang"] == "en" else "不在这一轮的候选里 — 请重新运行")
+
+    if result["applied"]:
+        try:
+            from src import notifier
+            notifier.send("🎛 手动回测调参 — 你确认应用了 " + "，".join(
+                f"{a['key']} {a['old']} → {a['new']}" for a in result["applied"]))
+        except Exception as e:
+            log.warning("param-tune notify failed: %s", e)
+    return jsonify({"ok": not result["failed"], **result,
+                    "rejected": rejected, "decided": _TUNE["decided"]})
 
 
 def _self_review_catchup_on_boot() -> None:

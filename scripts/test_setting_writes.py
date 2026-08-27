@@ -233,10 +233,40 @@ check("...and a cold one is not", not _rows["USE_SCALE_OUT"]["hot"])
 # A parameter the console describes but the file has dropped must not appear
 # as an editable row with an empty value — that would offer to "save" a key
 # into existence with no reader.
-_described = {k for _, items in PARAM_GROUPS for k, _ in items
+_described = {k for _, items in PARAM_GROUPS for k, _, _ in items
               if not k.startswith("__")}
 check("described-but-absent parameters are not offered for editing",
       not (set(_rows) - set(_file)))
+
+# Every described row carries BOTH languages, and asking for one gets that one.
+# The English UI used to be an English frame around a Chinese page: the frame
+# came from data-i18n in the HTML, the page came from here, and only the frame
+# had been translated.
+def _has_cjk(t):
+    return any("\u4e00" <= ch <= "\u9fff" for ch in str(t))
+
+_zh_rows = {pr["key"]: pr for sec in _param_rows("zh")
+            for g in sec["groups"] for pr in g["params"]}
+_en_rows = {pr["key"]: pr for sec in _param_rows("en")
+            for g in sec["groups"] for pr in g["params"]}
+check("both languages describe the same set of parameters",
+      set(_zh_rows) == set(_en_rows))
+_missing_en = [k for k, pr in _en_rows.items()
+               if pr["desc"] and _has_cjk(pr["desc"])]
+check("no English description is left in Chinese",
+      not _missing_en, f"still Chinese: {_missing_en[:6]}")
+_missing_zh = [k for k, pr in _zh_rows.items()
+               if k in _described and not pr["desc"]]
+check("every described parameter still has its Chinese text", not _missing_zh)
+check("section headings translate",
+      not _has_cjk("".join(sec["label"] for sec in _param_rows("en"))))
+check("group headings translate",
+      not _has_cjk("".join(g["name"] for sec in _param_rows("en")
+                           for g in sec["groups"])))
+check("...and the Chinese ones are still Chinese",
+      _has_cjk("".join(sec["label"] for sec in _param_rows("zh"))))
+check("an unknown lang falls back to Chinese, not to blank",
+      _has_cjk("".join(sec["label"] for sec in _param_rows("de"))))
 
 # Saving a hot parameter must move what the strategy reads, with no restart.
 _before = rc.entry_threshold()
@@ -330,6 +360,56 @@ check("the eye returns the whole key", _rev["value"] == _FIXTURE_KEY)
 check("an unknown key cannot be revealed",
       _c.post("/api/settings/key/reveal",
               json={"key": "SOMETHING_ELSE"}).status_code == 400)
+
+# ── 8  the settings page answers in the language it was asked for ───────────
+# Same failure the parameter page had: an English frame around a Chinese page.
+print("\n8  the settings page is translated too")
+_set_zh = {k["key"]: k["desc"]
+           for k in _c.get("/api/settings?lang=zh").get_json()["keys"]}
+_set_en = {k["key"]: k["desc"]
+           for k in _c.get("/api/settings?lang=en").get_json()["keys"]}
+check("both languages describe the same keys", set(_set_zh) == set(_set_en))
+_cjk_en = [k for k, d in _set_en.items() if _has_cjk(d)]
+check("no English key description is left in Chinese", not _cjk_en,
+      f"still Chinese: {_cjk_en}")
+check("...and the Chinese ones are still Chinese",
+      all(_has_cjk(d) for d in _set_zh.values()))
+check("no lang given falls back to Chinese",
+      all(_has_cjk(k["desc"])
+          for k in _c.get("/api/settings").get_json()["keys"]))
+
+# ── 9  the top bar's one server-rendered pill ───────────────────────────────
+# opend_label was Chinese unconditionally, which put one Chinese pill in the
+# middle of an otherwise English top bar.
+print("\n9  the OpenD pill follows the language too")
+import socket as _socket, contextlib as _ctx                   # noqa: E402
+from web.server import _opend_status                           # noqa: E402
+
+class _FakeSock:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+_real_conn = _socket.create_connection
+_labels = {"zh": [], "en": []}
+for _reach in (False, True):
+    _socket.create_connection = (
+        (lambda *a, **k: _FakeSock()) if _reach
+        else (lambda *a, **k: (_ for _ in ()).throw(OSError("refused"))))
+    for _acct in ({}, {"cash": 1.0, "trade_env": "SIMULATE"},
+                  {"cash": 1.0, "trade_env": "REAL"},
+                  {"cash": 1.0, "trade_env": "REAL", "real_unlock_confirmed": True}):
+        for _sched in (False, True):
+            for _lg in ("zh", "en"):
+                _labels[_lg].append(_opend_status(dict(_acct), _sched, _lg)[1])
+_socket.create_connection = _real_conn
+
+_bad = sorted({l for l in _labels["en"] if _has_cjk(l)})
+check("no English OpenD label is left in Chinese", not _bad, f"{_bad[:4]}")
+check("...and the Chinese ones are still Chinese",
+      any(_has_cjk(l) for l in _labels["zh"]))
+check("the two languages cover the same set of states",
+      len(set(_labels["zh"])) == len(set(_labels["en"])),
+      f"zh={len(set(_labels['zh']))} en={len(set(_labels['en']))}")
 
 import shutil                                                  # noqa: E402
 shutil.rmtree(_TMP, ignore_errors=True)

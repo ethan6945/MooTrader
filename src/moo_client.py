@@ -338,7 +338,7 @@ class MooClient:
         # Only this function's arithmetic stopped at one window.
         if bpd and bars > window_days * bpd * 5 / 7:
             return self._get_kline_chunked(code, symbol, bars, ktype, end_d,
-                                           window_days, max_count)
+                                           window_days, max_count, session)
 
         # Try up to 2 times — on rate-limit error wait for the window to clear.
         last_err = None
@@ -374,7 +374,8 @@ class MooClient:
         raise RuntimeError(f"request_history_kline failed for {symbol}: {last_err}")
 
     def _get_kline_chunked(self, code: str, symbol: str, bars: int, ktype,
-                           end_d, window_days: int, max_count: int):
+                           end_d, window_days: int, max_count: int,
+                           session: str | None = None):
         """Fetch a long history as consecutive windows, newest first.
 
         Stops as soon as it has enough rows or the broker returns an empty
@@ -389,7 +390,13 @@ class MooClient:
             _kline_rate_acquire()
             ret, df, _ = self.quote.request_history_kline(
                 code, start=chunk_start.isoformat(), end=cursor.isoformat(),
-                ktype=ktype, max_count=max_count, autype="qfq")
+                ktype=ktype, max_count=max_count, autype="qfq",
+                # Carry the caller's session through every window. Without this
+                # a long ETH request silently degraded to regular hours once it
+                # crossed the chunking threshold, so the same call returned
+                # 32 bars/day or 13 bars/day depending only on how many bars
+                # were asked for.
+                **({"session": session} if session else {}))
             if ret != RET_OK:
                 if not frames:
                     raise RuntimeError(

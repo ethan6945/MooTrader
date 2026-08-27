@@ -50,6 +50,7 @@
     "UNIVERSE_TOP_N": "15",
     "PARAMS_FROZEN": "false",
     "AUTO_APPLY_PARAMS": "false",
+    "PARAM_TUNE_MODE": "manual",
     "USE_BREAKEVEN_STOP": "true",
     "AUTO_BUDGET_ENABLED": "false",
     "BREADTH_BLOCKING": "false",

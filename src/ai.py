@@ -5,7 +5,7 @@ This said "Gemini OR DeepSeek, switchable at runtime", and had done since
 downstream inherited the claim: GEMINI_MODEL stayed in the parameter file as
 an editable setting, GEMINI_API_KEYS stayed in .env, AI_ENSEMBLE_ENABLED
 stayed `true` for a two-engine vote that had already collapsed to one, and
-signal_reporter's `_call_gemini` went on calling DeepSeek under a name that
+the old signal reporter's `_call_gemini` went on calling DeepSeek under a name that
 said otherwise. The owner reasonably concluded Gemini was still in use.
 
 WHAT IS ACTUALLY HERE

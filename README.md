@@ -42,7 +42,7 @@ flowchart LR
 
 Everything runs on your own Mac, against your own broker account through the official OpenD gateway. **Paper trading is the default** — switching to real money takes a deliberate step in the panel (trade password, no open positions, second confirmation).
 
-You don't drive it from a terminal. You open the panel, press **▶ Start**, and then mostly read Telegram: it pushes every fill, stop and status change, and asks for a yes/no when the optimizer wants to change a parameter.
+You don't drive it from a terminal. You open the panel, press **▶ Start**, and then mostly read Telegram: it pushes every fill, stop and status change. Parameters only move when you say so — the tuner runs when you press its button (or weekly, if you switch it), and every change it finds waits for your tick.
 
 **What it is good for:** running a rule-based strategy without sitting at the screen, and seeing exactly why every order happened. **What it is not:** a signal service, a money printer, or anything you should point at money you need.
 
@@ -55,7 +55,7 @@ You don't drive it from a terminal. You open the panel, press **▶ Start**, and
 - **AI as context, not as the trigger** — DeepSeek reads real-time news for each candidate (Tavily/Finnhub + a local FinBERT score). It annotates and can flag, but by default it never overrides the rules, so live trading stays comparable with the backtest.
 - **Risk you set once** — budget cap, risk per trade, position count and size limits, daily-drawdown stop. The AI cannot raise any of them.
 - **Gap sentinel** — a stop order can't protect you overnight. Before the open it checks earnings and hard bad news on what you hold, and liquidates at the open if needed.
-- **Honest backtesting** — one engine (`backtest_v4`) simulates the account step by step the way live runs, so the numbers mean something. A tuner proposes parameter changes; the ones outside the guardrails wait for your approval.
+- **Honest backtesting** — one engine (`backtest_v4`) simulates the account step by step the way live runs, so the numbers mean something. The tuner reads your real fills, asks the AI what to change, backtests each idea, and keeps only what beats your current settings without deepening drawdown. It runs when you press the button; every surviving change is a row you tick or cross before anything is written. Switch it to weekly and it runs itself, with the survivors waiting in the approval queue instead.
 - **Everything is logged** — every order, every gate that fired, every parameter change with who changed it and why.
 
 ---
@@ -71,9 +71,8 @@ You don't drive it from a terminal. You open the panel, press **▶ Start**, and
 | **Dashboard** | Budget, P&L, cash and open risk; a live US-sector heatmap; trade record; activity log; open positions with their stop→target range |
 | **History** | Equity curve, monthly P&L, and every closed trade with its exit reason and R multiple |
 | **Signal** | A watch desk that scans your list every 5 minutes for breakouts, volume spikes, VWAP flips and RSI extremes, and pushes them to Telegram |
-| **Backtest** | Run the engine over a window and read the result |
 | **⚙ Settings** | Paper/live switch, API keys, theme, EN/中文, panel access |
-| **Parameters** | Every strategy parameter with a plain-language description, which ones take effect on the next scan, and which need a restart |
+| **Parameters** | Every strategy parameter with a plain-language description, which ones take effect on the next scan, and which need a restart — plus the tuning switch (manual / weekly) and the button that runs a tuning pass now |
 
 Set a panel password in Settings and flip on LAN access, and the same panel opens on your phone over WiFi (or Tailscale).
 

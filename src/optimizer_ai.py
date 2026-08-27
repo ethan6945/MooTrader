@@ -196,34 +196,91 @@ def _prep_base():
     return base, cache, base_pd, base_dd
 
 
-def validate_proposals(proposals: list[dict]) -> list[dict]:
+def validate_proposals(proposals: list[dict], on_progress=None,
+                       should_cancel=None, lang: str = "zh") -> list[dict]:
     """YIELD-seeking gate (for the LLM's threshold/tp/sl ideas): keep only
     proposals that BEAT baseline $/day on BOTH windows AND don't worsen drawdown
     by more than DD_TOLERANCE_PP — so chasing $/day can't rubber-stamp reckless
-    settings. Annotated with deltas + dd. Empty if the backtest can't run."""
+    settings. Annotated with deltas + dd. Empty if the backtest can't run.
+
+    `on_progress(str)` and `should_cancel()` are optional and exist for the
+    on-demand run in the panel (src/param_tune.py): the same gate, but a human
+    is watching it, and each proposal costs a full engine pass. Cancelling
+    returns what has been validated SO FAR — those passes already happened, and
+    throwing their results away would be a second cost for the same minutes. The
+    weekly caller passes neither and this behaves exactly as before."""
     from dataclasses import replace
+
+    en = lang == "en"
+
+    def L(zh: str, en_: str) -> str:
+        return en_ if en else zh
+
+    def say(msg: str) -> None:
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+
+    def stopping() -> bool:
+        try:
+            return bool(should_cancel and should_cancel())
+        except Exception:
+            return False
+
+    say(L("准备基准：拉数据 + 跑当前参数的基线…",
+          "Preparing the baseline: fetching data and running your current "
+          "settings…"))
     try:
         prep = _prep_base()
     except Exception as e:
         log.warning("optimizer: backtest setup failed (%s) — no proposals enqueued", e)
+        say(L(f"✗ 回测准备失败：{e}", f"✗ Backtest setup failed: {e}"))
         return []
     if prep is None:
+        say(L("✗ 行情预取不完整（OpenD?）—— 这一轮无法验证",
+              "✗ Incomplete price prefetch (OpenD?) — nothing can be validated "
+              "this round"))
         return []
     base, cache, base_pd, base_dd = prep
+    say(L("基线 " + " ".join(f"{d}d ${base_pd[d]:.2f}/天 DD{base_dd[d]:.1f}%"
+                             for d in _VALIDATE_WINDOWS),
+          "Baseline " + " ".join(f"{d}d ${base_pd[d]:.2f}/day "
+                                 f"DD {base_dd[d]:.1f}%"
+                                 for d in _VALIDATE_WINDOWS)))
 
     validated = []
-    for p in proposals:
+    for i, p in enumerate(proposals, 1):
+        # Between candidates, never inside one: _metrics is a single engine pass
+        # and there is no safe point within it.
+        if stopping():
+            left = len(proposals) - i + 1
+            say(L(f"■ 停止 —— 剩下的 {left} 条候选没有测",
+                  f"■ Stopped — {left} candidate(s) were not measured"))
+            break
         key, value = p.get("key"), p.get("value")
         field = _PARAM_TO_CFG.get(key)
         if not field or not runtime_config.is_valid(key, value):
+            say(L(f"[{i}/{len(proposals)}] {key}={value} 越界或不可调 —— 跳过",
+                  f"[{i}/{len(proposals)}] {key}={value} is out of range or not "
+                  f"tunable — skipped"))
             continue
         if key == "universe_top_n" and not settings.dynamic_universe_enabled:
+            say(L(f"[{i}/{len(proposals)}] universe_top_n 在固定观察池下无意义 —— 跳过",
+                  f"[{i}/{len(proposals)}] universe_top_n means nothing with a "
+                  f"fixed watch pool — skipped"))
             continue   # meaningless (and unvalidatable) without the dynamic universe
         from . import autopilot
         if autopilot.in_cooldown(key):
             log.info("optimizer: %s in post-rollback cooldown — skipped", key)
+            say(L(f"[{i}/{len(proposals)}] {key} 刚被回滚过，冷却中 —— 跳过",
+                  f"[{i}/{len(proposals)}] {key} was just rolled back and is in "
+                  f"cooldown — skipped"))
             continue
         cast = int if key in _INT_PARAMS else float
+        say(L(f"[{i}/{len(proposals)}] 回测 {key}={value}…",
+              f"[{i}/{len(proposals)}] backtesting {key}={value}…"))
         try:
             pd_d, dd_d, n_d = {}, {}, {}
             for d in _VALIDATE_WINDOWS:
@@ -231,6 +288,8 @@ def validate_proposals(proposals: list[dict]) -> list[dict]:
                 pd_d[d], dd_d[d], n_d[d] = _metrics(cfg, cache[d], d)
         except Exception as e:
             log.warning("optimizer: backtest of %s=%s failed: %s", key, value, e)
+            say(L(f"[{i}/{len(proposals)}] {key}={value} 回测出错：{e}",
+                  f"[{i}/{len(proposals)}] {key}={value} backtest errored: {e}"))
             continue
         deltas = {d: pd_d[d] - base_pd[d] for d in _VALIDATE_WINDOWS}
         dd_ok = all(dd_d[d] <= base_dd[d] + DD_TOLERANCE_PP for d in _VALIDATE_WINDOWS)
@@ -245,6 +304,13 @@ def validate_proposals(proposals: list[dict]) -> list[dict]:
                           for d in _VALIDATE_WINDOWS),
                  n_min, ", THIN" if thin else "",
                  "PASS" if beats else "drop")
+        say(f"[{i}/{len(proposals)}] {key}={value} → " + " ".join(
+            L(f"{d}d Δ${deltas[d]:+.2f}/天 DD{dd_d[d] - base_dd[d]:+.1f}pp",
+              f"{d}d Δ${deltas[d]:+.2f}/day DD {dd_d[d] - base_dd[d]:+.1f}pp")
+            for d in _VALIDATE_WINDOWS)
+            + f" (n={n_min}" + (L(", 样本偏少", ", thin sample") if thin else "") + ") → "
+            + (L("✓ 通过", "✓ passed")
+               if beats else L("✗ 未胜过当前参数", "✗ did not beat your current settings")))
         if beats:
             validated.append(dict(p, _deltas=deltas, _dd=dict(dd_d),
                                   _n_trades=n_min, _thin=thin))

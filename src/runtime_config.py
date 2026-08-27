@@ -77,6 +77,12 @@ _FILE_KEY = {
     "max_positions": "MAX_POSITIONS", "universe_top_n": "UNIVERSE_TOP_N",
     "tp1_r": "TP1_R", "tp2_r": "TP2_R", "max_gap_pct": "MAX_GAP_PCT",
     "scan_interval_min": "SCAN_INTERVAL_MIN",
+    # Not a strategy tunable — it decides who starts a tuning run (see
+    # src/param_tune.py). It belongs here because this map is also the answer to
+    # "does saving it need a restart": everything in it is re-read from the file
+    # per call, and the scheduler must obey a mode change at its next job rather
+    # than at its next restart.
+    "param_tune_mode": "PARAM_TUNE_MODE",
 }
 
 

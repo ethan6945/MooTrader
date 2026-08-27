@@ -126,7 +126,18 @@ CHECKS = {
 
 def run_one(name: str, script: str, sandboxed: bool, tmp: Path,
             verbose: bool, timeout: int) -> tuple[bool, str]:
-    env = dict(os.environ, PYTHONPATH=str(ROOT))
+    # Blank credentials, so a suite that reaches a notify path CANNOT message
+    # the owner. notifier.send() no-ops (and logs) with either of these empty.
+    #
+    # 2026-08-27: added after a test of /api/param-tune/apply — an endpoint that
+    # notifies on a successful apply, correctly — put a dozen "你确认应用了
+    # sl_atr_mult 3.5 → 3.0" messages on the owner's phone across its runs. The
+    # writes themselves were stubbed and nothing changed; only the notification
+    # was real, which is the worst shape for this bug: it looks exactly like the
+    # bot acting on its own. This is the MMT_HOME sandbox below, applied to the
+    # other thing a test can reach out and touch.
+    env = dict(os.environ, PYTHONPATH=str(ROOT),
+               TELEGRAM_TOKEN="", TELEGRAM_CHAT_ID="")
     if sandboxed:
         # A throwaway MMT_HOME so a test can never touch the live database.
         home = tmp / name

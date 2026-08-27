@@ -190,7 +190,19 @@ def code_default(attr: str):
 
 # Modules allowed to call runtime_config.set_param(). Exactly one: the
 # approval executor. Anything else is an automated path to live.
-_ALLOWED_PARAM_WRITERS = {"src/approvals.py"}
+# The two modules that may write a live parameter, and why each is allowed:
+#
+#   src/approvals.py   the approval executor — the owner ticked ✅ on a queued
+#                      card and apply_approved() carried it out.
+#   src/param_tune.py  apply_confirmed() — the owner ticked ✓ on a row in the
+#                      tuning dialog and pressed 应用. Same human act, no queue
+#                      in between. It is reachable ONLY from
+#                      POST /api/param-tune/apply, which writes nothing but the
+#                      keys named in that request, at the values the run
+#                      measured — so it cannot fire on its own, which is the
+#                      invariant this check exists to protect. Anything in that
+#                      file that could run unattended must NOT call set_param.
+_ALLOWED_PARAM_WRITERS = {"src/approvals.py", "src/param_tune.py"}
 
 
 def check_sole_param_writer() -> list[dict]:
@@ -201,6 +213,10 @@ def check_sole_param_writer() -> list[dict]:
     (DeepSeek, inside hardcoded guardrails), optimizer_ai (gated on a config
     flag), and hermes_improve. The freeze was what actually stopped them, so
     lifting it without moving them would have re-armed all three at once.
+
+    "The approval executor" is shorthand for the allowlist above: a writer
+    qualifies when a human said yes to that specific change, not when a config
+    flag said automation was permitted. That distinction is the whole check.
     """
     # Parsed, not grepped. A docstring that MENTIONS set_param is prose about
     # the design; only a call node is a path to live.

@@ -202,7 +202,9 @@
   .prow:last-child{border-bottom:0}
   .prow .pk{flex:1 1 auto;min-width:0}
   .prow .pk b{color:var(--strong);font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-  .prow .pv{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+  .prow .pv{flex:0 0 auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  /* forces its own line inside .pv, so a row can put a control UNDER its input */
+  .pv-below{flex:0 0 100%;display:flex;justify-content:flex-end;margin-top:7px}
   .prow input[type=text],.prow input[type=number]{width:130px}
   .prow select{width:130px}
   .ptag{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--border2);color:var(--muted);white-space:nowrap}
@@ -226,32 +228,83 @@
   .cfgchips{display:flex;flex-wrap:wrap;gap:8px}
   .cfgchips .pill b{color:var(--strong);margin-left:5px;font-weight:600}
 
-  /* ── signal tab (盯盘信号台) ── */
-  .p-sig{--accent:var(--amber)} .p-alert{--accent:var(--red)}
+  /* ── backtest tuning dialog ── */
+  .tunebar{display:flex;align-items:center;gap:9px;margin:12px 0 8px;font-size:12.5px;color:var(--text)}
+  .tunedot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .tunedot.run{background:#d29922;animation:tunepulse 1.1s ease-in-out infinite}
+  .tunedot.ok{background:#3fb950} .tunedot.err{background:#f85149}
+  @keyframes tunepulse{0%,100%{opacity:1}50%{opacity:.2}}
+  .tunerow{border:1px solid var(--border);border-radius:12px;padding:11px 13px;margin-top:10px;
+           background:rgba(255,255,255,.02);transition:border-color .15s,background .15s,opacity .15s}
+  .tunerow.acc{border-color:#238636;background:rgba(63,185,80,.08)}
+  .tunerow.rej{opacity:.42}
+  .tunerow .th{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .tunerow .tk{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--strong);
+               font-size:13px;font-weight:700}
+  .tunerow .tv{font-variant-numeric:tabular-nums;font-size:13px;color:var(--muted)}
+  .tunerow .tv b{color:var(--strong);font-weight:700}
+  .tunerow .tbtns{margin-left:auto;display:flex;gap:6px;flex:0 0 auto}
+  .tunerow .why{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6}
+  .tunemet{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .tunemet .pill{font-size:10.5px;padding:3px 9px}
+  .tunemet .pill b{color:var(--strong);margin-left:5px;font-weight:600;font-variant-numeric:tabular-nums}
+  .tunewarn{font-size:11px;color:#d29922;margin-top:6px}
+  .tunedone{font-size:11.5px;font-weight:600;margin-left:auto;flex:0 0 auto}
+  .tunenote{font-size:11.5px;color:var(--muted);line-height:1.7;padding:3px 0}
+
+
+  /* Two-column row shared by the forecast desk's panels. */
   .sig-cols{display:grid;grid-template-columns:1.45fr 1fr;gap:12px;align-items:stretch}
-  .sig-sched{display:flex;gap:8px;flex-wrap:wrap}
-  .schchip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid var(--border);border-radius:999px;font-size:11.5px;color:var(--muted);background:rgba(255,255,255,.03);box-shadow:var(--inset);white-space:nowrap}
-  .schchip b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
-  .schchip.done{opacity:.45}
-  .schchip.next{border-color:rgba(88,166,255,.55);color:var(--primary)} .schchip.next b{color:var(--primary)}
-  .schchip.live{border-color:rgba(63,185,80,.55);color:var(--green)} .schchip.live b{color:var(--green)}
-  .sig-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:8px;align-content:start}
-  .sigtile{border:1px solid var(--border);border-radius:11px;padding:8px 11px;background:rgba(255,255,255,.03);box-shadow:var(--inset);min-width:0}
-  .sigtile.hot{border-color:rgba(210,153,34,.5);background:rgba(210,153,34,.05)}
-  .sigtile .r1{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
-  .sigtile .sym{font-weight:800;color:var(--strong);font-size:13px}
-  .sigtile .chg{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
-  .sigtile .px{font-size:16.5px;font-weight:800;color:var(--strong);font-variant-numeric:tabular-nums;letter-spacing:-.01em;margin-top:1px}
-  .sigtile .meta{font-size:10.5px;color:var(--muted);margin-top:4px;display:flex;gap:7px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
-  .sigtile .lastal{font-size:10.5px;margin-top:5px;color:var(--amber);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .sig-feed{max-height:430px;min-height:120px;overflow:auto}
-  .alrow{display:flex;gap:9px;padding:7px 4px;border-bottom:1px solid rgba(148,163,184,.07);font-size:12.5px;align-items:flex-start}
-  .alrow:last-child{border-bottom:none}
-  .alrow .t{color:var(--muted);font-size:10.5px;flex:0 0 auto;padding-top:2px;font-variant-numeric:tabular-nums}
-  .alrow .body{min-width:0;flex:1}
-  .alrow .ttl{color:var(--text)} .alrow.push .ttl{color:var(--strong);font-weight:600}
-  .alrow .det{color:var(--muted);font-size:11px;margin-top:1px}
-  .alrow.push{background:linear-gradient(90deg,rgba(210,153,34,.08),transparent 65%);border-radius:6px}
+  /* ── forecast panel (三日概率预测 — merged from the prediction platform) ── */
+  .p-fc{--accent:var(--purple)}
+  .fc-head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .fc-verdict{border:1px solid var(--border);border-left-width:3px;border-radius:10px;padding:10px 13px;margin-bottom:11px;background:rgba(255,255,255,.025);box-shadow:var(--inset)}
+  .fc-verdict.ok{border-left-color:var(--green)} .fc-verdict.warn{border-left-color:var(--amber)}
+  .fc-verdict.bad{border-left-color:var(--red)}
+  .fc-verdict .vh{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+  .fc-verdict .vt{font-size:13.5px;font-weight:700;color:var(--strong)}
+  .fc-verdict .vs{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .fc-verdict ul{margin:7px 0 0;padding-left:16px}
+  .fc-verdict li{font-size:11.5px;color:var(--muted);margin-bottom:3px;line-height:1.5}
+  /* Probabilities are dimmed whenever the verdict says they are not evidence.
+     The number stays readable — it is still a diagnostic — but it must not be
+     the loudest thing on the panel when the model failed its own quality gates. */
+  .fc-probs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:11px}
+  .fc-probs.muted{opacity:.42}
+  .fc-prob{border:1px solid var(--border);border-radius:10px;padding:8px 11px;background:rgba(255,255,255,.03);box-shadow:var(--inset)}
+  .fc-prob .pl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  .fc-prob .pv{font-size:21px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em;margin-top:2px}
+  .fc-prob.up .pv{color:var(--green)} .fc-prob.down .pv{color:var(--red)} .fc-prob.flat .pv{color:var(--muted)}
+  .fc-bar{height:4px;border-radius:3px;background:rgba(148,163,184,.16);margin-top:6px;overflow:hidden}
+  .fc-bar i{display:block;height:100%;border-radius:3px}
+  .fc-metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:7px;margin-bottom:11px}
+  .fc-m{border:1px solid var(--border);border-radius:9px;padding:7px 10px;background:rgba(255,255,255,.02)}
+  .fc-m .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .fc-m .v{font-size:14px;font-weight:700;color:var(--strong);font-variant-numeric:tabular-nums;margin-top:2px}
+  .fc-m .v.good{color:var(--green)} .fc-m .v.bad{color:var(--red)} .fc-m .v.warn{color:var(--amber)}
+  .fc-factors{display:flex;flex-direction:column;gap:5px;margin-bottom:6px}
+  .fc-f{display:flex;align-items:center;gap:9px;font-size:11.5px}
+  .fc-f .fn{flex:0 0 118px;color:var(--muted)}
+  .fc-f .ft{flex:1 1 auto;height:5px;background:rgba(148,163,184,.14);border-radius:3px;position:relative}
+  .fc-f .ft i{position:absolute;top:0;height:100%;border-radius:3px}
+  .fc-f .fv{flex:0 0 96px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text)}
+  .fc-f .fv.na{color:var(--muted);font-style:italic}
+  .fc-rows{width:100%;border-collapse:collapse;font-size:12px}
+  .fc-rows th{text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding:5px 7px;border-bottom:1px solid var(--border);font-weight:600}
+  .fc-rows td{padding:6px 7px;border-bottom:1px solid rgba(148,163,184,.07);font-variant-numeric:tabular-nums}
+  .fc-rows tr:last-child td{border-bottom:none}
+  .fc-rows .sy{font-weight:700;color:var(--strong)}
+  .st{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.3px}
+  .st.CANDIDATE{background:rgba(63,185,80,.16);color:var(--green)}
+  .st.WAIT{background:rgba(210,153,34,.16);color:var(--amber)}
+  .st.NO_TRADE{background:rgba(248,81,73,.14);color:var(--red)}
+  .fc-empty{font-size:11.5px;color:var(--muted);padding:9px 4px;line-height:1.6}
+  .fc-prop{border:1px solid rgba(88,166,255,.4);border-radius:10px;padding:10px 13px;background:rgba(88,166,255,.05);margin-top:9px}
+  .fc-prop .ft{font-size:12.5px;font-weight:700;color:var(--strong);margin-bottom:6px}
+  .fc-prop .dl{font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--muted);margin-bottom:3px}
+  .fc-prop .dl b{color:var(--text)}
+  .fc-prop .acts{display:flex;gap:7px;margin-top:9px}
+  .fc-note{font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:9px;padding-top:9px;border-top:1px solid rgba(148,163,184,.09)}
 
   /* ── responsive (phone / narrow window) ── */
   @media (max-width:980px){
@@ -293,7 +346,7 @@
   <div id="aiBanner" class="hidden" style="background:#3d1518;border-bottom:1px solid #f8514966;color:#ffb4ab;padding:10px 16px;font-size:13px;display:flex;align-items:center;gap:12px">
     <span style="font-size:16px">⚠️</span>
     <span id="aiBannerMsg" style="flex:1"></span>
-    <button class="sm" id="aiBannerDismiss" style="background:transparent;border-color:#f8514966;color:#ffb4ab">知道了</button>
+    <button class="sm" id="aiBannerDismiss" style="background:transparent;border-color:#f8514966;color:#ffb4ab"></button>
   </div>
   <div class="topbar">
     <div class="logo">Moo<span class="b">Trader</span></div>
@@ -302,22 +355,22 @@
     <span class="pill" id="env">—</span>
     <span class="pill" id="regime" title="">—</span>
     <span class="pill hidden" id="streak"></span>
-    <span class="pill" id="retrain" style="cursor:pointer" title="每周自省/重训 — 点击立即运行一次">🧠 —</span>
-    <span class="pill" id="awake" style="cursor:pointer" title="防止电脑睡眠（屏幕仍可熄灭）">☕ —</span>
+    <span class="pill" id="retrain" style="cursor:pointer" title="">🧠 —</span>
+    <span class="pill" id="awake" style="cursor:pointer" title="">☕ —</span>
     <div class="spacer"></div>
     <button class="primary sm" id="btnStart">▶ Start</button>
     <button class="danger sm" id="btnStop">■ Stop</button>
     <!-- Sliders, drawn rather than an emoji: ⚙ next to it renders as a glyph in
          the UI font, and an emoji beside it lands at a different weight and
          baseline on every platform. currentColor so it inherits the button. -->
-    <button class="sm" id="btnParams" title="参数 Parameters" style="padding:5px 10px;line-height:0">
+    <button class="sm" id="btnParams" title="" style="padding:5px 10px;line-height:0">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor"
            stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
         <path d="M2 4h5M11 4h3M2 8h9M13 8h1M2 12h2M8 12h6"/>
         <circle cx="9" cy="4" r="1.6"/><circle cx="12" cy="8" r="1.6"/><circle cx="6" cy="12" r="1.6"/>
       </svg>
     </button>
-    <button class="sm" id="btnSettings" title="设置 Settings" style="font-size:15px;padding:4px 10px">⚙</button>
+    <button class="sm" id="btnSettings" title="" style="font-size:15px;padding:4px 10px">⚙</button>
     <span class="pill" id="updated">—</span>
   </div>
 
@@ -325,7 +378,6 @@
     <button class="tab active" data-tab="dash" data-i18n="t_dash">仪表盘</button>
     <button class="tab" data-tab="hist" data-i18n="t_hist">历史</button>
     <button class="tab" data-tab="sig" data-i18n="t_sig">信号</button>
-    <button class="tab" data-tab="bt" data-i18n="t_bt">回测</button>
   </div>
 
   <!-- DASHBOARD -->
@@ -388,35 +440,41 @@
     </div>
   </div>
 
-  <!-- SIGNAL (盯盘信号台) -->
+  <!-- SIGNAL (三日概率预测) -->
   <div id="tab-sig" class="hidden">
-    <!-- status + schedule + triggers -->
-    <div class="panel p-sig" style="margin-bottom:12px">
-      <h3><span data-i18n="sig_title">盯盘信号台</span></h3>
-      <div class="mut" style="margin-bottom:10px;font-size:12px" data-i18n="sig_desc">像盯盘助手一样工作：盘中每 5 分钟扫描 watchlist，突破 / 放量 / VWAP 翻转 / RSI 极值即时推 Telegram；无事件保持静默。</div>
-      <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
-        <span id="sigStatus" class="pill">⚪ <span data-i18n="sig_stopped">已停止</span></span>
-        <button class="primary sm" id="btnSigStart">▶ Start</button>
-        <button class="danger sm" id="btnSigStop">■ Stop</button>
-        <span style="flex:1 1 auto"></span>
-        <button class="sm" id="btnScan">📡 <span data-i18n="sig_scan">立即扫描</span></button>
-        <button class="sm" id="btnBrief">🌅 <span data-i18n="sig_brief">盘前简报</span></button>
-        <button class="sm" id="btnReview">🔄 <span data-i18n="sig_review">盘中复盘</span></button>
-        <button class="sm" id="btnClose">🏁 <span data-i18n="sig_close">收盘对账</span></button>
+    <!-- three-day probability forecast (merged from the prediction platform) -->
+    <div class="panel p-fc" style="margin-bottom:12px">
+      <h3 style="justify-content:space-between">
+        <span data-i18n="fc_title">三日概率预测</span>
+        <span class="mut" id="fcHealth" style="text-transform:none;letter-spacing:0;font-weight:400"></span>
+      </h3>
+      <div class="mut" style="margin-bottom:10px;font-size:12px" data-i18n="fc_desc">
+        30分钟全时段K线 → Ridge 直接多步回归 → 未来3个交易日（96根）的涨/平/跌概率与预测区间。研究用途，不是交易指令：任何下单路径都不读取本模块。
       </div>
-      <div class="sig-sched" id="sigSched"></div>
+      <div class="fc-head">
+        <input id="fcSym" placeholder="NVDA" maxlength="12"
+          style="background:var(--card2);border:1px solid var(--border);color:var(--text);padding:5px 9px;border-radius:8px;width:100px;text-transform:uppercase">
+        <button class="primary sm" id="btnFcRun">📈 <span data-i18n="fc_run">预测</span></button>
+        <button class="sm" id="btnFcForce">🔄 <span data-i18n="fc_force">强制刷新</span></button>
+        <span style="flex:1 1 auto"></span>
+        <button class="sm" id="btnFcScan">🔭 <span data-i18n="fc_scan">扫描候选</span></button>
+      </div>
+      <div id="fcBody"></div>
+      <div class="fc-note" data-i18n="fc_note">
+        模型用券商可提供的全部历史（约249个交易日）训练并做 purged walk-forward 验证。质量门不通过时概率会被置灰——那不是显示问题，是提醒你这个数字当天不构成证据。
+      </div>
     </div>
 
-    <!-- watch grid + alert feed -->
+    <!-- scanner + weekly optimizer -->
     <div class="sig-cols" style="margin-bottom:12px">
-      <div class="panel p-sig">
-        <h3 style="justify-content:space-between"><span data-i18n="sig_grid">盯盘行情</span>
-          <span class="mut" id="sigTickTs" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h3>
-        <div id="sigGrid" class="sig-tiles"></div>
+      <div class="panel p-fc">
+        <h3 style="justify-content:space-between"><span data-i18n="fc_cand">研究候选</span>
+          <span class="mut" id="fcScanTs" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h3>
+        <div id="fcScanBody"><div class="fc-empty" data-i18n="fc_scan_hint">点「扫描候选」按 signal watchlist + 动态候选池排一次序。每交易日缓存一次。</div></div>
       </div>
-      <div class="panel p-alert">
-        <h3>🔔 <span data-i18n="sig_feed">警报流</span></h3>
-        <div id="sigFeed" class="sig-feed"></div>
+      <div class="panel p-rec">
+        <h3>⚙️ <span data-i18n="fc_opt">周度自调参</span></h3>
+        <div id="fcOptBody"><div class="fc-empty" data-i18n="fc_opt_hint">先做一次预测，这里会显示该标的的结算统计与待批准的参数提案。</div></div>
       </div>
     </div>
 
@@ -434,21 +492,7 @@
         <div id="sigWlChips" style="display:flex;gap:6px;flex-wrap:wrap;min-height:24px"></div>
         <div class="mut" id="sigWlMsg" style="font-size:11px;margin-top:6px"></div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <strong>Log</strong><span style="flex:1 1 auto"></span>
-        <button class="sm" id="btnSigReload">🔄 <span data-i18n="sig_reload">刷新日志</span></button>
-      </div>
-      <div class="log" id="sigLog" style="height:auto;max-height:340px;overflow:auto;white-space:pre-wrap"></div></div>
-  </div>
-
-  <!-- BACKTEST -->
-  <div id="tab-bt" class="hidden">
-    <div class="panel"><h3>Honest Backtest</h3>
-      <select id="btDays" style="background:var(--card2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:8px">
-        <option value="180">180 days</option><option value="360">360 days</option></select>
-      <button class="primary sm" id="btnBt">Run backtest</button>
-      <span id="btStatus" class="mut" style="margin-left:10px"></span>
-      <div id="btResult" style="margin-top:14px"></div></div>
+    </div>
   </div>
 
   <!-- PENDING-APPROVALS POPUP (checked once each time you open the web UI) -->
@@ -463,19 +507,15 @@
   <!-- SETTINGS MODAL -->
   <div id="paramsModal" class="modal hidden">
     <div class="modal-box" style="width:min(860px,96vw)">
-      <div class="modal-head"><h2>参数 Parameters</h2><button class="sm" id="btnCloseParams">✕</button></div>
-      <div class="setdesc" style="margin-bottom:10px">
-        这里是 <code>config/parameters.json</code> 里<b>正在使用</b>的全部参数。<br>
-        标 <span class="ptag hot">立即</span> 的下一轮扫描就生效；标 <span class="ptag">需重启</span> 的由进程启动时读取，
-        保存时会<b>自动重启交易循环</b>让它生效 —— 重启期间不开新仓，已有持仓的保护不受影响。
-      </div>
+      <div class="modal-head"><h2 id="paramsTitle">参数 Parameters</h2><button class="sm" id="btnCloseParams">✕</button></div>
+      <div class="setdesc" id="paramsIntro" style="margin-bottom:10px"></div>
       <div id="paramGroups"></div>
       <!-- Run config, read-only. What is left is what is NOT a parameter row
            above: which build is serving this, and where it is running from.
            The four chips that restated entry_threshold / scan_interval /
            timeframe / max_hold_days are gone — two places to read one number
            is one place too many, and the editable row is the true one. -->
-      <div class="set-sec"><h3>运行配置 Run Config（只读）</h3>
+      <div class="set-sec"><h3 id="runCfgHead">运行配置 Run Config（只读）</h3>
         <div class="cfgchips" id="runCfg"><span class="mut" style="font-size:12px">—</span></div>
         <div id="runFrom"></div>
       </div>
@@ -484,6 +524,34 @@
         <span style="display:flex;gap:8px">
           <button class="sm" id="btnParamsReload">放弃修改</button>
           <button class="sm" id="btnParamsSave" disabled>保存并生效</button>
+          <!-- both labels are set by applyPanelLang() -->
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- BACKTEST TUNING — the weekly chain, run by hand and narrated while it runs.
+       It ends where the old Honest Backtest page stopped: on the decision. Each
+       survivor is one row with the measured deltas beside it and a ✓/✗, and
+       nothing is written until 应用 is pressed. -->
+  <div id="tuneModal" class="modal hidden">
+    <div class="modal-box" style="width:min(780px,96vw)">
+      <div class="modal-head"><h2 id="tuneTitle">回测调参 Backtest tuning</h2>
+        <button class="sm" id="btnCloseTune">✕</button></div>
+      <div class="setdesc" id="tuneIntro"></div>
+      <div class="tunebar"><span class="tunedot" id="tuneDot"></span>
+        <span id="tuneStage">尚未运行</span>
+        <span style="flex:1 1 auto"></span>
+        <span class="mut" id="tuneElapsed" style="font-variant-numeric:tabular-nums"></span></div>
+      <div class="log" id="tuneLog" style="height:auto;max-height:200px;overflow:auto;white-space:pre-wrap">—</div>
+      <div id="tuneNotes" style="margin-top:10px"></div>
+      <div id="tuneCands"></div>
+      <div class="psave">
+        <span id="tuneMsg" class="setdesc"></span>
+        <span style="display:flex;gap:8px">
+          <button class="sm" id="btnTuneRun">▶ 运行</button>
+          <button class="danger sm hidden" id="btnTuneStop">■ 停止</button>
+          <button class="primary sm" id="btnTuneApply" disabled>应用已确认的改动</button>
         </span>
       </div>
     </div>
@@ -491,13 +559,13 @@
 
   <div id="settingsModal" class="modal hidden">
     <div class="modal-box" style="width:min(700px,94vw)">
-      <div class="modal-head"><h2>⚙ 设置 Settings</h2><button class="sm" id="btnCloseSet">✕</button></div>
+      <div class="modal-head"><h2 id="setTitle">⚙ 设置 Settings</h2><button class="sm" id="btnCloseSet">✕</button></div>
 
-      <div class="set-sec"><h3>交易模式 Trading Mode</h3>
-        <div class="set-row"><div style="flex:1"><b>模拟 / 实盘 Simulate / Live</b>
-          <div class="setdesc">🧪 模拟盘用虚拟资金；💵 实盘是真钱。切换写入 .env，需<b>重启交易循环</b>生效。切到实盘要求：已设交易密码 + 当前无持仓 + 二次确认。</div>
+      <div class="set-sec"><h3 id="sTradeH">交易模式 Trading Mode</h3>
+        <div class="set-row"><div style="flex:1"><b id="sTradeL">模拟 / 实盘</b>
+          <div class="setdesc" id="sTradeD"></div>
           <div id="envState" class="setdesc" style="margin-top:6px">—</div></div>
-          <button class="sm" id="btnEnvToggle">切换</button></div>
+          <button class="sm" id="btnEnvToggle">—</button></div>
       </div>
 
       <!-- 策略模式 / 新闻源 / FinBERT / 资金 / 运行配置 / AI 引擎 all moved to
@@ -505,38 +573,38 @@
            bot TRADES, sitting beside theme and language; and four of the Run
            Config chips restated parameters that are now editable rows, which
            is two places to read one number. -->
-      <div class="set-sec"><h3>API Keys</h3>
-        <div class="mut" style="font-size:11.5px;margin-bottom:8px">框里是<b>当前的 key</b>（中间打码）。点 👁 显示完整内容，改完点「保存」写入 <code>.env</code>，<b>重启交易循环后生效</b>。</div>
+      <div class="set-sec"><h3 id="sKeysH">API Keys</h3>
+        <div class="mut" id="sKeysD" style="font-size:11.5px;margin-bottom:8px"></div>
         <div id="keyList"></div>
       </div>
 
-      <div class="set-sec"><h3>外观 Appearance</h3>
-        <div class="set-row"><div><b>主题 Theme</b><div class="setdesc">深色 / 浅色界面配色。立即生效，记在本浏览器。</div></div>
-          <select id="selTheme"><option value="dark">Dark 深色</option><option value="light">Light 浅色</option></select></div>
-        <div class="set-row"><div><b>语言 Language</b><div class="setdesc">界面文字语言（中文 / English）。立即生效。</div></div>
+      <div class="set-sec"><h3 id="sAppearH">外观 Appearance</h3>
+        <div class="set-row"><div><b id="sThemeL">主题</b><div class="setdesc" id="sThemeD"></div></div>
+          <select id="selTheme"><option value="dark">Dark</option><option value="light">Light</option></select></div>
+        <div class="set-row"><div><b id="sLangL">语言</b><div class="setdesc" id="sLangD"></div></div>
           <select id="selLang"><option value="zh">中文</option><option value="en">English</option></select></div>
       </div>
 
-      <div class="set-sec"><h3>数据 Data</h3>
-        <div class="set-row"><div><b>重设统计 Reset Stats</b><div class="setdesc">把 今日盈亏、总盈亏（累计）、交易笔数/胜率、回撤峰值从现在清零重算。历史成交记录保留（History 仍可见）。需二次确认。</div></div>
-          <button class="danger sm" id="btnResetSet">重设</button></div>
+      <div class="set-sec"><h3 id="sDataH">数据 Data</h3>
+        <div class="set-row"><div><b id="sResetL">重设统计</b><div class="setdesc" id="sResetD"></div></div>
+          <button class="danger sm" id="btnResetSet">—</button></div>
       </div>
 
-      <div class="set-sec" id="secSupport"><h3>支持 Support</h3>
-        <div class="set-row"><div style="flex:1"><b>支持这个项目 Support this project</b>
-          <div class="setdesc">本软件免费开源。如果它帮到了你，欢迎请作者喝杯咖啡 ☕</div></div>
+      <div class="set-sec" id="secSupport"><h3 id="sSupportH">支持 Support</h3>
+        <div class="set-row"><div style="flex:1"><b id="sSupportL">支持这个项目</b>
+          <div class="setdesc" id="sSupportD"></div></div>
           <button class="sm" onclick="window.open('https://buymeacoffee.com/ethan6945','_blank')">☕ Buy me a coffee</button>
           <button class="sm" onclick="window.open('https://github.com/ethan6945/moomoo-trader','_blank')">⭐ GitHub</button></div>
       </div>
 
-      <div class="set-sec" id="secAccess"><h3>访问 Access</h3>
-        <div class="set-row"><div style="flex:1"><b>手机 / 局域网访问</b><div class="setdesc">开启后，同一 WiFi 或 Tailscale 下的设备可访问本面板（需先设好访问密码）。切换会重启网页服务几秒，页面自动刷新。你的交易程序不受影响。</div>
+      <div class="set-sec" id="secAccess"><h3 id="sAccessH">访问 Access</h3>
+        <div class="set-row"><div style="flex:1"><b id="sLanL">手机 / 局域网访问</b><div class="setdesc" id="sLanD"></div>
           <div id="lanUrls" class="setdesc hidden" style="margin-top:6px;line-height:1.7"></div></div>
           <button class="sm" id="btnLan">…</button></div>
-        <div class="set-row"><div><b>退出登录 Log out</b><div class="setdesc">清除本设备的登录状态。设了「网页访问密码」时，下次打开需重新输入密码。</div></div>
-          <button class="sm" id="btnLogout">退出</button></div>
-        <div class="set-row"><div><b>退出 UI Exit UI</b><div class="setdesc">停止所有服务（OpenD · 交易调度器 · 网页面板）并关闭浏览器标签。下次使用时重新双击 start-web.command。</div></div>
-          <button class="danger sm" id="btnExit">退出全部</button></div>
+        <div class="set-row"><div><b id="sLogoutL">退出登录</b><div class="setdesc" id="sLogoutD"></div></div>
+          <button class="sm" id="btnLogout">—</button></div>
+        <div class="set-row"><div><b id="sExitL">退出 UI</b><div class="setdesc" id="sExitD"></div></div>
+          <button class="danger sm" id="btnExit">—</button></div>
       </div>
     </div>
   </div>
@@ -553,9 +621,9 @@ async function api(p,opts){
   catch(e){
     // Non-JSON response (404/500 HTML page, or login redirect) — usually means the
     // server is running stale code and needs a restart, or the session expired.
-    if(r.status===404) throw new Error('接口不存在 (404) — 网页服务器可能在跑旧代码，需重启 web server');
-    if(r.status===401||r.status===403) throw new Error('未登录或会话过期，请刷新页面重新登录');
-    throw new Error(`服务器返回非 JSON (HTTP ${r.status})`);
+    if(r.status===404) throw new Error(T('e_404'));
+    if(r.status===401||r.status===403) throw new Error(T('e_401'));
+    throw new Error(T('e_json',r.status));
   }
   if(!r.ok) throw new Error(data.error||`HTTP ${r.status}`);
   return data;
@@ -565,8 +633,8 @@ let CURTAB='dash';
 function setTab(t){
   CURTAB=t;
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
-  ['dash','hist','sig','bt'].forEach(x=>$('#tab-'+x).classList.toggle('hidden',x!==t));
-  if(t==='dash')refreshSectors(); if(t==='hist')loadHistory(); if(t==='sig')loadSignal(); if(t==='bt')loadBt();
+  ['dash','hist','sig'].forEach(x=>$('#tab-'+x).classList.toggle('hidden',x!==t));
+  if(t==='dash')refreshSectors(); if(t==='hist')loadHistory(); if(t==='sig'){loadSigWatchlist();fcHealth();}
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 
@@ -597,22 +665,22 @@ function renderAiBanner(h){
 $('#aiBannerDismiss').onclick=()=>{AI_BANNER_DISMISSED=$('#aiBanner').dataset.key||'';$('#aiBanner').classList.add('hidden');};
 
 async function refresh(){
-  let a; try{a=await api('/api/status');}catch(e){return;}
+  let a; try{a=await api('/api/status?lang='+LANG);}catch(e){return;}
   LAST_STATUS=a;
   renderAiBanner(a.ai_health);
   const run=a.scheduler_running;
-  $('#sched').innerHTML=`<span class="dot ${run?'live':''}" style="background:${run?'#3fb950':'#f85149'};color:${run?'#3fb950':'#f85149'}"></span>scheduler ${run?'running':'stopped'}`;
+  $('#sched').innerHTML=`<span class="dot ${run?'live':''}" style="background:${run?'#3fb950':'#f85149'};color:${run?'#3fb950':'#f85149'}"></span>${run?T('tb_sched_run'):T('tb_sched_stop')}`;
   $('#sched').style.borderColor=(run?'#3fb950':'#f85149')+'66';
   // Start button reflects ACTUAL background state (survives web restart — reads live status)
   const bs=$('#btnStart');
-  bs.innerHTML=run?'● Running':'▶ Start';
+  bs.innerHTML=run?T('tb_running'):T('tb_start');
   bs.disabled=run; bs.style.background=run?'#2ea043':''; bs.style.borderColor=run?'#2ea043':'';
-  const st=$('#btnStop'); st.disabled=!run; st.innerHTML='■ Stop';
+  const st=$('#btnStop'); st.disabled=!run; st.innerHTML=T('tb_stop');
   const oc={red:'#f85149',yellow:'#d29922',green:'#3fb950',blue:'#388bfd'}[a.opend_status]||'#8b949e';
   $('#opend').innerHTML=`<span class="dot" style="background:${oc}"></span>${a.opend_label||'OpenD'}`;
   $('#opend').style.borderColor=oc+'66';
   const env=a.trade_env||'—', real=env==='REAL';
-  $('#env').innerHTML=(real?'💵 ':'🧪 ')+env;
+  $('#env').innerHTML = env==='—' ? '—' : (real?T('tb_real'):T('tb_sim'));
   $('#env').style.color=real?'#d29922':'#8b949e';
   $('#env').style.borderColor=real?'#d2992266':'var(--border)';
   // regime + VIX combined: "🐂 BULL · VIX 19.8", tooltip = why
@@ -620,7 +688,7 @@ async function refresh(){
   const rgIco=rg==='BULL'?'🐂':(rg==='BEAR'?'🐻':'〰️');
   $('#regime').textContent=`${rgIco} ${rg} · VIX ${vx??'—'}`;
   $('#regime').style.color=rg==='BULL'?'#3fb950':(rg==='BEAR'?'#f85149':'#d29922');
-  $('#regime').title=(a.regime_note||'')+(vx!=null?`\nVIX ${vx} — ${vx<20?'低波动':(vx<28?'中等波动':'高波动')}`:'');
+  $('#regime').title=(a.regime_note||'')+(vx!=null?`\nVIX ${vx} — ${vx<20?T('tb_vix_low'):(vx<28?T('tb_vix_mid'):T('tb_vix_high'))}`:'');
   // streak pill only when there IS a streak (hide the noise otherwise)
   const sm=a.summary||{}, stk=sm.streak||0, kind=sm.streak_kind;
   const stEl=$('#streak');
@@ -645,7 +713,7 @@ async function refresh(){
   $('#card-unreal').className='card '+((a.positions_count||0)===0?'c-grey':(unr>=0?'c-green':'c-red'));
   const L=I18N[LANG];
   $('#c-unreal-sub').textContent=(a.positions_count||0)+' '+L.pos_unit;
-  $('#updated').textContent='updated '+new Date().toLocaleTimeString();
+  $('#updated').textContent=T('tb_updated')+new Date().toLocaleTimeString();
   // status line: only LIVE numbers (cash / risk vs cap / last scan) — static
   // config (threshold, scan interval, TF, AI model) lives in Settings → 运行配置.
   const riskHot=(a.heat_cap||0)>0&&(a.open_risk||0)/a.heat_cap>0.8;
@@ -1027,14 +1095,15 @@ async function doStop(kind){
 
 // ── i18n ──
 const I18N={
-  zh:{t_dash:'仪表盘',t_hist:'历史',t_sig:'信号',t_bt:'回测',positions:'持仓',equity:'净值曲线 · 累计已实现',sectors:'美国板块总览 · Live',
+  zh:{t_dash:'仪表盘',t_hist:'历史',t_sig:'信号',positions:'持仓',equity:'净值曲线 · 累计已实现',sectors:'美国板块总览 · Live',
       activity:'近期动态',record:'交易统计',approvals:'待批准建议',deployed:'已部署 / 预算',today:'今日盈亏 · 已实现',total:'总盈亏 · 累计已实现',
       unreal:'浮动盈亏 · 持仓',pos_unit:'笔持仓',
       trades:'总交易笔数',winrate:'胜率',pf:'盈利因子',net:'净盈亏',cash:'现金',openrisk:'敞口风险 / 上限',lastscan:'上次扫描',
       c_sym:'代码',c_qty:'数量',c_entry:'入场',c_last:'现价',c_stop:'止损',c_tp:'止盈',c_range:'区间',c_strat:'策略',
       no_pos:'🌙 当前无持仓',notrades:'暂无平仓记录',noappr:'暂无待批准建议',appr_note:'✅ 批准后约 5 分钟内自动执行(后台每 5 分钟同步一次;盘中扫描也会触发)',
-      sig_title:'盯盘信号台',sig_desc:'像盯盘助手一样工作：盘中每 5 分钟扫描信号 watchlist，突破 / 放量 / VWAP 翻转 / RSI 极值 / 技术面转向即时推 Telegram，无事件保持静默（同类信号有冷却期，不轰炸）。',
-      sig_stopped:'已停止',sig_scan:'立即扫描',sig_grid:'盯盘行情',sig_feed:'警报流',sig_brief:'盘前简报',sig_review:'盘中复盘',sig_close:'收盘对账',sig_wl:'信号 Watchlist',sig_add:'添加',sig_save:'保存',sig_reload:'刷新日志'},
+      
+      fc_title:'三日概率预测',fc_desc:'30分钟全时段K线 → Ridge 直接多步回归 → 未来3个交易日（96根）的涨/平/跌概率与预测区间。研究用途，不是交易指令：任何下单路径都不读取本模块。',fc_run:'预测',fc_force:'强制刷新',fc_scan:'扫描候选',fc_cand:'研究候选',fc_opt:'周度自调参',fc_scan_hint:'点「扫描候选」按 signal watchlist + 动态候选池排一次序。每交易日缓存一次。',fc_opt_hint:'先做一次预测，这里会显示该标的的结算统计与待批准的参数提案。',fc_note:'模型用券商可提供的全部历史（约249个交易日）训练并做 purged walk-forward 验证。质量门不通过时概率会被置灰——那不是显示问题，是提醒你这个数字当天不构成证据。',
+      sig_wl:'信号 Watchlist',sig_add:'添加',sig_save:'保存',},
   en:{
       stop_title:'Stop what?',
       stop_desc:'Positions are not closed — both options only stop the software.',
@@ -1042,22 +1111,341 @@ const I18N={
       stop_sched_d:'No more scanning or orders. The panel stays up; positions and the ledger remain visible.',
       stop_all:'■ Stop and quit everything',
       stop_all_d:'Scheduler and web panel both shut down. Double-click start-web.command to come back.',
-      stop_cancel:'Cancel',t_dash:'Dashboard',t_hist:'History',t_sig:'Signal',t_bt:'Backtest',positions:'Open Positions',equity:'Equity · cumulative realized',sectors:'US Sectors · Live',
+      stop_cancel:'Cancel',t_dash:'Dashboard',t_hist:'History',t_sig:'Signal',positions:'Open Positions',equity:'Equity · cumulative realized',sectors:'US Sectors · Live',
       activity:'Recent Activity',record:'Trade Record',approvals:'Pending Approvals',deployed:'Deployed / Budget',today:"Today P&L · realized",total:'Total P&L · cum. realized',
       unreal:'Unrealized P&L · open',pos_unit:'position(s)',
       trades:'Total Trades',winrate:'Win rate',pf:'Profit factor',net:'Net P&L',cash:'Cash',openrisk:'Open risk / cap',lastscan:'Last scan',
       c_sym:'Symbol',c_qty:'Qty',c_entry:'Entry',c_last:'Last',c_stop:'Stop',c_tp:'TP',c_range:'Range',c_strat:'Strategy',
       no_pos:'🌙 No open positions',notrades:'No closed trades',noappr:'No pending suggestions',appr_note:'✅ Approved items run within ~5 min (backend syncs every 5 min; market scans also apply them)',
-      sig_title:'Watch Station',sig_desc:'Works like a market-watch assistant: scans the signal watchlist every 5 min intraday — breakouts / volume spikes / VWAP flips / RSI extremes push to Telegram instantly, silence otherwise (per-signal cooldowns, no spam).',
-      sig_stopped:'Stopped',sig_scan:'Scan now',sig_grid:'Watch Grid',sig_feed:'Alert Feed',sig_brief:'Premarket brief',sig_review:'Open+1h review',sig_close:'Close recap',sig_wl:'Signal Watchlist',sig_add:'Add',sig_save:'Save',sig_reload:'Reload log'}
+      
+      fc_title:'3-Day Probability Forecast',fc_desc:'30-minute full-session bars \u2192 direct multi-step ridge \u2192 up/flat/down probabilities and prediction intervals for the next 3 sessions (96 bars). Research only, not a trading instruction: no order path imports this module.',fc_run:'Forecast',fc_force:'Force refresh',fc_scan:'Scan candidates',fc_cand:'Research Candidates',fc_opt:'Weekly Self-Tuning',fc_scan_hint:'Click Scan candidates to rank the signal watchlist plus a bounded discovery pool. Cached once per trading day.',fc_opt_hint:'Run a forecast first; settled statistics and any pending parameter proposal for that symbol appear here.',fc_note:'The model trains on the full 30-minute broker history (~249 sessions) and scores itself over the same span with purged walk-forward. When a quality gate fails the probabilities are dimmed \u2014 that is not a display glitch, it is the panel telling you the number is not evidence today.',
+      sig_wl:'Signal Watchlist',sig_add:'Add',sig_save:'Save',}
 };
 let LANG=localStorage.getItem('lang')||'zh';
-function applyLang(l){LANG=l;document.querySelectorAll('[data-i18n]').forEach(e=>{const m=I18N[l]&&I18N[l][e.dataset.i18n];if(m)e.textContent=m;});localStorage.setItem('lang',l);refresh();renderSectors();}
+// The parameter console and the tuning dialog are built by JS, so data-i18n
+// cannot reach them. PT holds their strings in both languages; T() reads one.
+// Before this existed the language selector put an English frame around a
+// Chinese page, which is worse than no selector.
+const PT={
+  zh:{
+    params_title:'参数 Parameters',
+    params_intro:'这里是 <code>config/parameters.json</code> 里<b>正在使用</b>的全部参数。<br>'
+      +'标 <span class="ptag hot">立即</span> 的下一轮扫描就生效；标 <span class="ptag">需重启</span> 的由进程启动时读取，'
+      +'保存时会<b>自动重启交易循环</b>让它生效 —— 重启期间不开新仓，已有持仓的保护不受影响。',
+    runcfg_head:'运行配置 Run Config（只读）',
+    discard:'放弃修改', save:'保存并生效', saving:'保存中…', writing:'正在写入…',
+    loading:'加载中…', load_failed:'读取失败: ',
+    unsaved:n=>`${n} 项已修改，未保存`, no_change:'没有变化',
+    saved:n=>`已保存 ${n} 项`, restarted:k=>`交易循环已重启（${k} 需要）`,
+    need_restart:k=>`⚠️ 这些需重启才生效：${k}`, refused:'拒绝：',
+    save_failed:'保存失败: ', close_dirty:'有未保存的修改，确定关闭？',
+    tag_hot:'立即', tag_cold:'需重启',
+    band:(a,b)=>`优化器区间 ${a}–${b}`, inert:w=>`当前无效 — ${w}`,
+    sec_inert:'当前模式下整段不生效',
+    bool_on:'true 开', bool_off:'false 关',
+    ver:'版本 Version', ai_model:'AI 模型',
+    running_from:'运行自 Running from: ', data_home:'数据目录 Data home: ',
+    dist_warn:'⚠ 正在从构建输出目录运行 —— 下次 <code>build.sh</code> 会删掉它并结束进程。测试请先复制到别处。',
+
+    tune_now:'立即回测调参',
+    tune_title:'回测调参 Backtest tuning',
+    tune_intro:'用最近 7 天的<b>真实成交</b>让 AI 提出候选参数，再把每一条放到 honest 引擎上回测 —— '
+      +'只有 <b>$/天更高且回撤没变差</b>的才会出现在下面。<b>这一步不会改动任何参数</b>，跑完由你逐条确认。',
+    st_idle:'尚未运行', st_running:'运行中…', st_stopping:'停止中…',
+    st_stopped:'已停止', st_done:'完成', st_error:'失败',
+    btn_run:'▶ 运行', btn_rerun:'↻ 重新运行', btn_stop:'■ 停止', btn_stopping:'停止中…',
+    apply:'应用已确认的改动', apply_n:n=>`应用已确认的 ${n} 项`, applying:'写入中…',
+    head_changes:'通过验证的改动 — 逐条确认', head_notes:'运行说明',
+    ok_btn:'✓ 确认修改', no_btn:'✗ 不要改',
+    was_applied:'✓ 已应用', was_rejected:'✗ 未采纳',
+    src_ai:'AI + 回测', src_kelly:'half-Kelly',
+    m_perday:w=>`${w}d $/天 `, m_dd:w=>`${w}d 回撤 `,
+    m_cur:v=>`(当前 $${v})`, m_n:n=>`回测样本 ${n} 笔`,
+    m_real:n=>`真实成交 ${n} 笔`, m_bt:'回测 ', m_bt_no:'未跑', m_band:'允许区间 ',
+    thin:'⚠ 样本偏少 —— 这条的证据比其它弱，通过不代表有把握',
+    none_done:'没有参数改动通过验证 —— 当前参数保持不变。',
+    none_stopped:'已停止 —— 停止前还没有任何改动测完。',
+    tick_note:'确认后才会写入；未勾选的一律不动。',
+    frozen:'⚠ PARAMS_FROZEN=true — 参数冻结中，无法写入。先在参数面板关掉冻结。',
+    applied_n:n=>`已应用 ${n} 项，下一轮扫描生效。`,
+    partial:'部分未写入：', write_failed:'写入失败: ',
+    stop_failed:'停止失败: ', start_failed:'启动失败: ', state_failed:'读取状态失败: ',
+    row_running:'运行中… 点开看进度', row_stopping:'停止中… 点开看进度',
+    row_error:'上次运行失败',
+    row_last:(w,n)=>`${w}：${n} 条改动待确认`,
+    row_last_run:'上次运行', row_last_stop:'上次中途停止',
+    c_rerun:'重新运行？\n\n上一轮还没确认的改动会被这一轮的结果替换。',
+    c_stop:'停止这一轮回测？\n\n引擎的单次回测无法中途打断，所以会在当前这一条跑完后停。'
+          +'\n已经测完的改动会保留，可以照常确认。',
+    c_apply:'确认写入以下参数？下一轮扫描生效，无需重启：\n\n',
+
+    set_title:'⚙ 设置 Settings',
+    s_trade:'交易模式 Trading Mode',
+    s_trade_l:'模拟 / 实盘 Simulate / Live',
+    s_trade_d:'🧪 模拟盘用虚拟资金；💵 实盘是真钱。切换写入 .env，需<b>重启交易循环</b>生效。'
+             +'切到实盘要求：已设交易密码 + 当前无持仓 + 二次确认。',
+    s_env_cfg:'配置(.env): ', s_env_run:' · 运行中: ', s_env_pos:' · 持仓: ',
+    s_env_pending:' · <b style="color:#d29922">⚠ 待重启生效</b>',
+    s_env_real:'💵 实盘 REAL', s_env_sim:'🧪 模拟 SIMULATE',
+    s_env_real_s:'💵 实盘', s_env_sim_s:'🧪 模拟',
+    s_env_to_sim:'切回模拟 🧪', s_env_to_real:'切到实盘 💵',
+    s_keys:'API Keys',
+    s_keys_d:'框里是<b>当前的 key</b>（中间打码）。点 👁 显示完整内容，改完点「保存」写入 <code>.env</code>，<b>重启交易循环后生效</b>。',
+    s_key_save:'保存', s_key_eye:'显示 / 隐藏', s_key_unset:'(未设置)',
+    s_key_masked:'这还是马赛克后的值。先点 👁 显示，再修改保存。',
+    s_appear:'外观 Appearance',
+    s_theme_l:'主题 Theme', s_theme_d:'深色 / 浅色界面配色。立即生效，记在本浏览器。',
+    s_theme_dark:'Dark 深色', s_theme_light:'Light 浅色',
+    s_lang_l:'语言 Language', s_lang_d:'界面文字语言（中文 / English）。立即生效。',
+    s_data:'数据 Data',
+    s_reset_l:'重设统计 Reset Stats',
+    s_reset_d:'把 今日盈亏、总盈亏（累计）、交易笔数/胜率、回撤峰值从现在清零重算。历史成交记录保留（History 仍可见）。需二次确认。',
+    s_reset_b:'重设',
+    s_support:'支持 Support', s_support_l:'支持这个项目 Support this project',
+    s_support_d:'本软件免费开源。如果它帮到了你，欢迎请作者喝杯咖啡 ☕',
+    s_access:'访问 Access',
+    s_lan_l:'手机 / 局域网访问',
+    s_lan_d:'开启后，同一 WiFi 或 Tailscale 下的设备可访问本面板（需先设好访问密码）。'
+           +'切换会重启网页服务几秒，页面自动刷新。你的交易程序不受影响。',
+    s_lan_on:'开启', s_lan_off:'关闭',
+    s_lan_head:'✅ 已开启 · 手机打开（需密码）：',
+    s_lan_ts:'Tailscale（任何地方）', s_lan_wifi:'同一 WiFi',
+    s_logout_l:'退出登录 Log out',
+    s_logout_d:'清除本设备的登录状态。设了「网页访问密码」时，下次打开需重新输入密码。',
+    s_logout_b:'退出',
+    s_exit_l:'退出 UI Exit UI',
+    s_exit_d:'停止所有服务（OpenD · 交易调度器 · 网页面板）并关闭浏览器标签。下次使用时重新双击 start-web.command。',
+    s_exit_b:'退出全部',
+    c_reset:'重设统计?\n\n将把 今日盈亏、总盈亏（累计）、交易笔数/胜率、回撤峰值从现在清零重算。历史成交保留。',
+    c_reset2:'再次确认:确定重设?计数从零开始。',
+    c_lan_need_pw:'请先在上面「WEB_PASSWORD 网页访问密码」设一个密码,再开启手机/局域网访问。',
+    c_lan_on:'开启手机 / 局域网访问?\n\n网页服务会重启几秒,页面自动刷新。你的交易程序不受影响。',
+    c_lan_off:'关闭为仅本机访问?\n\n手机/其他设备将无法再连接。网页服务会重启几秒。',
+    c_lan_fail:'切换失败',
+    c_logout:'退出登录?\n\n设了访问密码时,下次打开需重新输入密码。',
+    c_exit:'退出全部服务?\n\n将停止 OpenD · 交易调度器 · 网页面板。\n下次使用时重新双击 start-web.command 即可。',
+    c_exit_done:'所有服务已停止。浏览器将关闭此页面。',
+    k_saved:'已保存', k_save_failed:'保存失败', k_read_failed:'读取失败: ',
+    restart_t:'正在切换访问模式…', restart_d:'网页服务重启中，几秒后自动刷新',
+    fb_get:'下载', fb_del:'删除',
+    fb_dl:(f,pct,a,b)=>`⬇️ 下载中 ${f} — ${pct}% (${a}/${b} MB)`,
+    fb_norun:'⚪ 运行库缺失 — ', fb_torch:'✅ 就绪（torch/transformers，模型走 HuggingFace 缓存）',
+    fb_have:(mb,path)=>`✅ 已下载 · ${mb} MB · <span style="opacity:.7">${path}</span>`,
+    fb_off:'（FINBERT_ENABLED 仍是 false，不会被调用）',
+    fb_none:mb=>`⚪ 未下载 — 约 ${mb} MB`, fb_lastfail:d=>`上次失败：${d}`,
+    fb_c_get:(mb,path)=>`将从 HuggingFace 下载 FinBERT 模型（约 ${mb} MB）到：\n\n${path}\n\n`
+      +`• 占用你硬盘约 ${mb} MB，可随时点「删除」收回\n`
+      +`• 只下载一次，app 版和源码版共用\n`
+      +`• 下载期间可以继续用，不影响交易\n\n继续？`,
+    fb_c_del:'删除本地 FinBERT 模型？会释放硬盘空间，之后可以重新下载。', fb_deleted:'已删除',
+    e_404:'接口不存在 (404) — 网页服务器可能在跑旧代码，需重启 web server',
+    e_401:'未登录或会话过期，请刷新页面重新登录',
+    e_json:c=>`服务器返回非 JSON (HTTP ${c})`,
+    starting:'启动…',
+    tb_sched_run:'调度器运行中', tb_sched_stop:'调度器已停',
+    tb_start:'▶ 启动', tb_running:'● 运行中', tb_stop:'■ 停止',
+    tb_sim:'🧪 模拟盘', tb_real:'💵 实盘',
+    tb_vix_low:'低波动', tb_vix_mid:'中等波动', tb_vix_high:'高波动',
+    tb_retrain_t:'每周自省/重训 — 点击立即运行一次',
+    tb_awake_t:'防止电脑睡眠（屏幕仍可熄灭）',
+    tb_params_t:'参数 Parameters', tb_settings_t:'设置 Settings',
+    tb_dismiss:'知道了', tb_updated:'更新于 ',
+  },
+  en:{
+    params_title:'Parameters',
+    params_intro:'Every parameter <b>currently in use</b>, from <code>config/parameters.json</code>.<br>'
+      +'A <span class="ptag hot">now</span> row takes effect on the next scan. A <span class="ptag">restart</span> row '
+      +'is read at process start, so saving one <b>restarts the trading loop</b> for you — no new positions open during '
+      +'the restart, and protection on what you already hold is unaffected.',
+    runcfg_head:'Run config (read-only)',
+    discard:'Discard changes', save:'Save and apply', saving:'Saving…', writing:'Writing…',
+    loading:'Loading…', load_failed:'Could not load: ',
+    unsaved:n=>`${n} changed, not saved`, no_change:'Nothing changed',
+    saved:n=>`Saved ${n}`, restarted:k=>`Trading loop restarted (${k} required it)`,
+    need_restart:k=>`⚠️ These need a restart to take effect: ${k}`, refused:'Refused: ',
+    save_failed:'Save failed: ', close_dirty:'You have unsaved changes. Close anyway?',
+    tag_hot:'now', tag_cold:'restart',
+    band:(a,b)=>`optimizer range ${a}–${b}`, inert:w=>`inert right now — ${w}`,
+    sec_inert:'this whole section is inert under the current mode',
+    bool_on:'true (on)', bool_off:'false (off)',
+    ver:'Version', ai_model:'AI model',
+    running_from:'Running from: ', data_home:'Data home: ',
+    dist_warn:'⚠ Running out of the build output directory — the next <code>build.sh</code> will delete it and kill this process. Copy it elsewhere to test.',
+
+    tune_now:'Run tuning now',
+    tune_title:'Backtest tuning',
+    tune_intro:'The AI proposes candidate parameters from your <b>real fills</b> of the last 7 days, and each one is then '
+      +'backtested on the honest engine — only those that <b>earn more per day without deepening drawdown</b> appear below. '
+      +'<b>This step changes nothing</b>; you confirm each change afterwards.',
+    st_idle:'Not run yet', st_running:'Running…', st_stopping:'Stopping…',
+    st_stopped:'Stopped', st_done:'Done', st_error:'Failed',
+    btn_run:'▶ Run', btn_rerun:'↻ Run again', btn_stop:'■ Stop', btn_stopping:'Stopping…',
+    apply:'Apply confirmed changes', apply_n:n=>`Apply ${n} confirmed`, applying:'Writing…',
+    head_changes:'Changes that passed — confirm one by one', head_notes:'Run notes',
+    ok_btn:'✓ Confirm', no_btn:'✗ Leave it',
+    was_applied:'✓ Applied', was_rejected:'✗ Not taken',
+    src_ai:'AI + backtest', src_kelly:'half-Kelly',
+    m_perday:w=>`${w}d $/day `, m_dd:w=>`${w}d drawdown `,
+    m_cur:v=>`(now $${v})`, m_n:n=>`${n} backtested trades`,
+    m_real:n=>`${n} real fills`, m_bt:'backtest ', m_bt_no:'not run', m_band:'allowed range ',
+    thin:'⚠ Thin sample — the evidence here is weaker than the rest; passing is not the same as being sure',
+    none_done:'Nothing passed — your parameters stay as they are.',
+    none_stopped:'Stopped — nothing had finished measuring yet.',
+    tick_note:'Only what you tick gets written; everything else is left alone.',
+    frozen:'⚠ PARAMS_FROZEN=true — parameters are frozen and cannot be written. Turn the freeze off on the parameter page first.',
+    applied_n:n=>`Applied ${n} — effective on the next scan.`,
+    partial:'Some were not written: ', write_failed:'Write failed: ',
+    stop_failed:'Stop failed: ', start_failed:'Could not start: ', state_failed:'Could not read state: ',
+    row_running:'running… open to watch', row_stopping:'stopping… open to watch',
+    row_error:'last run failed',
+    row_last:(w,n)=>`${w}: ${n} change(s) awaiting confirmation`,
+    row_last_run:'Last run', row_last_stop:'Last run stopped early',
+    c_rerun:'Run again?\n\nChanges from the last run that you have not confirmed will be replaced by this one.',
+    c_stop:'Stop this run?\n\nOne engine pass cannot be interrupted, so it stops after the candidate it is measuring.'
+          +'\nWhatever finished measuring is kept and stays confirmable.',
+    c_apply:'Write these parameters? Effective on the next scan, no restart:\n\n',
+
+    set_title:'⚙ Settings',
+    s_trade:'Trading mode',
+    s_trade_l:'Paper / Live',
+    s_trade_d:'🧪 Paper trades virtual money; 💵 live is real money. Switching writes to .env and needs '
+             +'a <b>restart of the trading loop</b>. Going live requires: a trade password set, no open '
+             +'positions, and a second confirmation.',
+    s_env_cfg:'Configured (.env): ', s_env_run:' · running: ', s_env_pos:' · positions: ',
+    s_env_pending:' · <b style="color:#d29922">⚠ waiting on a restart</b>',
+    s_env_real:'💵 REAL', s_env_sim:'🧪 SIMULATE',
+    s_env_real_s:'💵 live', s_env_sim_s:'🧪 paper',
+    s_env_to_sim:'Back to paper 🧪', s_env_to_real:'Go live 💵',
+    s_keys:'API keys',
+    s_keys_d:'Each box holds the <b>current key</b>, masked through the middle. Click 👁 to see it whole; '
+            +'edit and Save writes to <code>.env</code>, <b>effective after the trading loop restarts</b>.',
+    s_key_save:'Save', s_key_eye:'Show / hide', s_key_unset:'(not set)',
+    s_key_masked:'That is still the masked value. Click 👁 to reveal it first, then edit and save.',
+    s_appear:'Appearance',
+    s_theme_l:'Theme', s_theme_d:'Dark or light. Applies immediately, remembered in this browser.',
+    s_theme_dark:'Dark', s_theme_light:'Light',
+    s_lang_l:'Language', s_lang_d:'Interface language (中文 / English). Applies immediately.',
+    s_data:'Data',
+    s_reset_l:'Reset stats',
+    s_reset_d:"Zero out today's P&L, cumulative P&L, trade count / win rate and the drawdown peak, and "
+             +'recount from now. Closed trades are kept and stay visible under History. Asks twice.',
+    s_reset_b:'Reset',
+    s_support:'Support', s_support_l:'Support this project',
+    s_support_d:'This software is free and open source. If it helped you, a coffee is welcome ☕',
+    s_access:'Access',
+    s_lan_l:'Phone / LAN access',
+    s_lan_d:'Lets devices on the same WiFi or Tailscale open this panel — set an access password first. '
+           +'Switching restarts the web server for a few seconds and the page reloads itself. Your '
+           +'trading program is unaffected.',
+    s_lan_on:'Turn on', s_lan_off:'Turn off',
+    s_lan_head:'✅ On · open on your phone (password required):',
+    s_lan_ts:'Tailscale (anywhere)', s_lan_wifi:'Same WiFi',
+    s_logout_l:'Log out',
+    s_logout_d:'Clears this device\'s sign-in. With an access password set, you will need it again next time.',
+    s_logout_b:'Log out',
+    s_exit_l:'Exit UI',
+    s_exit_d:'Stops everything — OpenD, the trading scheduler and this panel — and closes the browser tab. '
+            +'Double-click start-web.command to come back.',
+    s_exit_b:'Exit all',
+    c_reset:"Reset stats?\n\nToday's P&L, cumulative P&L, trade count / win rate and the drawdown peak are "
+           +'zeroed and recounted from now. Closed trades are kept.',
+    c_reset2:'Confirm again: reset? Counting starts from zero.',
+    c_lan_need_pw:'Set a password under "WEB_PASSWORD" above before turning on phone / LAN access.',
+    c_lan_on:'Turn on phone / LAN access?\n\nThe web server restarts for a few seconds and the page reloads '
+            +'itself. Your trading program is unaffected.',
+    c_lan_off:'Go back to this machine only?\n\nPhones and other devices will no longer connect. The web '
+             +'server restarts for a few seconds.',
+    c_lan_fail:'Could not switch',
+    c_logout:'Log out?\n\nWith an access password set, you will need it again next time.',
+    c_exit:'Exit everything?\n\nThis stops OpenD, the trading scheduler and this panel.\nDouble-click '
+          +'start-web.command to come back.',
+    c_exit_done:'Everything has stopped. The browser will close this tab.',
+    k_saved:'Saved', k_save_failed:'Save failed', k_read_failed:'Could not read: ',
+    restart_t:'Switching access mode…', restart_d:'The web server is restarting; this page reloads in a few seconds',
+    fb_get:'Download', fb_del:'Delete',
+    fb_dl:(f,pct,a,b)=>`⬇️ Downloading ${f} — ${pct}% (${a}/${b} MB)`,
+    fb_norun:'⚪ Runtime missing — ', fb_torch:'✅ Ready (torch/transformers; the model comes from the HuggingFace cache)',
+    fb_have:(mb,path)=>`✅ Downloaded · ${mb} MB · <span style="opacity:.7">${path}</span>`,
+    fb_off:'(FINBERT_ENABLED is still false, so it is never called)',
+    fb_none:mb=>`⚪ Not downloaded — about ${mb} MB`, fb_lastfail:d=>`last attempt failed: ${d}`,
+    fb_c_get:(mb,path)=>`Download the FinBERT model from HuggingFace (about ${mb} MB) to:\n\n${path}\n\n`
+      +`• Uses about ${mb} MB of disk; "Delete" gives it back at any time\n`
+      +`• Downloaded once, shared by the app build and the source build\n`
+      +`• You can keep using the panel while it downloads; trading is unaffected\n\nContinue?`,
+    fb_c_del:'Delete the local FinBERT model? This frees the disk space; you can download it again later.',
+    fb_deleted:'Deleted',
+    e_404:'No such endpoint (404) — the web server is probably running stale code and needs a restart',
+    e_401:'Not signed in, or the session expired. Reload the page and sign in again.',
+    e_json:c=>`The server returned something that is not JSON (HTTP ${c})`,
+    starting:'Starting…',
+    tb_sched_run:'scheduler running', tb_sched_stop:'scheduler stopped',
+    tb_start:'▶ Start', tb_running:'● Running', tb_stop:'■ Stop',
+    tb_sim:'🧪 Paper', tb_real:'💵 Live',
+    tb_vix_low:'low volatility', tb_vix_mid:'moderate volatility', tb_vix_high:'high volatility',
+    tb_retrain_t:'Weekly self-review / retrain — click to run one now',
+    tb_awake_t:'Keeps the Mac awake (the screen may still sleep)',
+    tb_params_t:'Parameters', tb_settings_t:'Settings',
+    tb_dismiss:'Got it', tb_updated:'updated ',
+  },
+};
+function T(k,...a){
+  const v=(PT[LANG]||PT.zh)[k];
+  return typeof v==='function' ? v(...a) : (v===undefined?k:v);
+}
+function applyLang(l){LANG=l;document.querySelectorAll('[data-i18n]').forEach(e=>{const m=I18N[l]&&I18N[l][e.dataset.i18n];if(m)e.textContent=m;});localStorage.setItem('lang',l);applyPanelLang();refresh();renderSectors();}
+// The two JS-built panels. Their headings are set here; their bodies are
+// re-rendered, because the descriptions are the server's and it has to be asked
+// again in the new language.
+function applyPanelLang(){
+  const set=(sel,html)=>{const e=$(sel); if(e) e.innerHTML=html;};
+  set('#paramsTitle',T('params_title'));
+  set('#paramsIntro',T('params_intro'));
+  set('#runCfgHead',T('runcfg_head'));
+  set('#tuneTitle',T('tune_title'));
+  set('#tuneIntro',T('tune_intro'));
+  const rl=$('#btnParamsReload'); if(rl) rl.textContent=T('discard');
+  const sv=$('#btnParamsSave');   if(sv) sv.textContent=T('save');
+  // ⚙ Settings. Its markup is static, so these could have been data-i18n — but
+  // half of it is HTML (bold, <code>), which data-i18n's textContent would
+  // print as literal tags.
+  [['#setTitle','set_title'],['#sTradeH','s_trade'],['#sTradeL','s_trade_l'],
+   ['#sTradeD','s_trade_d'],['#sKeysH','s_keys'],['#sKeysD','s_keys_d'],
+   ['#sAppearH','s_appear'],['#sThemeL','s_theme_l'],['#sThemeD','s_theme_d'],
+   ['#sLangL','s_lang_l'],['#sLangD','s_lang_d'],['#sDataH','s_data'],
+   ['#sResetL','s_reset_l'],['#sResetD','s_reset_d'],['#btnResetSet','s_reset_b'],
+   ['#sSupportH','s_support'],['#sSupportL','s_support_l'],['#sSupportD','s_support_d'],
+   ['#sAccessH','s_access'],['#sLanL','s_lan_l'],['#sLanD','s_lan_d'],
+   ['#sLogoutL','s_logout_l'],['#sLogoutD','s_logout_d'],['#btnLogout','s_logout_b'],
+   ['#sExitL','s_exit_l'],['#sExitD','s_exit_d'],['#btnExit','s_exit_b'],
+  ].forEach(([sel,k])=>set(sel,T(k)));
+  const th=$('#selTheme');
+  if(th){th.options[0].textContent=T('s_theme_dark');th.options[1].textContent=T('s_theme_light');}
+  // Keep the selector honest: applyLang can be reached from somewhere other
+  // than this dropdown, and a page in English beside a box reading 中文 is the
+  // control lying about the state it supposedly owns.
+  const sl=$('#selLang'); if(sl && sl.value!==LANG) sl.value=LANG;
+  // Top bar: tooltips and the one button label that is not redrawn by refresh().
+  const tt=(sel,k)=>{const e=$(sel); if(e) e.title=T(k);};
+  tt('#retrain','tb_retrain_t'); tt('#awake','tb_awake_t');
+  tt('#btnParams','tb_params_t'); tt('#btnSettings','tb_settings_t');
+  const ab=$('#aiBannerDismiss'); if(ab) ab.textContent=T('tb_dismiss');
+  // #retrain and #awake set their own titles from live state, in the right
+  // language, on every poll — these are the value they hold until the first
+  // poll lands, and after one that fails.
+  // These two read live state, so re-fetch rather than guess it from the DOM.
+  if(!$('#settingsModal').classList.contains('hidden')) loadSettings();
+  // Only when it is open: loadParams() re-fetches from the server, and doing
+  // that on every language toggle for a modal nobody has opened is a request
+  // for nothing. An unsaved edit would also be discarded by the reload.
+  if(!$('#paramsModal').classList.contains('hidden')
+     && Object.keys(paramChanges()).length===0) loadParams();
+  if(TUNE_STATE) renderTune(TUNE_STATE);
+}
 function applyTheme(t){document.body.classList.toggle('light',t==='light');localStorage.setItem('theme',t);drawEqDash();}
 
 // ── settings ──
 async function loadSettings(){
-  try{const s=await api('/api/settings');
+  try{const s=await api('/api/settings?lang='+LANG);
     // A contact string (SEC_EDGAR_USER_AGENT) is not a secret — a password
     // field for it hides the typo that gets the IP blocked.
     // The field holds the CURRENT key, masked, rather than an empty "new value"
@@ -1069,10 +1457,10 @@ async function loadSettings(){
        <span style="display:flex;gap:6px;align-items:center">
        <input id="k_${k.key}" type="text" data-masked="1" spellcheck="false"
               value="${(k.masked||'').replace(/"/g,'&quot;')}"
-              placeholder="${k.set?'':'(未设置)'}"/>
-       <button class="sm" id="eye_${k.key}" title="显示 / 隐藏"
+              placeholder="${k.set?'':T('s_key_unset')}"/>
+       <button class="sm" id="eye_${k.key}" title="${T('s_key_eye')}"
                onclick="toggleKey('${k.key}')">👁</button>
-       <button class="sm" onclick="saveKey('${k.key}')">保存</button></span></div>`).join('');
+       <button class="sm" onclick="saveKey('${k.key}')">${T('s_key_save')}</button></span></div>`).join('');
   }catch(e){}
   loadWebAccess();
   loadTradeEnv();
@@ -1091,12 +1479,13 @@ async function loadTradeEnv(){
   try{
     const d=await api('/api/trade-env'); ENVST=d;
     const real=d.env_file==='REAL';
-    const liveTxt=d.env_live?(d.env_live==='REAL'?'💵 实盘':'🧪 模拟'):'—';
-    let s=`配置(.env): <b>${real?'💵 实盘 REAL':'🧪 模拟 SIMULATE'}</b> · 运行中: ${liveTxt} · 持仓: ${d.open_positions}`;
-    if(d.pending_restart) s+=' · <b style="color:#d29922">⚠ 待重启生效</b>';
+    const liveTxt=d.env_live?(d.env_live==='REAL'?T('s_env_real_s'):T('s_env_sim_s')):'—';
+    let s=T('s_env_cfg')+`<b>${real?T('s_env_real'):T('s_env_sim')}</b>`
+         +T('s_env_run')+liveTxt+T('s_env_pos')+d.open_positions;
+    if(d.pending_restart) s+=T('s_env_pending');
     $('#envState').innerHTML=s;
     const btn=$('#btnEnvToggle');
-    btn.textContent=real?'切回模拟 🧪':'切到实盘 💵';
+    btn.textContent=real?T('s_env_to_sim'):T('s_env_to_real');
     btn.className=real?'sm':'danger sm';
   }catch(e){}
 }
@@ -1105,13 +1494,13 @@ async function loadWebAccess(){
   try{
     const w=await api('/api/web-access'); WACC=w;
     const b=$('#btnLan'), lan=w.mode==='lan';
-    b.textContent=lan?'关闭':'开启';
+    b.textContent=lan?T('s_lan_off'):T('s_lan_on');
     b.style.background=lan?'#2ea043':''; b.style.borderColor=lan?'#2ea043':'';
     const u=$('#lanUrls');
     if(lan){
-      let h='✅ 已开启 · 手机打开（需密码）：';
-      if(w.tailscale_ip) h+=`<br>• Tailscale（任何地方）: <b style="color:var(--primary)">http://${w.tailscale_ip}:${w.port}</b>`;
-      if(w.lan_ip)       h+=`<br>• 同一 WiFi: <b style="color:var(--primary)">http://${w.lan_ip}:${w.port}</b>`;
+      let h=T('s_lan_head');
+      if(w.tailscale_ip) h+=`<br>• ${T('s_lan_ts')}: <b style="color:var(--primary)">http://${w.tailscale_ip}:${w.port}</b>`;
+      if(w.lan_ip)       h+=`<br>• ${T('s_lan_wifi')}: <b style="color:var(--primary)">http://${w.lan_ip}:${w.port}</b>`;
       u.innerHTML=h; u.classList.remove('hidden');
     }else{ u.classList.add('hidden'); }
   }catch(_){}
@@ -1123,19 +1512,19 @@ async function saveKey(k){
   // those would replace a working credential with a row of dots and the panel
   // would cheerfully report success.
   if(el.dataset.masked==='1' && v.includes('\u2022')){
-    alert('这还是马赛克后的值。先点 👁 显示，再修改保存。'); return;
+    alert(T('s_key_masked')); return;
   }
   const r=await api('/api/settings/key',{method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({key:k,value:v})});
-  alert(r.note||(r.ok?'已保存':'保存失败'));
+  alert(r.note||(r.ok?T('k_saved'):T('k_save_failed')));
   await loadSettings();
 }
 
 function showRestart(){
   const o=document.createElement('div');
   o.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);color:#fff;font-family:inherit';
-  o.innerHTML='<div style="text-align:center"><div style="font-size:16px;margin-bottom:8px">正在切换访问模式…</div><div style="font-size:13px;opacity:.7">网页服务重启中，几秒后自动刷新</div></div>';
+  o.innerHTML=`<div style="text-align:center"><div style="font-size:16px;margin-bottom:8px">${T('restart_t')}</div><div style="font-size:13px;opacity:.7">${T('restart_d')}</div></div>`;
   document.body.appendChild(o);
   let n=0;
   const t=setInterval(async()=>{
@@ -1152,7 +1541,7 @@ async function toggleKey(k){
       const r=await api('/api/settings/key/reveal',{method:'POST',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})});
       el.value=r.value||''; el.dataset.masked='0'; eye.textContent='🙈';
-    }catch(e){ alert('读取失败: '+e.message); }
+    }catch(e){ alert(T('k_read_failed')+e.message); }
   }else{
     // Back to masked means reloading it — the panel does not keep a plaintext
     // copy sitting in the DOM once you have stopped looking at it.
@@ -1178,8 +1567,8 @@ async function loadFinbertInto(sel){
   const box=$(sel); if(!box) return;
   if(!box.dataset.built){
     box.innerHTML='<span id="finbertState">—</span>'
-      +' <button class="sm" id="btnFinbertGet" style="margin-left:6px">下载</button>'
-      +' <button class="sm" id="btnFinbertDel">删除</button>';
+      +` <button class="sm" id="btnFinbertGet" style="margin-left:6px">${T('fb_get')}</button>`
+      +` <button class="sm" id="btnFinbertDel">${T('fb_del')}</button>`;
     box.dataset.built='1';
     $('#btnFinbertGet').onclick=finbertGet;
     $('#btnFinbertDel').onclick=finbertDel;
@@ -1193,43 +1582,39 @@ async function loadFinbert(){
   const j=s.job||{};
   if(j.running){
     const pct=j.total?Math.round(100*j.done/j.total):0;
-    el.innerHTML=`⬇️ 下载中 ${j.file||''} — ${pct}% (${(j.done/1e6).toFixed(1)}/${(j.total/1e6).toFixed(1)} MB)`;
+    el.innerHTML=T('fb_dl',j.file||'',pct,(j.done/1e6).toFixed(1),(j.total/1e6).toFixed(1));
     get.disabled=true; del.disabled=true;
     if(!FINBERT_POLL) FINBERT_POLL=setInterval(loadFinbert,1000);
     return;
   }
   if(FINBERT_POLL){clearInterval(FINBERT_POLL);FINBERT_POLL=null;}
   if(!s.can_run){
-    el.innerHTML=`⚪ 运行库缺失 — <code>pip install onnxruntime tokenizers</code>`;
+    el.innerHTML=T('fb_norun')+'<code>pip install onnxruntime tokenizers</code>';
     get.disabled=true; del.disabled=!s.downloaded;
   }else if(s.runtime==='torch'){
-    el.innerHTML=`✅ 就绪（torch/transformers，模型走 HuggingFace 缓存）`;
+    el.innerHTML=T('fb_torch');
     get.disabled=true; del.disabled=true;
   }else if(s.downloaded){
-    el.innerHTML=`✅ 已下载 · ${s.disk_mb} MB · <span style="opacity:.7">${s.path}</span>`
-      +(s.enabled?'':' <span style="color:#d29922">（FINBERT_ENABLED 仍是 false，不会被调用）</span>');
+    el.innerHTML=T('fb_have',s.disk_mb,s.path)
+      +(s.enabled?'':` <span style="color:#d29922">${T('fb_off')}</span>`);
     get.disabled=true; del.disabled=false;
   }else{
-    el.innerHTML=`⚪ 未下载 — 约 ${s.est_download_mb} MB`
-      +(j.ok===false?` <span style="color:#f85149">上次失败：${(j.detail||'').slice(0,80)}</span>`:'');
+    el.innerHTML=T('fb_none',s.est_download_mb)
+      +(j.ok===false?` <span style="color:#f85149">${T('fb_lastfail',(j.detail||'').slice(0,80))}</span>`:'');
     get.disabled=false; del.disabled=true;
   }
 }
 async function finbertGet(){
   let s; try{s=await api('/api/finbert');}catch(e){return;}
-  const okd=confirm(
-    `将从 HuggingFace 下载 FinBERT 模型（约 ${s.est_download_mb} MB）到：\n\n${s.path}\n\n`
-    +`• 占用你硬盘约 ${s.est_download_mb} MB，可随时点「删除」收回\n`
-    +`• 只下载一次，app 版和源码版共用\n`
-    +`• 下载期间可以继续用，不影响交易\n\n继续？`);
+  const okd=confirm(T('fb_c_get',s.est_download_mb,s.path));
   if(!okd) return;
   await api('/api/finbert/download',{method:'POST'});
   loadFinbert();
 };
 async function finbertDel(){
-  if(!confirm('删除本地 FinBERT 模型？会释放硬盘空间，之后可以重新下载。')) return;
+  if(!confirm(T('fb_c_del'))) return;
   const r=await api('/api/finbert/remove',{method:'POST'});
-  alert(r.note||'已删除'); loadFinbert();
+  alert(r.note||T('fb_deleted')); loadFinbert();
 };
 
 // ── parameter console ──
@@ -1253,8 +1638,8 @@ function paramInput(pr){
   if(pr.kind==='bool'){
     const on=String(pr.value).toLowerCase()==='true';
     return `<select id="${id}" ${k}>
-      <option value="true" ${on?'selected':''}>true 开</option>
-      <option value="false" ${on?'':'selected'}>false 关</option></select>`;
+      <option value="true" ${on?'selected':''}>${T('bool_on')}</option>
+      <option value="false" ${on?'':'selected'}>${T('bool_off')}</option></select>`;
   }
   if(pr.kind==='num'){
     const n=parseFloat(pr.value);
@@ -1264,36 +1649,36 @@ function paramInput(pr){
   return `<input id="${id}" ${k} type="text" value="${String(pr.value).replace(/"/g,'&quot;')}"/>`;
 }
 async function loadRunConfig(){
-  try{const a=LAST_STATUS||await api('/api/status');
+  try{const a=LAST_STATUS||await api('/api/status?lang='+LANG);
     // Read-only. Everything else this used to show — entry threshold, scan
     // interval, timeframe, max hold — is an editable row above now, and
     // restating it here would be a second place to read one number, free to
     // disagree with the first.
     $('#runCfg').innerHTML=[
-      ['版本 Version',a.version],
-      ['AI 模型',a.ai_model],
+      [T('ver'),a.version],
+      [T('ai_model'),a.ai_model],
     ].map(([k,v])=>`<span class="pill">${k}<b>${v??'—'}</b></span>`).join('');
     // Which build is actually serving this. A version alone can't tell you —
     // 2026-08-05 had a bot running out of macos/dist (wiped by every rebuild)
     // while it was assumed to be /Applications.
     const rf=a.running_from||'';
     $('#runFrom').innerHTML = rf
-      ? `<div class="setdesc" style="margin-top:8px">运行自 Running from: <code>${rf}</code></div>`
-        + (a.home?`<div class="setdesc">数据目录 Data home: <code>${a.home}</code></div>`:'')
+      ? `<div class="setdesc" style="margin-top:8px">${T('running_from')}<code>${rf}</code></div>`
+        + (a.home?`<div class="setdesc">${T('data_home')}<code>${a.home}</code></div>`:'')
         + (rf.includes('/macos/dist/')
-            ? `<div class="setdesc" style="color:var(--amber,#d29922)">⚠ 正在从构建输出目录运行 —— 下次 <code>build.sh</code> 会删掉它并结束进程。测试请先复制到别处。</div>`
+            ? `<div class="setdesc" style="color:var(--amber,#d29922)">${T('dist_warn')}</div>`
             : '')
       : '';
   }catch(e){}
 }
 async function loadParams(){
-  const d=await api('/api/params');
+  const d=await api('/api/params?lang='+LANG);
   PARAM_LOADED={};
   AI_MODELS=d.ai_models||[];
   $('#paramGroups').innerHTML=d.sections.map(sec=>`
     <div class="psec${sec.inert?' inert':''}">
       <div class="psec-head">${sec.label}
-        ${sec.inert?'<span class="pinert">当前模式下整段不生效</span>':''}</div>
+        ${sec.inert?`<span class="pinert">${T('sec_inert')}</span>`:''}</div>
       ${sec.groups.map(g=>`
         <div class="set-sec">${g.name?`<h3>${g.name}</h3>`:''}
           ${g.params.map(paramRow).join('')}
@@ -1304,22 +1689,37 @@ async function loadParams(){
   });
   await loadFinbertInto('#finbertBox');
   await loadRunConfig();
+  const bt=$('#btnTuneNow'); if(bt) bt.onclick=()=>openTune(true);
+  pollTune();          // so the row can say what the last run left behind
   paramDirty();
 }
 function paramRow(pr){
-  const band=pr.band?`<span class="pband">优化器区间 ${pr.band[0]}–${pr.band[1]}</span>`:'';
+  const band=pr.band?`<span class="pband">${T('band',pr.band[0],pr.band[1])}</span>`:'';
   // Inert is not dead: the value is real and the code reads it, but another
   // switch is off so nothing consults it right now. Saying so is the
   // difference between this page describing the bot and listing fields.
-  const inert=pr.inert?`<span class="pinert">当前无效 — ${pr.inert}</span>`:'';
-  const extra=(pr.key==='FINBERT_ENABLED')?'<div id="finbertBox" class="setdesc" style="margin-top:6px">—</div>':'';
+  const inert=pr.inert?`<span class="pinert">${T('inert',pr.inert)}</span>`:'';
+  let extra='';
+  if(pr.key==='FINBERT_ENABLED') extra='<div id="finbertBox" class="setdesc" style="margin-top:6px">—</div>';
+  // The trigger sits ON the row that says who normally pulls it. Reading
+  // "manual" and then having to go hunting for where to run it by hand is how a
+  // manual mode turns into a mode nobody uses.
+  // The status line stays with the description; the BUTTON goes under the
+  // dropdown, in `below`. It acts on the thing the dropdown selects, and a
+  // button floating in the prose column reads as part of the explanation.
+  let below='';
+  if(pr.key==='PARAM_TUNE_MODE'){
+    extra='<div class="setdesc" id="tuneRowMsg" style="margin-top:7px"></div>';
+    below=`<div class="pv-below"><button class="primary sm" id="btnTuneNow">${T('tune_now')}</button></div>`;
+  }
   PARAM_LOADED[pr.key]=String(pr.value);
   return `<div class="prow${pr.inert?' inert':''}" id="row_${pr.key}">
     <div class="pk"><b>${pr.label||pr.key}</b>${band}${inert}
       ${pr.desc?`<div class="setdesc">${pr.desc}</div>`:''}${extra}</div>
     <div class="pv">
-      <span class="ptag ${pr.hot?'hot':''}">${pr.hot?'立即':'需重启'}</span>
+      <span class="ptag ${pr.hot?'hot':''}">${pr.hot?T('tag_hot'):T('tag_cold')}</span>
       ${paramInput(pr)}
+      ${below}
     </div></div>`;
 }
 function paramChanges(){
@@ -1342,7 +1742,7 @@ function paramDirty(){
   });
   $('#btnParamsSave').disabled = keys.length===0;
   if(keys.length){
-    $('#paramMsg').textContent=`${keys.length} 项已修改，未保存`;
+    $('#paramMsg').textContent=T('unsaved',keys.length);
     $('#paramMsg').style.color='var(--muted)';
   }else{
     $('#paramMsg').textContent=PARAM_RESULT;
@@ -1352,38 +1752,228 @@ function paramDirty(){
 $('#btnParams').onclick=async()=>{
   PARAM_RESULT=''; PARAM_RESULT_COLOR='var(--muted)';
   $('#paramsModal').classList.remove('hidden');
-  $('#paramGroups').innerHTML='<div class="setdesc">加载中…</div>';
-  try{await loadParams();}catch(e){$('#paramGroups').innerHTML=`<div class="setdesc">读取失败: ${e.message}</div>`;}
+  $('#paramGroups').innerHTML=`<div class="setdesc">${T('loading')}</div>`;
+  try{await loadParams();}catch(e){$('#paramGroups').innerHTML=`<div class="setdesc">${T('load_failed')}${e.message}</div>`;}
 };
 $('#btnCloseParams').onclick=()=>{
-  if(Object.keys(paramChanges()).length && !confirm('有未保存的修改，确定关闭？')) return;
+  if(Object.keys(paramChanges()).length && !confirm(T('close_dirty'))) return;
   $('#paramsModal').classList.add('hidden');
 };
 $('#btnParamsReload').onclick=()=>loadParams();
 $('#btnParamsSave').onclick=async()=>{
   const ch=paramChanges(), n=Object.keys(ch).length;
   if(!n) return;
-  const b=$('#btnParamsSave'); b.disabled=true; b.textContent='保存中…';
-  $('#paramMsg').textContent='正在写入…'; $('#paramMsg').style.color='var(--muted)';
+  const b=$('#btnParamsSave'); b.disabled=true; b.textContent=T('saving');
+  $('#paramMsg').textContent=T('writing'); $('#paramMsg').style.color='var(--muted)';
   try{
     const r=await api('/api/params',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({params:ch})});
     const bits=[];
-    if(r.applied?.length) bits.push(`已保存 ${r.applied.length} 项`);
-    if(r.restarted) bits.push(`交易循环已重启（${r.needed_restart.join(', ')} 需要）`);
-    else if(r.needed_restart?.length) bits.push(`⚠️ 这些需重启才生效：${r.needed_restart.join(', ')}`);
+    if(r.applied?.length) bits.push(T('saved',r.applied.length));
+    if(r.restarted) bits.push(T('restarted',r.needed_restart.join(', ')));
+    else if(r.needed_restart?.length) bits.push(T('need_restart',r.needed_restart.join(', ')));
     if(r.rejected && Object.keys(r.rejected).length)
-      bits.push('拒绝：'+Object.entries(r.rejected).map(([k,v])=>`${k}(${v})`).join('; '));
+      bits.push(T('refused')+Object.entries(r.rejected).map(([k,v])=>`${k}(${v})`).join('; '));
     if(r.error) bits.push(r.error);
-    PARAM_RESULT=bits.join(' · ')||'没有变化';
+    PARAM_RESULT=bits.join(' · ')||T('no_change');
     PARAM_RESULT_COLOR=(r.ok?'#3fb950':'#d29922');
     await loadParams();
     refresh();
   }catch(e){
-    PARAM_RESULT='保存失败: '+e.message;
+    PARAM_RESULT=T('save_failed')+e.message;
     PARAM_RESULT_COLOR='#f85149';
-  }finally{ b.textContent='保存并生效'; paramDirty(); }
+  }finally{ b.textContent=T('save'); paramDirty(); }
 };
+
+// ── backtest tuning ──
+// The weekly chain, started by hand. It replaced the Honest Backtest page,
+// which ran the same engine and printed four numbers you could not act on;
+// this one ends on the decision those numbers existed to inform.
+//
+// TUNE_PICK is the owner's ✓/✗ per parameter and lives ONLY here until 应用 is
+// pressed — a ✓ is a selection, not a write. The server re-reads the value from
+// its own candidate list when it writes, so a tampered payload cannot set a
+// parameter to something no backtest measured.
+let TUNE_PICK={}, TUNE_STATE=null, TUNE_TIMER=null;
+const busyStatus=st=>st==='running'||st==='stopping';
+const TUNE_PCT=['risk_per_trade','max_position_pct'];
+function tuneVal(k,v){
+  if(v===null||v===undefined) return '—';
+  return TUNE_PCT.includes(k) ? (v*100).toFixed(1)+'%'
+       : (Number.isInteger(v)? String(v) : (+v).toFixed(2).replace(/\.?0+$/,''));
+}
+function tunePill(l,v){return `<span class="pill">${l}<b>${v}</b></span>`;}
+function tuneMark(k,how){
+  TUNE_PICK[k]=(TUNE_PICK[k]===how)?'':how;    // click again to un-choose
+  renderTuneCands();
+}
+function tuneMetrics(c){
+  const out=[];
+  if(c.source==='kelly'){
+    Object.keys(c.per_day||{}).forEach(w=>out.push(
+      tunePill(T('m_perday',w),`$${c.per_day[w]} <span style="opacity:.6">${T('m_cur',(c.base_per_day||{})[w])}</span>`)));
+    Object.keys(c.dd||{}).forEach(w=>out.push(tunePill(T('m_dd',w),`${c.dd[w]}%`)));
+    if(!c.backtested) out.push(tunePill(T('m_bt'),T('m_bt_no')));
+    out.push(tunePill('',T('m_real',c.n_trades)));
+  }else{
+    Object.keys(c.per_day_delta||{}).forEach(w=>{
+      const d=c.per_day_delta[w];
+      out.push(tunePill(T('m_perday',w),`<span style="color:${d>=0?'#3fb950':'#f85149'}">${d>=0?'+':''}$${d}</span>`));
+    });
+    Object.keys(c.dd||{}).forEach(w=>out.push(tunePill(T('m_dd',w),`${c.dd[w]}%`)));
+    if(c.n_trades!=null) out.push(tunePill('',T('m_n',c.n_trades)));
+  }
+  if(c.band) out.push(tunePill(T('m_band'),`${tuneVal(c.key,c.band[0])}–${tuneVal(c.key,c.band[1])}`));
+  return out.join('');
+}
+function renderTuneCands(){
+  const d=TUNE_STATE||{}, cs=d.candidates||[], el=$('#tuneCands'), decided=d.decided||{};
+  if(!cs.length){
+    el.innerHTML = d.status==='done'
+      ? `<div class="empty">${T('none_done')}</div>`
+      : d.status==='stopped'
+      ? `<div class="empty">${T('none_stopped')}</div>` : '';
+  }else{
+    el.innerHTML=`<div class="set-sec"><h3>${T('head_changes')}</h3>`+cs.map(c=>{
+      const done=decided[c.key];
+      const pick=TUNE_PICK[c.key]||'';
+      // A refusal is not a rejection: dimming a row the owner DID confirm, because
+      // the write was refused, hides the one outcome they have to act on.
+      const cls=done?(done==='applied'?'acc':done==='rejected'?'rej':'')
+                    :(pick==='acc'?'acc':pick==='rej'?'rej':'');
+      const tail = done
+        ? `<span class="tunedone" style="color:${done==='applied'?'#3fb950':done==='rejected'?'var(--muted)':'#f85149'}">`
+          +`${done==='applied'?T('was_applied'):done==='rejected'?T('was_rejected'):'⚠ '+done}</span>`
+        : `<span class="tbtns">
+             <button class="${pick==='acc'?'primary ':''}sm" onclick="tuneMark('${c.key}','acc')">${T('ok_btn')}</button>
+             <button class="${pick==='rej'?'danger ':''}sm" onclick="tuneMark('${c.key}','rej')">${T('no_btn')}</button></span>`;
+      return `<div class="tunerow ${cls}">
+        <div class="th"><span class="tk">${c.key}</span>
+          <span class="tv">${tuneVal(c.key,c.current)} → <b>${tuneVal(c.key,c.value)}</b></span>
+          <span class="ptag">${c.source==='kelly'?T('src_kelly'):T('src_ai')}</span>${tail}</div>
+        <div class="tunemet">${tuneMetrics(c)}</div>
+        ${c.rationale?`<div class="why">${c.rationale}</div>`:''}
+        ${c.thin?`<div class="tunewarn">${T('thin')}</div>`:''}
+      </div>`;}).join('')+'</div>';
+  }
+  const n=cs.filter(c=>TUNE_PICK[c.key]==='acc'&&!decided[c.key]).length;
+  const b=$('#btnTuneApply');
+  b.textContent=n?T('apply_n',n):T('apply');
+  b.disabled = !n || busyStatus(d.status) || !!d.frozen;
+  $('#tuneMsg').textContent = d.frozen ? T('frozen') : (n?T('tick_note'):'');
+  $('#tuneMsg').style.color = d.frozen?'#d29922':'var(--muted)';
+}
+function renderTune(d){
+  TUNE_STATE=d;
+  const dot=$('#tuneDot');
+  dot.className='tunedot'+({running:' run',stopping:' run',done:' ok',
+                            stopped:' ok',error:' err'}[d.status]||'');
+  $('#tuneStage').textContent=d.stage||({idle:T('st_idle'),running:T('st_running'),
+    stopping:T('st_stopping'),stopped:T('st_stopped'),done:T('st_done'),
+    error:T('st_error')}[d.status]||'—');
+  // The run button follows the state instead of always saying 运行. Opening this
+  // dialog already STARTS a run, so a button reading "运行" beside a run in
+  // progress is answering a question nobody asked — and its handler returns
+  // silently while one is going, which makes a live button look like a fake one.
+  // Run and Stop trade places rather than sitting side by side half-dead: only
+  // one of them is ever the thing you can do.
+  const rb=$('#btnTuneRun'), sb=$('#btnTuneStop');
+  const running=d.status==='running', stopping=d.status==='stopping';
+  const busy=running||stopping;
+  rb.classList.toggle('hidden',busy);
+  rb.textContent = d.status==='idle' ? T('btn_run') : T('btn_rerun');
+  sb.classList.toggle('hidden',!busy);
+  sb.disabled=stopping;
+  sb.textContent = stopping ? T('btn_stopping') : T('btn_stop');
+  const L=$('#tuneLog');
+  const stuck=L.scrollTop+L.clientHeight>=L.scrollHeight-24;   // only autoscroll if already at the bottom
+  L.textContent=(d.log||[]).map(l=>`${l.t}  ${l.msg}`).join('\n')||'—';
+  if(stuck) L.scrollTop=L.scrollHeight;
+  // Cleared when there is no run, not just left alone: a stale elapsed time
+  // beside "not run yet" reads as a run that finished and lost its results.
+  if(d.started_at){
+    const secs=Math.max(0,Math.round((new Date(d.finished_at||Date.now())-new Date(d.started_at))/1000));
+    $('#tuneElapsed').textContent=`${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}`;
+  }else{ $('#tuneElapsed').textContent=''; }
+  const notes=(d.notes||[]).concat(d.error?['✗ '+d.error]:[]);
+  $('#tuneNotes').innerHTML=notes.length
+    ? `<div class="set-sec"><h3>${T('head_notes')}</h3>`+notes.map(n=>`<div class="tunenote">· ${n}</div>`).join('')+'</div>' : '';
+  renderTuneCands();
+  refreshTuneRow();
+}
+function refreshTuneRow(){
+  const el=$('#tuneRowMsg'); if(!el) return;
+  const d=TUNE_STATE;
+  if(!d||d.status==='idle'){el.textContent='';return;}
+  el.textContent = d.status==='running' ? T('row_running')
+    : d.status==='stopping' ? T('row_stopping')
+    : d.status==='error' ? T('row_error')
+    : T('row_last', d.status==='stopped'?T('row_last_stop'):T('row_last_run'),
+        (d.candidates||[]).length);
+}
+async function pollTune(){
+  let d; try{d=await api('/api/param-tune');}catch(e){return;}
+  renderTune(d);
+  if(busyStatus(d.status)){
+    if(!TUNE_TIMER) TUNE_TIMER=setInterval(pollTune,2000);
+  }else if(TUNE_TIMER){clearInterval(TUNE_TIMER);TUNE_TIMER=null;}
+}
+async function openTune(start){
+  $('#tuneModal').classList.remove('hidden');
+  let d; try{d=await api('/api/param-tune');}catch(e){
+    $('#tuneStage').textContent=T('state_failed')+e.message; return;}
+  // A run already in flight is joined, not restarted — restarting would throw
+  // away the minutes already spent and fight the first run over OpenD.
+  if(start && !busyStatus(d.status)){
+    TUNE_PICK={};
+    try{ d=await api('/api/param-tune/run?lang='+LANG,{method:'POST'}); }catch(e){
+      $('#tuneStage').textContent=T('start_failed')+e.message; return;}
+    d={status:'running',stage:T('starting'),log:[],candidates:[],notes:[],decided:{}};
+  }
+  renderTune(d);
+  pollTune();
+}
+$('#btnTuneRun').onclick=()=>{
+  if(TUNE_STATE&&busyStatus(TUNE_STATE.status)) return;   // also hidden above
+  if(TUNE_STATE&&(TUNE_STATE.candidates||[]).length
+     && !confirm(T('c_rerun'))) return;
+  openTune(true);
+};
+$('#btnTuneStop').onclick=async()=>{
+  if(!confirm(T('c_stop'))) return;
+  const b=$('#btnTuneStop'); b.disabled=true; b.textContent=T('btn_stopping');
+  try{ await api('/api/param-tune/stop',{method:'POST'}); pollTune(); }
+  catch(e){ b.disabled=false; b.textContent=T('btn_stop');
+            $('#tuneMsg').textContent=T('stop_failed')+e.message;
+            $('#tuneMsg').style.color='#f85149'; }
+};
+$('#btnTuneApply').onclick=async()=>{
+  const cs=(TUNE_STATE&&TUNE_STATE.candidates)||[];
+  const acc=cs.filter(c=>TUNE_PICK[c.key]==='acc'&&!(TUNE_STATE.decided||{})[c.key]);
+  const rej=cs.filter(c=>TUNE_PICK[c.key]==='rej').map(c=>c.key);
+  if(!acc.length) return;
+  if(!confirm(T('c_apply')
+      +acc.map(c=>`  ${c.key}: ${tuneVal(c.key,c.current)} → ${tuneVal(c.key,c.value)}`).join('\n'))) return;
+  const b=$('#btnTuneApply'); b.disabled=true; b.textContent=T('applying');
+  try{
+    const r=await api('/api/param-tune/apply',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({accept:acc.map(c=>c.key),reject:rej})});
+    TUNE_STATE.decided=r.decided||{};
+    renderTuneCands();
+    const bad=Object.entries(r.failed||{});
+    $('#tuneMsg').textContent = bad.length
+      ? T('partial')+bad.map(([k,v])=>`${k}(${v})`).join('; ')
+      : T('applied_n',r.applied.length);
+    $('#tuneMsg').style.color = bad.length?'#d29922':'#3fb950';
+    if(!$('#paramsModal').classList.contains('hidden')) await loadParams();
+  }catch(e){
+    $('#tuneMsg').textContent=T('write_failed')+e.message;
+    $('#tuneMsg').style.color='#f85149';
+  }finally{ renderTuneCands(); }
+};
+$('#btnCloseTune').onclick=()=>$('#tuneModal').classList.add('hidden');
+$('#tuneModal').onclick=e=>{if(e.target.id==='tuneModal')$('#tuneModal').classList.add('hidden');};
 
 $('#btnSettings').onclick=async()=>{await loadSettings();await loadFinbert();$('#settingsModal').classList.remove('hidden');};
 $('#btnCloseSet').onclick=()=>$('#settingsModal').classList.add('hidden');
@@ -1391,32 +1981,30 @@ $('#settingsModal').onclick=e=>{if(e.target.id==='settingsModal')$('#settingsMod
 $('#selTheme').onchange=e=>applyTheme(e.target.value);
 $('#selLang').onchange=e=>applyLang(e.target.value);
 $('#btnResetSet').onclick=async()=>{
-  if(!confirm('重设统计?\n\n将把 今日盈亏、总盈亏（累计）、交易笔数/胜率、回撤峰值从现在清零重算。历史成交保留。'))return;
-  if(!confirm('再次确认:确定重设?计数从零开始。'))return;
+  if(!confirm(T('c_reset')))return;
+  if(!confirm(T('c_reset2')))return;
   await api('/api/reset-stats',{method:'POST'});$('#settingsModal').classList.add('hidden');refresh();
 };
 $('#btnLan').onclick=async()=>{
   const lan=WACC&&WACC.mode==='lan', target=lan?'local':'lan';
   if(target==='lan'&&!(WACC&&WACC.password_set)){
-    alert('请先在上面「WEB_PASSWORD 网页访问密码」设一个密码,再开启手机/局域网访问。');return;
+    alert(T('c_lan_need_pw'));return;
   }
-  if(!confirm(target==='lan'
-    ?'开启手机 / 局域网访问?\n\n网页服务会重启几秒,页面自动刷新。你的交易程序不受影响。'
-    :'关闭为仅本机访问?\n\n手机/其他设备将无法再连接。网页服务会重启几秒。'))return;
+  if(!confirm(target==='lan'?T('c_lan_on'):T('c_lan_off')))return;
   const r=await api('/api/web-access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:target})});
-  if(r&&r.ok){showRestart();}else{alert((r&&r.error)||'切换失败');}
+  if(r&&r.ok){showRestart();}else{alert((r&&r.error)||T('c_lan_fail'));}
 };
 $('#btnLogout').onclick=async()=>{
-  if(!confirm('退出登录?\n\n设了访问密码时,下次打开需重新输入密码。'))return;
+  if(!confirm(T('c_logout')))return;
   try{await api('/api/logout',{method:'POST'});}catch(_){}
   location.href='/';
 };
 
 $('#btnExit').onclick=async()=>{
-  if(!confirm('退出全部服务?\n\n将停止 OpenD · 交易调度器 · 网页面板。\n下次使用时重新双击 start-web.command 即可。'))return;
+  if(!confirm(T('c_exit')))return;
   try{await api('/api/exit',{method:'POST'});}catch(_){}
   // Server kills itself; show a brief message then close the tab
-  alert('所有服务已停止。浏览器将关闭此页面。');
+  alert(T('c_exit_done'));
   window.close();
 };
 
@@ -1445,109 +2033,6 @@ function renderHist(){
   let eq=0; const pts=Object.keys(byDay).sort().map(d=>{eq+=byDay[d];return {d,y:eq,bar:byDay[d]};});
   eqChart('#eqHist','#eqHistTip',pts,{bars:true});
 }
-let SIG_LOG_CACHE=null;
-// 跟随最新输出（像终端 tail -f）：贴在底部就自动滚到底，新内容一直顶到最新；
-// 若用户主动往上拉看历史则保持其位置不打扰。forceBottom=用户主动开标签/点刷新时强制看最新。
-async function refreshSigLog(forceBottom){
-  const box=$('#sigLog'); if(!box)return;
-  let lines; try{lines=await api('/api/signal-log?n=200');}catch(e){return;}
-  const txt=lines.join('\n')||(LANG==='zh'?'暂无信号日志。点 🌅盘前简报 / 🔄盘中复盘 / 🏁收盘对账 触发。':'No signal log yet. Trigger 🌅Brief / 🔄Review / 🏁Close.');
-  if(txt===SIG_LOG_CACHE&&!forceBottom)return;   // 没有新内容就别动滚动条
-  const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<24;
-  const prevTop=box.scrollTop;
-  box.textContent=txt; SIG_LOG_CACHE=txt;
-  box.scrollTop=(forceBottom||atBottom)?box.scrollHeight:prevTop;
-}
-async function loadSignal(){
-  await refreshSigLog(true);   // 主动打开/刷新 → 直接跳到最新
-  refreshSigStatus(); loadSigWatchlist(); refreshSigMonitor(); refreshSigFeed();
-}
-let SIG_RUNNING=false;
-async function refreshSigStatus(){
-  let s; try{s=await api('/api/signal-status');}catch(e){return;}
-  SIG_RUNNING=!!s.running;
-  const el=$('#sigStatus');
-  el.innerHTML = s.running ? `🟢 ${LANG==='zh'?'盯盘中':'Watching'} (PID ${s.pid})` : `⚪ ${LANG==='zh'?'已停止':'Stopped'}`;
-  el.style.color = s.running ? '#3fb950' : 'var(--muted)';
-  $('#btnSigStart').disabled=s.running; $('#btnSigStop').disabled=!s.running;
-  renderSigSched();
-}
-// ── 日程时间线：高亮下一个任务；盘中扫描窗口内且 scheduler 在跑 → live ──
-function nyClock(){try{return new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));}catch(e){return new Date();}}
-function renderSigSched(){
-  const box=$('#sigSched'); if(!box)return;
-  const zh=LANG==='zh', ny=nyClock(), mins=ny.getHours()*60+ny.getMinutes();
-  const inMkt=mins>=570&&mins<960;
-  const items=[
-    {t:510,html:`🌅 <b>08:30</b> ${zh?'盘前简报':'Premarket brief'}`},
-    {t:630,html:`🔄 <b>10:30</b> ${zh?'开盘复盘':'Open+1h review'}`},
-    {t:970,html:`🏁 <b>16:10</b> ${zh?'收盘对账':'Close recap'}`},
-  ];
-  const nextIdx=items.findIndex(i=>i.t>mins);
-  const chips=items.map((i,ix)=>`<span class="schchip ${ix===nextIdx?'next':(i.t<=mins?'done':'')}">${i.html}</span>`);
-  const monCls=inMkt&&SIG_RUNNING?'live':(inMkt?'next':(mins>=960?'done':''));
-  const monTag=inMkt&&SIG_RUNNING?(zh?' · 进行中':' · live'):'';
-  chips.splice(1,0,`<span class="schchip ${monCls}">📡 <b>09:30–16:00</b> ${zh?'每 5 分钟盯盘扫描':'scan every 5 min'}${monTag}</span>`);
-  chips.push(`<span class="schchip">🕒 <b>${String(ny.getHours()).padStart(2,'0')}:${String(ny.getMinutes()).padStart(2,'0')}</b> ET</span>`);
-  box.innerHTML=chips.join('');
-}
-// ── 盯盘行情磁贴（数据来自 monitor tick 的快照，按 |涨跌| 排序）──
-async function refreshSigMonitor(){
-  const box=$('#sigGrid'); if(!box)return;
-  let d; try{d=await api('/api/signal-monitor');}catch(e){return;}
-  const zh=LANG==='zh';
-  $('#sigTickTs').textContent = d&&d.last_tick ? (zh?'上次扫描 ':'last scan ')+d.last_tick.slice(11,16)+' ET' : '';
-  const syms=Object.entries((d&&d.symbols)||{});
-  if(!syms.length){
-    box.innerHTML=`<div class="empty" style="grid-column:1/-1">${zh
-      ?'还没有盯盘数据 — 点「📡 立即扫描」试一次；▶ Start 后开盘时段每 5 分钟自动刷新。'
-      :'No monitor data yet — hit “📡 Scan now” once; after ▶ Start it auto-scans every 5 min during market hours.'}</div>`;
-    return;
-  }
-  syms.sort((a,b)=>Math.abs(b[1].chg||0)-Math.abs(a[1].chg||0));
-  box.innerHTML=syms.map(([s,v])=>{
-    const vw=(v.vwap&&v.price)?((v.price/v.vwap-1)*100):null;
-    const meta=[`RSI ${Math.round(v.rsi||0)}`,`Vol ${(v.vol||0).toFixed(1)}x`,
-      vw!==null?`VWAP${vw>=0?'+':''}${vw.toFixed(1)}%`:'',
-      `<span class="pos">${zh?'买':'B'}${v.buy??0}</span>/<span class="neg">${zh?'卖':'S'}${v.sell??0}</span>`]
-      .filter(Boolean).map(x=>`<span>${x}</span>`).join('');
-    return `<div class="sigtile${v.alerts_today?' hot':''}" title="${zh?'日内':'Day'} ${v.day_low??'—'} ~ ${v.day_high??'—'}">
-      <div class="r1"><span class="sym">${s}</span><span class="chg ${cls(v.chg)}">${v.chg>=0?'+':''}${(v.chg??0).toFixed(2)}%</span></div>
-      <div class="px">$${(v.price??0).toFixed(2)}</div>
-      <div class="meta">${meta}</div>
-      ${v.last_alert?`<div class="lastal">${v.last_alert}</div>`:''}
-    </div>`;}).join('');
-}
-// ── 警报流（web 全量：push+info；Telegram 只收 push 级）──
-async function refreshSigFeed(){
-  const box=$('#sigFeed'); if(!box)return;
-  let list; try{list=await api('/api/signal-alerts?n=60');}catch(e){return;}
-  const zh=LANG==='zh';
-  if(!list||!list.length){
-    box.innerHTML=`<div class="empty">${zh
-      ?'暂无警报 — 盘中触发突破 / 放量 / VWAP 等事件时会出现在这里，强信号同步推 Telegram。'
-      :'No alerts yet — breakout / volume / VWAP events show up here; strong ones also push to Telegram.'}</div>`;
-    return;
-  }
-  box.innerHTML=list.map(a=>`<div class="alrow ${a.level==='push'?'push':''}">
-    <span class="t">${(a.ts_iso||'').slice(5,16).replace('T',' ')}</span>
-    <div class="body"><div class="ttl">${a.emoji||'🔔'} <b>${a.sym||''}</b> ${a.title||''}
-      <span class="${cls(a.chg)}">${a.chg!=null?(a.chg>=0?'+':'')+(+a.chg).toFixed(2)+'%':''}</span></div>
-      ${a.detail?`<div class="det">${a.detail}</div>`:''}</div></div>`).join('');
-}
-function pollSig(times=6,gap=600){let i=0;const t=setInterval(()=>{refreshSigStatus();if(++i>=times)clearInterval(t);},gap);refreshSigStatus();}
-$('#btnSigStart').onclick=async()=>{const b=$('#btnSigStart');b.disabled=true;b.textContent='▶ Starting…';try{await api('/api/signal-scheduler/start',{method:'POST'});}catch(e){}pollSig();setTimeout(()=>{b.textContent='▶ Start';},2000);};
-$('#btnSigStop').onclick=async()=>{if(!confirm('Stop the signal reporter scheduler?'))return;const b=$('#btnSigStop');b.disabled=true;b.textContent='■ Stopping…';try{await api('/api/signal-scheduler/stop',{method:'POST'});}catch(e){}pollSig();setTimeout(()=>{b.textContent='■ Stop';},2000);};
-const sigRun=(mode,note)=>async()=>{await api('/api/signal-run/'+mode,{method:'POST'});$('#sigLog').textContent=note;};
-$('#btnBrief').onclick=sigRun('brief',   LANG==='zh'?'🌅 盘前简报生成中（含 AI+搜索）… 每只约 30-60s，稍后点「🔄 刷新日志」看结果。':'🌅 Premarket brief running (AI+search)… ~30-60s per symbol, reload the log shortly.');
-$('#btnReview').onclick=sigRun('review', LANG==='zh'?'🔄 开盘1小时复盘生成中（需当天已有盘前简报）… ~30-60s/只，稍后刷新日志。':'🔄 Open+1h review running (needs today\'s brief)… ~30-60s per symbol, reload the log shortly.');
-$('#btnClose').onclick=sigRun('close',   LANG==='zh'?'🏁 收盘对账生成中（对比盘前/盘中预测 vs 实际）… ~30-60s/只，稍后刷新日志。':'🏁 Close recap running (predictions vs actual)… ~30-60s per symbol, reload the log shortly.');
-$('#btnScan').onclick=async()=>{const b=$('#btnScan');b.disabled=true;
-  try{await api('/api/signal-run/monitor',{method:'POST'});}catch(e){b.disabled=false;return;}
-  $('#sigLog').textContent=LANG==='zh'?'📡 盯盘扫描中… 每支约 2-3s，完成后行情磁贴与警报流自动刷新。':'📡 Scanning… ~2-3s per symbol; tiles & alert feed refresh when done.';
-  let n=0;const t=setInterval(()=>{refreshSigMonitor();refreshSigFeed();refreshSigLog(false);if(++n>=6){clearInterval(t);b.disabled=false;}},5000);};
-$('#btnSigReload').onclick=loadSignal;
-
 // ── signal watchlist editor ──
 let SIG_WL=[];
 function renderSigWl(){
@@ -1564,31 +2049,435 @@ $('#btnSigWlAdd').onclick=sigWlAdd;
 $('#sigWlInput').addEventListener('keydown',e=>{if(e.key==='Enter')sigWlAdd();});
 $('#btnSigWlSave').onclick=async()=>{try{const r=await api('/api/signal-watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tickers:SIG_WL})});SIG_WL=r.tickers||SIG_WL;renderSigWl();$('#sigWlMsg').textContent='✓ '+(LANG==='zh'?'已保存 ':'Saved ')+SIG_WL.length+(LANG==='zh'?' 支':' tickers');}catch(e){$('#sigWlMsg').textContent='✗ '+e;}};
 
-async function loadBt(){const b=await api('/api/backtest');renderBt(b);}
-function renderBt(b){
-  $('#btStatus').textContent=b.status;
-  if(b.result&&!b.result.error){const r=b.result;$('#btResult').innerHTML=
-    `<div class="grid" style="grid-template-columns:repeat(4,1fr)"><div class="card c-blue"><div class="lbl">${r.days}d $/day</div><div class="val ${cls(r.per_day)}">$${r.per_day}</div></div>
-     <div class="card c-green"><div class="lbl">Win rate</div><div class="val">${r.win}%</div></div>
-     <div class="card c-red"><div class="lbl">Max DD</div><div class="val">${r.dd}%</div></div>
-     <div class="card c-purple"><div class="lbl">Trades</div><div class="val">${r.trades}</div></div></div>`;}
-  else if(b.result&&b.result.error){$('#btResult').innerHTML=`<div class="empty">Error: ${b.result.error}</div>`;}
+// ── 三日概率预测面板 ─────────────────────────────────────────────────────────
+// Merged from the Stock Probability Prediction Platform. The rendering rule that
+// matters: the QUALITY VERDICT is rendered first and at full contrast, and the
+// probabilities are dimmed whenever that verdict says they are not evidence.
+// Measured on this project's data the model does not beat a majority-class
+// baseline, so a 98% reading is routine and must never look like a conviction.
+const zh = () => LANG === 'zh';
+const fcNum = (v, d = 2, suf = '') =>
+  (v === null || v === undefined || Number.isNaN(v)) ? '—' : (+v).toFixed(d) + suf;
+// The quote characters are written as \u escapes on purpose. test_web_smoke's
+// declaration scanner strips strings but does not recognise regex literals, so
+// a bare " inside /[...]/ opens a string it never closes and every function
+// declared after this line becomes invisible to the check. Same behaviour, one
+// less way to silently blind the test that guards this file.
+const fcEsc = s => String(s == null ? '' : s).replace(/[&<>\u0022\u0027]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\u0022':'&quot;','\u0027':'&#39;'}[c]));
+
+function fcVerdict(q) {
+  const st = (q && q.status) || 'unavailable';
+  if (st === 'research_only') return {cls:'ok', icon:'🔬',
+    title: zh() ? '通过质量门 · 仅供研究' : 'Passed quality gates · research only'};
+  // Abstained is not a failure state. The model measured its own direction
+  // skill, found none, and is reporting the historical base rate instead of a
+  // view. That output is honest, so it is not dimmed — it is labelled.
+  if (st === 'no_opinion') return {cls:'warn', icon:'🚫',
+    title: zh() ? '模型已弃权 · 下面是历史基准率，不是判断'
+                : 'Model abstained · base rate below, not a view'};
+  if (st === 'insufficient') return {cls:'warn', icon:'⚠️',
+    title: zh() ? '未通过质量门 · 概率不构成证据' : 'Failed quality gates · not evidence'};
+  return {cls:'bad', icon:'⛔',
+    title: zh() ? '无法预测' : 'No forecast'};
 }
-$('#btnBt').onclick=async()=>{await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:+$('#btDays').value})});
-  $('#btStatus').textContent='running… (~2-4 min)';const t=setInterval(async()=>{const b=await api('/api/backtest');renderBt(b);if(b.status!=='running')clearInterval(t);},5000);};
+
+function fcProbs(p, dim) {
+  if (!p) return '';
+  const src = p.abstained
+    ? (zh() ? '历史基准率（模型无方向技能，已弃权）' : 'historical base rate — model abstained')
+    : (zh() ? '模型方向分布' : 'model direction distribution');
+  const cell = (k, label, val, color) => `<div class="fc-prob ${k}">
+      <div class="pl">${label}</div><div class="pv">${fcNum(val,2,'%')}</div>
+      <div class="fc-bar"><i style="width:${Math.max(0,Math.min(100,+val||0))}%;background:${color}"></i></div>
+    </div>`;
+  return `<div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">${src}</div>
+  <div class="fc-probs${dim ? ' muted' : ''}">
+    ${cell('up', zh()?'上涨':'UP', p.up_percent, 'var(--green)')}
+    ${cell('flat', zh()?'横盘':'FLAT', p.flat_percent, 'var(--muted)')}
+    ${cell('down', zh()?'下跌':'DOWN', p.down_percent, 'var(--red)')}
+  </div>`;
+}
+
+function fcMetrics(d) {
+  const b = d.backtest || {}, q = d.quality || {}, sk = q.skill || {}, p = d.probabilities || {};
+  const margin = sk.margin_percentage_points;
+  const marginCls = margin === null || margin === undefined ? '' : (margin > 0 ? 'good' : 'bad');
+  const cov = b.interval_coverage_percent;
+  // q10/q90 is an 80% band by construction, so coverage far from 80 means the
+  // interval is miscalibrated on this window — worth colouring, not hiding.
+  const covCls = cov === null || cov === undefined ? '' : (cov >= 70 ? 'good' : cov >= 55 ? 'warn' : 'bad');
+  const m = (k, v, cls) => `<div class="fc-m"><div class="k">${k}</div><div class="v ${cls||''}">${v}</div></div>`;
+  return `<div class="fc-metrics">
+    ${m(zh()?'验证样本':'SAMPLES', b.samples ?? '—', (b.samples||0) >= 10 ? 'good' : 'warn')}
+    ${m(zh()?'方向准确率':'DIRECTION', fcNum(b.direction_accuracy_percent,2,'%'))}
+    ${m(zh()?'基线':'BASELINE', fcNum(b.baseline_accuracy_percent,2,'%'))}
+    ${m(zh()?'技能差':'SKILL', margin===null||margin===undefined?'—':(margin>0?'+':'')+fcNum(margin,2,'pp'), marginCls)}
+    ${m(zh()?'区间覆盖':'COVERAGE', fcNum(cov,2,'%'), covCls)}
+    ${m(zh()?'平均绝对误差':'MAE', fcNum(b.mae_percent,2,'%'))}
+    ${m('BRIER', fcNum(b.brier_score,4))}
+    ${m(zh()?'概率标定':'CALIBRATION',
+        (b.calibration && b.calibration.source === 'out_of_sample_walk_forward')
+          ? (zh()?'样本外':'out-of-sample')
+          : (zh()?'样本内·弱':'in-sample, weak'),
+        (b.calibration && b.calibration.source === 'out_of_sample_walk_forward') ? 'good' : 'warn')}
+    ${m(zh()?'样本外命中率':'OOS HIT RATE', fcNum(p.confidence_percent,2,'%'))}
+  </div>`;
+}
+
+// Evaluated per render, not once at load: applyLang() can switch LANG after
+// this script has run, and a captured array would keep the old language.
+const fcFactorLabels = () => [
+  ['five_minute_score', zh()?'5分钟动量':'5-min momentum'],
+  ['news_score',        zh()?'新闻情绪':'News (FinBERT)'],
+  ['options_score',     zh()?'期权持仓':'Options OI'],
+  ['flow_score',        zh()?'资金流':'Capital flow'],
+  ['short_score',       zh()?'做空压力':'Short pressure'],
+];
+
+function fcFactors(ctx) {
+  if (!ctx || !ctx.scores) return '';
+  const contrib = ctx.contributions_pp || {};
+  const rows = fcFactorLabels().map(([key, label]) => {
+    const v = ctx.scores[key];
+    if (v === null || v === undefined) {
+      return `<div class="fc-f"><div class="fn">${label}</div>
+        <div class="ft"></div><div class="fv na">${zh()?'无数据':'no data'}</div></div>`;
+    }
+    // Bipolar bar: the centre is 0, width is |score|, side is the sign.
+    const pct = Math.min(50, Math.abs(v) * 50);
+    const side = v >= 0 ? `left:50%;width:${pct}%;background:var(--green)`
+                        : `right:50%;width:${pct}%;background:var(--red)`;
+    const c = contrib[key];
+    return `<div class="fc-f"><div class="fn">${label}</div>
+      <div class="ft"><i style="${side}"></i></div>
+      <div class="fv">${(v>=0?'+':'')+fcNum(v,3)}${c===undefined?'':' · '+(c>=0?'+':'')+fcNum(c,3)+'pp'}</div></div>`;
+  }).join('');
+  const adj = ctx.terminal_adjustment_pp;
+  return `<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:4px 0 7px">
+      ${zh()?'上下文因子 · 分数 · 对终点的贡献':'Context factors · score · contribution'}
+    </div><div class="fc-factors">${rows}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:6px">
+      ${zh()?'终点调整':'Terminal adjustment'}: <b style="color:var(--text)">${(adj>=0?'+':'')+fcNum(adj,3)}pp</b>
+      · ${zh()?'参数版本':'params'} <b style="color:var(--text)">${fcEsc(ctx.model_version||'—')}</b>
+      ${ctx.user_approved_version ? '· <span style="color:var(--green)">'+(zh()?'用户已批准':'user-approved')+'</span>' : ''}
+    </div>`;
+}
+
+// ── 走势图：历史实盘K线接上预测区间 ────────────────────────────────────────
+// Ported from the platform's chart card. The point of drawing it rather than
+// printing three terminal numbers is that the SHAPE carries information the
+// numbers do not: whether the cone opens slowly or blows out, whether the median
+// path bends or runs straight, and where the projection starts relative to where
+// price actually is. When the model has abstained the cone is drawn muted and
+// dashed, because then it is a picture of the spread, not of a view.
+function fcChart(d) {
+  const hist = d.recent_30m || [], fc = d.forecast_30m || [];
+  if (hist.length < 2 || fc.length < 2) return '';
+  const W = 1000, H = 210, PAD = 8;
+  const lows = hist.map(b => b.low).concat(fc.map(b => b.q10));
+  const highs = hist.map(b => b.high).concat(fc.map(b => b.q90));
+  let lo = Math.min.apply(null, lows), hi = Math.max.apply(null, highs);
+  if (!(hi > lo)) return '';
+  const padY = (hi - lo) * 0.06; lo -= padY; hi += padY;
+  const n = hist.length + fc.length;
+  const X = i => PAD + i / (n - 1) * (W - 2 * PAD);
+  const Y = v => PAD + (hi - v) / (hi - lo) * (H - 2 * PAD);
+  const pt = (i, v) => X(i).toFixed(1) + ',' + Y(v).toFixed(1);
+
+  const histLine = hist.map((b, i) => pt(i, b.close)).join(' ');
+  const off = hist.length;
+  // The cone is one polygon: q90 forward, then q10 back, closed at the join so
+  // it starts from the last real close rather than floating away from it.
+  const last = hist[hist.length - 1].close;
+  const upper = fc.map((b, i) => pt(off + i, b.q90));
+  const lower = fc.map((b, i) => pt(off + i, b.q10)).reverse();
+  const band = [pt(off - 1, last)].concat(upper, lower).join(' ');
+  const medLine = [pt(off - 1, last)].concat(fc.map((b, i) => pt(off + i, b.q50))).join(' ');
+
+  const abst = (d.quality || {}).status === 'no_opinion';
+  const tone = abst ? 'var(--muted)' : 'var(--primary)';
+  const term = fc[fc.length - 1];
+  const move = (term.q50 / last - 1) * 100;
+  const divX = X(off - 1).toFixed(1);
+  const lbl = (v, y, anchor, color) =>
+    `<text x="${anchor === 'end' ? W - PAD - 2 : PAD + 2}" y="${y}" text-anchor="${anchor}" ` +
+    `font-size="11" fill="${color}" font-family="inherit">${v}</text>`;
+
+  // Every interpolation below resolves to a plain value first. test_web_smoke's
+  // scanner concatenates adjacent ${...} blocks after stripping the literal text
+  // between them, so `${PAD}" width="${(W - ...)}` becomes `PAD  (W - ...` and
+  // reads as a call to PAD(). Precomputing keeps the shape it can parse.
+  const bandX = divX, bandY = PAD;
+  const bandW = (W - PAD - divX).toFixed(1), bandH = H - 2 * PAD;
+  const svgLabel = zh() ? '历史行情与三日预测区间' : 'History and three-day forecast band';
+  return `<div style="margin:2px 0 12px">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+         aria-label="${svgLabel}"
+         style="width:100%;height:210px;display:block">
+      <rect x="${bandX}" y="${bandY}" width="${bandW}" height="${bandH}"
+            fill="var(--card2)" opacity="0.35"/>
+      <polygon points="${band}" fill="${tone}" opacity="${abst ? 0.10 : 0.16}"/>
+      <polyline points="${medLine}" fill="none" stroke="${tone}" stroke-width="2"
+                ${abst ? 'stroke-dasharray="6 4"' : ''} vector-effect="non-scaling-stroke"/>
+      <polyline points="${histLine}" fill="none" stroke="var(--text)" stroke-width="1.6"
+                vector-effect="non-scaling-stroke"/>
+      <line x1="${divX}" y1="${PAD}" x2="${divX}" y2="${H - PAD}" stroke="var(--border)"
+            stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>
+      ${lbl(hi.toFixed(2), PAD + 11, 'start', 'var(--muted)')}
+      ${lbl(lo.toFixed(2), H - PAD - 3, 'start', 'var(--muted)')}
+      ${lbl(term.q90.toFixed(2), Y(term.q90) - 3, 'end', 'var(--muted)')}
+      ${lbl(term.q10.toFixed(2), Y(term.q10) + 11, 'end', 'var(--muted)')}
+    </svg>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-top:5px">
+      <span><i style="display:inline-block;width:14px;height:2px;background:var(--text);vertical-align:middle"></i>
+        ${zh() ? '近三日实际' : 'last 3 sessions'}</span>
+      <span><i style="display:inline-block;width:14px;height:2px;background:${tone};vertical-align:middle"></i>
+        ${zh() ? '预测中位 q50' : 'median q50'} ${move >= 0 ? '+' : ''}${move.toFixed(2)}%</span>
+      <span><i style="display:inline-block;width:14px;height:8px;background:${tone};opacity:.22;vertical-align:middle"></i>
+        ${zh() ? '80% 区间 q10–q90' : '80% band q10-q90'}</span>
+      <span style="flex:1 1 auto"></span>
+      <span>${zh() ? '虚线右侧为预测' : 'projection right of the divider'}${abst ? (zh() ? ' · 已弃权，仅看形状' : ' · abstained, shape only') : ''}</span>
+    </div>
+  </div>`;
+}
+
+// ── 历史预测 vs 后来真实走势 ──────────────────────────────────────────────
+// The settlement loop stores each frozen forecast alongside the bars that later
+// arrived. Until a forecast's three days have passed there is nothing to draw,
+// so this renders only settled runs and stays silent otherwise.
+function fcHistoryStrip(history) {
+  const settled = (history || []).filter(r => r && r.learning
+    && Array.isArray(r.learning.actual_path) && r.learning.actual_path.length >= 4);
+  if (!settled.length) return '';
+  const cell = run => {
+    const path = run.learning.actual_path;
+    const vals = path.map(p => p.predicted_q50).concat(path.map(p => p.actual_close));
+    let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    if (!(hi > lo)) return '';
+    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    const X = i => (i / (path.length - 1) * 100).toFixed(1);
+    const Y = v => (28 - (v - lo) / (hi - lo) * 26).toFixed(1);
+    const pred = path.map((p, i) => X(i) + ',' + Y(p.predicted_q50)).join(' ');
+    const act = path.map((p, i) => X(i) + ',' + Y(p.actual_close)).join(' ');
+    const hit = run.learning.direction_hit;
+    return `<div style="min-width:96px">
+      <svg viewBox="0 0 100 30" preserveAspectRatio="none" style="width:100%;height:34px;display:block">
+        <polyline points="${pred}" fill="none" stroke="var(--primary)" stroke-width="1.4"
+                  stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>
+        <polyline points="${act}" fill="none" stroke="var(--${hit ? 'green' : 'red'})"
+                  stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+      </svg>
+      <div style="font-size:9.5px;color:var(--muted);text-align:center;margin-top:2px">
+        ${fcEsc(String(run.forecast_day || '').slice(5))}
+        ${run.learning.signed_error_percentage_points >= 0 ? '+' : ''}${fcNum(run.learning.signed_error_percentage_points, 1, 'pp')}</div>
+    </div>`;
+  };
+  return `<div style="margin-top:10px">
+    <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">
+      ${zh() ? '已结算：冻结预测 虚线 vs 真实走势 实线' : 'Settled: frozen forecast dashed vs realized solid'}</div>
+    <div style="display:flex;gap:9px;overflow-x:auto;padding-bottom:3px">${settled.slice(-8).map(cell).join('')}</div>
+  </div>`;
+}
+
+function fcRender(d) {
+  const box = $('#fcBody');
+  if (!d) { box.innerHTML = ''; return; }
+  if (!d.ok) {
+    const e = d.error || {};
+    box.innerHTML = `<div class="fc-verdict bad"><div class="vh"><span class="vt">⛔ ${zh()?'无法预测':'No forecast'}</span>
+      <span class="vs">${fcEsc(e.code||'')}</span></div>
+      <ul><li>${fcEsc(e.message||(zh()?'未知错误':'unknown error'))}</li>
+      ${d.coverage ? `<li>${zh()?'数据覆盖':'Coverage'}: ${d.coverage.sessions} ${zh()?'个交易日':'sessions'} / ${d.coverage.bars} ${zh()?'根K线':'bars'}</li>` : ''}
+      </ul></div>`;
+    return;
+  }
+  const q = d.quality || {}, v = fcVerdict(q);
+  const dim = q.status !== 'research_only' && q.status !== 'no_opinion';
+  const term = (d.forecast_30m || []).slice(-1)[0] || {};
+  const reasons = (q.reasons || []).map(r => `<li>${fcEsc(r)}</li>`).join('');
+  box.innerHTML = `
+    <div class="fc-verdict ${v.cls}">
+      <div class="vh"><span class="vt">${v.icon} ${v.title}</span>
+        <span class="vs">${fcEsc(d.symbol)} · ${zh()?'基准':'as of'} ${fcEsc(String(d.market_as_of||'').slice(0,16).replace('T',' '))}
+        · ${zh()?'模型':'model'} ${fcEsc((d.model||{}).version||'—')}</span></div>
+      <ul>${reasons}</ul>
+    </div>
+    ${fcChart(d)}
+    ${fcProbs(d.probabilities, dim)}
+    ${fcMetrics(d)}
+    <div class="fc-metrics">
+      <div class="fc-m"><div class="k">${zh()?'终点 q10':'TERMINAL q10'}</div><div class="v">${fcNum(term.q10,2)}</div></div>
+      <div class="fc-m"><div class="k">${zh()?'终点 q50':'TERMINAL q50'}</div><div class="v">${fcNum(term.q50,2)}</div></div>
+      <div class="fc-m"><div class="k">${zh()?'终点 q90':'TERMINAL q90'}</div><div class="v">${fcNum(term.q90,2)}</div></div>
+      <div class="fc-m"><div class="k">${zh()?'训练窗口':'TRAINING'}</div><div class="v" style="font-size:12px">${(d.model||{}).training_sessions||'—'} ${zh()?'个交易日':'sessions'}</div></div>
+      <div class="fc-m"><div class="k">${zh()?'终点时间':'HORIZON END'}</div><div class="v" style="font-size:11.5px">${fcEsc(String(term.time||'').slice(0,16).replace('T',' '))}</div></div>
+    </div>
+    ${fcFactors(d.context)}`;
+}
+
+function fcScanRender(p) {
+  const box = $('#fcScanBody');
+  const rows = [].concat(p.starred_results || [], p.market_results || []);
+  // Two stop/target pairs per row on purpose. The ATR pair is what the scanner
+  // has always emitted; the model pair is the symbol's own excursion
+  // climatology. Measured over 4,980 purged origins the ATR stop is hit 72.9%
+  // of the time inside its own three-day horizon and the climatology 15.1%, so
+  // they are shown together until that difference has been watched live.
+  const pair = (a, b) => (a === null || a === undefined) && (b === null || b === undefined)
+    ? '—'
+    : `<span style="color:var(--muted)">${fcNum(a,2,'%')}</span>` +
+      `<span style="opacity:.5"> → </span>` +
+      `<span style="color:var(--text)">${fcNum(b,2,'%')}</span>`;
+  const tbl = rows.length ? `<table class="fc-rows">
+    <tr><th>${zh()?'代码':'SYM'}</th><th>${zh()?'状态':'STATUS'}</th>
+        <th style="text-align:right">${zh()?'综合分':'SCORE'}</th>
+        <th style="text-align:right">${zh()?'入场区':'ENTRY'}</th>
+        <th style="text-align:right">${zh()?'止损 ATR→模型':'STOP ATR→MODEL'}</th>
+        <th style="text-align:right">${zh()?'目标 ATR→模型':'TARGET ATR→MODEL'}</th>
+        <th style="text-align:right">${zh()?'实测触发':'HIT'}</th></tr>
+    ${rows.map(r => {
+      const pm = r.plan_model || {}, pc = r.plan_comparison || {};
+      const hit = (pm.realized || {}).stop_hit_percent;
+      return `<tr><td class="sy">${fcEsc(r.symbol)}
+        <span style="color:var(--muted);font-size:10px;font-weight:400">${r.origin==='starred'?(zh()?'关注':'starred'):(zh()?'候选':'discovery')}</span></td>
+      <td><span class="st ${fcEsc(r.status)}">${fcEsc(r.status)}</span></td>
+      <td style="text-align:right">${fcNum(r.score,2)}</td>
+      <td style="text-align:right;font-size:11px;color:var(--muted)">${r.plan&&r.plan.entry_low?fcNum(r.plan.entry_low,2)+'–'+fcNum(r.plan.entry_high,2):'—'}</td>
+      <td style="text-align:right;font-size:11px">${pm.abstained?'<span style="color:var(--muted)">'+(zh()?'样本不足':'too few')+'</span>':pair(pc.atr_stop_distance_percent, pm.stop_percent)}</td>
+      <td style="text-align:right;font-size:11px">${pm.abstained?'—':pair(pc.atr_target_distance_percent, pm.target_percent)}</td>
+      <td style="text-align:right;font-size:11px;color:var(--muted)">${hit===undefined||hit===null?'—':fcNum(hit,1,'%')}</td>
+    </tr>`;}).join('')}</table>
+    <div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:7px">
+      ${zh()
+        ? '止损/目标给出两套：左为扫描器原有的 ATR 口径，右为该标的自身三日实际波动的经验分位（止损 q10、目标 q50）。样本外实测：ATR 止损在三日窗口内被打掉 72.9%（83个标的无一接近合理值），分位口径 15.1%（64/83 落在 ±5pp）。「实测触发」是该标的自己的历史触发率。并列展示，未替换。'
+        : 'Two stop/target pairs: left is the scanner\u2019s existing ATR arithmetic, right is the symbol\u2019s own three-day excursion quantiles \u2014 stop q10, target q50. Out of sample the ATR stop is hit 72.9% of the time inside its own horizon \u2014 0 of 83 symbols near a sensible rate; the quantile stop 15.1%, with 64/83 within 5pp. \u201cHIT\u201d is this symbol\u2019s own realized rate. Shown side by side, not substituted.'}
+    </div>` : '';
+  const out = (p.market_universe || {}).outcome || {};
+  const by = out.by_status || {};
+  const blockers = (out.top_blockers || []).map(b => `<li>${fcEsc(b[0])} × ${b[1]}</li>`).join('');
+  // An empty discovery list is the normal outcome under the skill gate, so it
+  // gets an explanation rather than blank space.
+  const why = (p.market_results || []).length ? '' : `<div class="fc-empty">
+      ${zh()?'动态候选池本次没有通过质量门的标的':'No discovery candidate cleared the gates'}
+      — ${Object.entries(by).map(([k,v])=>k+' × '+v).join(' · ') || '—'}
+      ${blockers ? `<ul style="margin:6px 0 0;padding-left:16px">${blockers}</ul>` : ''}
+    </div>`;
+  box.innerHTML = tbl + why +
+    ((p.warnings || []).length ? `<div class="fc-empty">${p.warnings.slice(0,5).map(fcEsc).join('<br>')}</div>` : '');
+  $('#fcScanTs').textContent = (p.daily_cache && p.daily_cache.hit ? (zh()?'当日缓存 · ':'cached · ') : '')
+    + String(p.generated_at || '').slice(0, 16).replace('T', ' ');
+}
+
+function fcOptRender(sym, st, learning, history) {
+  const box = $('#fcOptBody');
+  const l = learning || {};
+  const head = `<div class="fc-metrics">
+    <div class="fc-m"><div class="k">${zh()?'已结算':'SETTLED'}</div><div class="v">${l.samples ?? 0}</div></div>
+    <div class="fc-m"><div class="k">${zh()?'方向命中':'DIRECTION'}</div><div class="v">${fcNum(l.direction_accuracy_percent,2,'%')}</div></div>
+    <div class="fc-m"><div class="k">${zh()?'区间覆盖':'COVERAGE'}</div><div class="v">${fcNum(l.interval_coverage_percent,2,'%')}</div></div>
+    <div class="fc-m"><div class="k">MAE</div><div class="v">${fcNum(l.mae_percentage_points,3,'pp')}</div></div>
+  </div>
+  <div style="font-size:11.5px;color:var(--muted);line-height:1.6">
+    ${zh()?'状态':'Status'}: <b style="color:var(--text)">${fcEsc(l.status||'—')}</b>
+    · ${zh()?'启用门槛':'Activation'}: ${fcEsc(l.activation_rule||'—')}
+  </div>`;
+  const strip = fcHistoryStrip(history);
+  const prop = (st || {}).proposal;
+  if (!prop || prop.status !== 'pending') {
+    box.innerHTML = head + strip + `<div class="fc-empty">${zh()
+      ? '当前没有待批准的参数提案。至少 20 个已结算样本、且样本外 MAE 改善 ≥2% 才会生成。'
+      : 'No pending proposal. Needs 20+ settled samples and ≥2% out-of-sample MAE improvement.'}</div>`;
+    return;
+  }
+  const cur = prop.current_parameters || {}, sug = prop.suggested_parameters || {};
+  const deltas = (prop.reasoning || []).map(r =>
+    `<div class="dl">${fcEsc(r.parameter)}: <b>${fcNum(r.from,4)}</b> → <b>${fcNum(r.to,4)}</b>
+       <span style="opacity:.7">(n=${r.sample_count})</span></div>`).join('');
+  const m = prop.metrics || {};
+  box.innerHTML = head + strip + `<div class="fc-prop">
+    <div class="ft">${zh()?'待批准的参数提案':'Pending parameter proposal'} · ${fcEsc(prop.current_version)} → ${fcEsc(prop.suggested_version)}</div>
+    ${deltas}
+    <div class="dl" style="margin-top:6px">${zh()?'估计样本外改善':'Est. OOS improvement'}:
+      <b>${fcNum(m.estimated_improvement_percent,2,'%')}</b> · MAE ${fcNum(m.raw_mae_pp,3)} → ${fcNum(m.estimated_mae_pp,3)} pp</div>
+    <div class="acts">
+      <button class="primary sm" id="btnFcApprove">✓ ${zh()?'批准':'Approve'}</button>
+      <button class="danger sm" id="btnFcReject">✕ ${zh()?'拒绝':'Reject'}</button>
+    </div></div>`;
+  const decide = async approve => {
+    if (!confirm(zh() ? (approve ? '批准并启用新参数版本？' : '拒绝这个提案？')
+                      : (approve ? 'Approve and activate the new version?' : 'Reject this proposal?'))) return;
+    try {
+      await api('/api/signal-proposal/decide', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({proposal_id: prop.proposal_id, approve})});
+      fcLoadOptimizer(sym);
+    } catch (e) { alert('✗ ' + e); }
+  };
+  $('#btnFcApprove').onclick = () => decide(true);
+  $('#btnFcReject').onclick = () => decide(false);
+}
+
+async function fcLoadOptimizer(sym) {
+  try {
+    const [st, hist] = await Promise.all([
+      api('/api/signal-optimizer/' + encodeURIComponent(sym)),
+      api('/api/signal-forecast-history/' + encodeURIComponent(sym) + '?n=20'),
+    ]);
+    fcOptRender(sym, st, hist.learning, hist.history);
+  } catch (e) { $('#fcOptBody').innerHTML = '<div class="fc-empty">✗ ' + fcEsc(e) + '</div>'; }
+}
+
+async function fcRun(force) {
+  const sym = ($('#fcSym').value || '').trim().toUpperCase();
+  if (!sym) { $('#fcSym').focus(); return; }
+  $('#fcBody').innerHTML = '<div class="fc-empty">' +
+    (zh() ? '⏳ 取行情 → 训练 → 走前验证 → 上下文加权… 约 3-6 秒。'
+          : '⏳ Fetching → training → walk-forward → context… 3-6s.') + '</div>';
+  try {
+    const d = await api('/api/signal-forecast/' + encodeURIComponent(sym) + (force ? '?force=1' : ''));
+    fcRender(d);
+    fcLoadOptimizer(sym);
+  } catch (e) { $('#fcBody').innerHTML = '<div class="fc-empty">✗ ' + fcEsc(e) + '</div>'; }
+}
+
+async function fcScan(force) {
+  $('#fcScanBody').innerHTML = '<div class="fc-empty">' +
+    (zh() ? '⏳ 扫描中… 每支约 6-7s（全历史训练 + 波动分位），共约 90s。' : '⏳ Scanning… ~6-7s per symbol, about 90s in total.') + '</div>';
+  try { fcScanRender(await api('/api/signal-scan' + (force ? '?force=1' : ''))); }
+  catch (e) { $('#fcScanBody').innerHTML = '<div class="fc-empty">✗ ' + fcEsc(e) + '</div>'; }
+}
+
+async function fcHealth() {
+  try {
+    const h = await api('/api/signal-forecast-health');
+    const fb = h.finbert && h.finbert.available;
+    $('#fcHealth').innerHTML =
+      `${zh()?'模型':'model'} ${fcEsc((h.model||{}).version||'—')} · FinBERT ` +
+      `<span style="color:var(--${fb?'green':'muted'})">${fb?'on':'off'}</span>` +
+      ` · Tavily <span style="color:var(--${h.tavily_configured?'green':'muted'})">${h.tavily_configured?'on':'off'}</span>` +
+      ` · <span style="color:var(--amber)">actionable=false</span>`;
+  } catch (e) { $('#fcHealth').textContent = ''; }
+}
+
+$('#btnFcRun').onclick = () => fcRun(false);
+$('#btnFcForce').onclick = () => fcRun(true);
+$('#btnFcScan').onclick = () => fcScan(true);
+$('#fcSym').addEventListener('keydown', e => { if (e.key === 'Enter') fcRun(false); });
+fcHealth();
+
+
 
 // init
 (function(){const t=localStorage.getItem('theme')||'dark';$('#selTheme').value=t;$('#selLang').value=LANG;
   document.body.classList.toggle('light',t==='light');
-  document.querySelectorAll('[data-i18n]').forEach(e=>{const m=I18N[LANG]&&I18N[LANG][e.dataset.i18n];if(m)e.textContent=m;});})();
+  document.querySelectorAll('[data-i18n]').forEach(e=>{const m=I18N[LANG]&&I18N[LANG][e.dataset.i18n];if(m)e.textContent=m;});
+  applyPanelLang();})();
 refresh();setInterval(refresh,4000);
 refreshSectors();setInterval(()=>{if(CURTAB==='dash')refreshSectors();},60000);   // 板块总览每分钟刷新（服务端也缓存 60s）
 checkApprovals();   // one-time pending-approvals popup on page open
-// 信号日志在 Signal 标签打开时每 4s 自动 tail 跟随最新（终端 tail -f 体验）
-let SIGPOLL=0;
-setInterval(()=>{if(CURTAB!=='sig')return;refreshSigLog(false);
-  if(++SIGPOLL%3===0){refreshSigMonitor();refreshSigFeed();refreshSigStatus();}},4000);
-{const t=(location.hash||'').slice(1); if(['dash','hist','sig','bt'].includes(t))setTab(t);
+
+{const t=(location.hash||'').slice(1); if(['dash','hist','sig'].includes(t))setTab(t);
  if(t==='settings'||t==='access'){loadSettings().then(()=>{$('#settingsModal').classList.remove('hidden');
    if(t==='access')setTimeout(()=>$('#secAccess').scrollIntoView({block:'start'}),150);});}}
 </script>

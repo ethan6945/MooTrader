@@ -71,45 +71,102 @@ def half_kelly_risk(rows: list[dict]) -> tuple[float | None, str]:
                             f"{len(rows)} trades) → risk_per_trade {risk:.1%}")
 
 
-def half_kelly_proposal(rows: list[dict] | None = None) -> bool:
-    """Enqueue a risk_per_trade proposal if half-Kelly differs materially from
-    the live setting. Returns True if a proposal was enqueued."""
+def half_kelly_candidate(rows: list[dict] | None = None,
+                         lang: str = "zh") -> tuple[dict | None, str]:
+    """The half-Kelly risk_per_trade proposal AS DATA — (candidate, why).
+
+    `candidate` is None whenever there is nothing to propose, and `why` says
+    which of the four reasons it was (warmup / no edge / already there / the
+    backtest says it is worse), because "no proposal" and "no proposal because
+    the backtest rejected it" are different answers and the panel shows both.
+
+    Split out of half_kelly_proposal so the weekly job and the on-demand run in
+    the panel share ONE definition of the gate rather than two that drift.
+
+    `lang` reaches the strings the panel shows. half_kelly_risk's own reasons
+    are already English and stay as they are; only what this function adds on
+    top is translated.
+    """
+    en = lang == "en"
+
+    def L(zh: str, en_: str) -> str:
+        return en_ if en else zh
+
     rows = rows if rows is not None else _recent(None)
     risk, reason = half_kelly_risk(rows)
     if risk is None:
-        log.info("half-Kelly: %s", reason)
-        return False
+        return None, reason
     # Compare against the value actually in force (runtime override beats the
     # frozen .env), so a once-approved change converges instead of re-proposing
     # the same card every week.
     current = runtime_config.risk_per_trade()
     # Only propose on a material change (>= 0.5 percentage point).
     if abs(risk - current) < 0.005:
-        log.info("half-Kelly: %.1f%% ≈ current %.1f%% — no change", risk * 100, current * 100)
-        return False
+        return None, L(f"{risk:.1%} ≈ 当前 {current:.1%} — 无需调整",
+                       f"{risk:.1%} ≈ your current {current:.1%} — no change needed")
     # Backtest-validate on the honest engine — RISK-adjusted: a protective
     # down-size whose $/day dips is allowed if it cuts drawdown more (Calmar↑).
     # A change that worsens risk-adjusted return on either window is dropped. If
-    # the backtest can't run (OpenD hiccup) we still enqueue — Kelly is itself an
+    # the backtest can't run (OpenD hiccup) we still propose — Kelly is itself an
     # evidence-based estimate from real fills — but mark it un-backtested.
     from . import optimizer_ai
     bt = optimizer_ai.backtest_risk_change(risk)
     if bt is not None and not bt["risk_adjusted_ok"]:
-        log.info("half-Kelly: risk_per_trade %.1f%%→%.1f%% worsens risk-adjusted "
-                 "return on backtest — not enqueued", current * 100, risk * 100)
-        return False
+        return None, L(f"risk_per_trade {current:.1%}→{risk:.1%} "
+                       f"在回测上风险调整后更差 — 丢弃",
+                       f"risk_per_trade {current:.1%}→{risk:.1%} is worse on a "
+                       f"risk-adjusted basis in the backtest — dropped")
+    # 2026-08-26: this used to index bt['per_day'][180]. The windows come from
+    # optimizer_ai._VALIDATE_WINDOWS, which has been (60,) since the engine moved
+    # onto OpenD — so every backtested half-Kelly proposal died on a KeyError
+    # inside run_all()'s try, which logged a warning and took the universe review
+    # behind it down with it. Read the windows the backtest actually ran.
     if bt is not None:
-        evidence = (f" — 回测 180d ${bt['per_day'][180]:.1f}/day DD{bt['dd'][180]:.1f}% "
-                    f"vs 当前 ${bt['base_per_day'][180]:.1f}/day DD{bt['base_dd'][180]:.1f}%")
-        tag = "half-Kelly(回测验证)"
+        evidence = L(
+            " — 回测 " + "，".join(
+                f"{w}d ${bt['per_day'][w]:.1f}/天 DD{bt['dd'][w]:.1f}% vs 当前 "
+                f"${bt['base_per_day'][w]:.1f}/天 DD{bt['base_dd'][w]:.1f}%"
+                for w in sorted(bt["per_day"])),
+            " — backtest " + ", ".join(
+                f"{w}d ${bt['per_day'][w]:.1f}/day DD {bt['dd'][w]:.1f}% vs now "
+                f"${bt['base_per_day'][w]:.1f}/day DD {bt['base_dd'][w]:.1f}%"
+                for w in sorted(bt["per_day"])))
+        tag = L("half-Kelly(回测验证)", "half-Kelly (backtested)")
     else:
-        evidence = " — 回测未跑(OpenD?)，依据真实成交 Kelly 估计"
+        evidence = L(" — 回测未跑(OpenD?)，依据真实成交 Kelly 估计",
+                     " — backtest did not run (OpenD?); this is the Kelly "
+                     "estimate from real fills alone")
         tag = "half-Kelly"
+    detail = (f"{tag}: risk_per_trade {current:.1%} → {risk:.1%} "
+              f"— {reason}{evidence}")
+    bt = bt or {}
+    return {
+        "key": "risk_per_trade", "current": current, "value": risk,
+        "source": "kelly", "rationale": f"{reason}{evidence}",
+        "backtested": bool(bt),
+        "per_day": {str(w): round(v, 2) for w, v in bt.get("per_day", {}).items()},
+        "base_per_day": {str(w): round(v, 2)
+                         for w, v in bt.get("base_per_day", {}).items()},
+        "dd": {str(w): round(v, 1) for w, v in bt.get("dd", {}).items()},
+        "n_trades": len(rows),
+        "thin": len(rows) < KELLY_MIN_TRADES,
+        "band": list(runtime_config.ALLOWED_PARAMS["risk_per_trade"]),
+        "detail": detail,
+    }, "ok"
+
+
+def half_kelly_proposal(rows: list[dict] | None = None) -> bool:
+    """Enqueue a risk_per_trade proposal if half-Kelly differs materially from
+    the live setting. Returns True if a proposal was enqueued."""
+    cand, why = half_kelly_candidate(rows)
+    if cand is None:
+        log.info("half-Kelly: %s", why)
+        return False
     approvals.enqueue(
         kind="param_change",
-        detail=f"{tag}: risk_per_trade {current:.1%} → {risk:.1%} — {reason}{evidence}",
-        action=f"Set risk_per_trade = {risk} (live, no restart)",
-        payload={"key": "risk_per_trade", "value": risk},
+        detail=cand["detail"],
+        action=f"Set risk_per_trade = {cand['value']} (live, no restart)",
+        payload={"key": "risk_per_trade", "value": cand["value"]},
     )
     return True
 

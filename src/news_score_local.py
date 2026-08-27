@@ -335,21 +335,14 @@ def _softmax_rows(logits) -> list[list[float]]:
     return out
 
 
-def score_texts(texts: list[str]) -> tuple[int | None, str]:
-    """Aggregate FinBERT bullishness over `texts` → (0-100 score, detail).
+def _infer(texts: list[str]):
+    """Run FinBERT once → (rows, label_index, kind) or (None, detail_string).
 
-    Returns (None, why) whenever it cannot produce a real number — never a
-    neutral 50, because a caller must be able to tell "FinBERT says neutral"
-    from "FinBERT did not run". Those are different facts and only one of them
-    is evidence.
-
-    The mapping is mean(P(positive) - P(negative)) rescaled from [-1, 1] to
-    [0, 100]. Averaging probabilities rather than voting on labels keeps a weak
-    signal weak instead of rounding it into a confident-looking verdict.
+    `rows` is one probability list per input text, in input order. Both public
+    scorers below go through here so a caller asking for per-item detail and a
+    caller asking for the aggregate cannot drift apart in how the model is fed
+    or how its labels are resolved.
     """
-    texts = [t.strip() for t in (texts or []) if t and t.strip()]
-    if not texts:
-        return None, "no text to score"
     ok, why = available()
     if not ok:
         return None, why
@@ -358,9 +351,13 @@ def score_texts(texts: list[str]) -> tuple[int | None, str]:
         return None, _load_failed or "load failed"
     kind, model, tok, id2label = loaded
 
-    pos_i = next((i for i, l in id2label.items() if l.startswith("pos")), None)
-    neg_i = next((i for i, l in id2label.items() if l.startswith("neg")), None)
-    if pos_i is None or neg_i is None:
+    index = {}
+    for i, label in id2label.items():
+        lowered = str(label).lower()
+        for prefix, key in (("pos", "positive"), ("neg", "negative"), ("neu", "neutral")):
+            if lowered.startswith(prefix):
+                index[key] = i
+    if "positive" not in index or "negative" not in index:
         return None, f"unexpected label set {id2label}"
 
     try:
@@ -370,7 +367,7 @@ def score_texts(texts: list[str]) -> tuple[int | None, str]:
                 enc = tok(texts, return_tensors="pt", padding=True,
                           truncation=True, max_length=256)
                 probs = torch.softmax(model(**enc).logits, dim=-1)
-            net = (probs[:, pos_i] - probs[:, neg_i]).mean().item()
+            rows = [[float(v) for v in row] for row in probs]
         else:
             encs = tok.encode_batch(texts)
             feed = {"input_ids": [e.ids for e in encs],
@@ -386,12 +383,65 @@ def score_texts(texts: list[str]) -> tuple[int | None, str]:
                 pass
             logits = model.run(None, feed)[0]
             rows = _softmax_rows([list(map(float, r)) for r in logits])
-            net = sum(r[pos_i] - r[neg_i] for r in rows) / len(rows)
-        score = max(0, min(100, int(round((net + 1.0) * 50.0))))
-        return score, f"finbert/{kind} n={len(texts)} net={net:+.3f}"
+        return (rows, index, kind), ""
     except Exception as e:
         log.warning("FinBERT scoring failed: %s", e)
         return None, f"scoring failed: {e}"
+
+
+def score_texts_detailed(texts: list[str]) -> tuple[list[dict] | None, str]:
+    """Per-text FinBERT probabilities → ([{positive_percent, ...}], detail).
+
+    The signal desk's news pipeline weights each headline by its own sentiment,
+    recency and source tier before aggregating, so it needs the per-item split
+    that `score_texts` averages away. Same model, same load, one inference pass.
+
+    Returns (None, why) when the model did not run, never a neutral placeholder.
+    """
+    texts = [t.strip() for t in (texts or []) if t and t.strip()]
+    if not texts:
+        return None, "no text to score"
+    result, detail = _infer(texts)
+    if result is None:
+        return None, detail
+    rows, index, kind = result
+    out = []
+    for row in rows:
+        positive = row[index["positive"]]
+        negative = row[index["negative"]]
+        neutral = row[index["neutral"]] if "neutral" in index else max(
+            0.0, 1.0 - positive - negative)
+        out.append({
+            "positive_percent": round(positive * 100.0, 4),
+            "neutral_percent": round(neutral * 100.0, 4),
+            "negative_percent": round(negative * 100.0, 4),
+        })
+    return out, f"finbert/{kind} n={len(texts)}"
+
+
+def score_texts(texts: list[str]) -> tuple[int | None, str]:
+    """Aggregate FinBERT bullishness over `texts` → (0-100 score, detail).
+
+    Returns (None, why) whenever it cannot produce a real number — never a
+    neutral 50, because a caller must be able to tell "FinBERT says neutral"
+    from "FinBERT did not run". Those are different facts and only one of them
+    is evidence.
+
+    The mapping is mean(P(positive) - P(negative)) rescaled from [-1, 1] to
+    [0, 100]. Averaging probabilities rather than voting on labels keeps a weak
+    signal weak instead of rounding it into a confident-looking verdict.
+    """
+    texts = [t.strip() for t in (texts or []) if t and t.strip()]
+    if not texts:
+        return None, "no text to score"
+    result, detail = _infer(texts)
+    if result is None:
+        return None, detail
+    rows, index, kind = result
+    pos_i, neg_i = index["positive"], index["negative"]
+    net = sum(r[pos_i] - r[neg_i] for r in rows) / len(rows)
+    score = max(0, min(100, int(round((net + 1.0) * 50.0))))
+    return score, f"finbert/{kind} n={len(texts)} net={net:+.3f}"
 
 
 def score_news(items: list[dict]) -> tuple[int | None, str]:

@@ -23,7 +23,8 @@ from . import (
     adaptive_sizing, ai, ai_validator, approvals, audit, blacklist, breadth,
     clock, cron_state, db, entry_gates, executor, gap_sentinel, history,
     rs_gate,
-    indicators, kill_switch, news_driven, notifier, options_stats, portfolio,
+    indicators, kill_switch, news_driven, notifier, options_stats, param_tune,
+    portfolio,
     regime as regime_mod, risk_manager, runtime_config, sector, self_improve,
     self_review, strategy_momentum, strategy_mr, strategy_pattern,
     tg_approvals,
@@ -1348,7 +1349,15 @@ def _monthly_lever_recheck_job() -> None:
         from . import lever_recheck
         res = lever_recheck.monthly_recheck(days=180)
         notifier.send(lever_recheck.format_telegram(res))
-        enqueued = lever_recheck.apply_suggestions(res)
+        # The Telegram summary is a health check and always goes out. Turning it
+        # into queued parameter changes is tuning, and that is what the switch
+        # governs — otherwise "manual" would be false for one job a month, which
+        # is the worst kind of false: rare enough to be forgotten.
+        if param_tune.auto_enabled():
+            enqueued = lever_recheck.apply_suggestions(res)
+        else:
+            enqueued = []
+            log.info(param_tune.skip_note("lever recheck"))
         if enqueued:
             notifier.send(
                 f"📥 已把 {len(enqueued)} 条 lever 建议放进审批队列 — 在 Telegram/GUI "
@@ -1400,6 +1409,18 @@ def _daily_auto_budget_job() -> None:
 
 def _weekly_autopilot_job() -> None:
     """Monday 20:00 KL (timezone-pinned) — DeepSeek autonomous portfolio manager."""
+    # Everything this job emits is a parameter proposal — every key in
+    # autopilot.GUARDRAILS is one of the tunables — so in manual mode it has
+    # nothing left to do. Its rollback watcher is NOT gated: that one reverts
+    # changes already in force that are hurting, which is protection, not
+    # tuning, and it runs at the top of the self-review either way.
+    if not param_tune.auto_enabled():
+        log.info(param_tune.skip_note("weekly autopilot"))
+        try:
+            cron_state.record_run("weekly_autopilot")
+        except Exception as e:
+            log.warning("autopilot bookkeeping failed: %s", e)
+        return
     log.info("weekly autopilot: starting")
     try:
         from . import autopilot
@@ -1476,32 +1497,51 @@ def _weekly_self_review_job() -> None:
 
     # Evidence-based self-improvement (half-Kelly risk + universe review) → approval
     # queue. Reads real fills directly, so it's independent of the review/notify above.
+    #
+    # PARAM_TUNE_MODE gates the half-Kelly half of this (it proposes a
+    # risk_per_trade change off a backtest) but NOT the universe review, which
+    # proposes dropping a chronic-loser symbol — a watchlist decision, not a
+    # parameter one, and not what the switch is about.
     try:
-        si = self_improve.run_all()
-        log.info("self-improve: kelly_proposed=%s universe_drops=%s",
-                 si.get("kelly_proposed"), si.get("universe_dropped_proposed"))
+        if param_tune.auto_enabled():
+            si = self_improve.run_all()
+            log.info("self-improve: kelly_proposed=%s universe_drops=%s",
+                     si.get("kelly_proposed"), si.get("universe_dropped_proposed"))
+        else:
+            log.info(param_tune.skip_note("half-Kelly"))
+            uni = self_improve.universe_review()
+            log.info("self-improve: universe_drops=%s (half-Kelly skipped)",
+                     uni.get("n_proposed"))
     except Exception as e:
         log.warning("self-improve proposals failed: %s", e)
     # Autonomous AI optimizer — INDEPENDENT step so a review/notify failure
     # doesn't silently skip the one auto path that proposes param changes. Reuses
     # this run's report, else recomputes. No-op without an AI key.
-    try:
-        from . import optimizer_ai
-        rev = report if report is not None else self_review.weekly_review(days=7)
-        n = optimizer_ai.propose_from_review(rev)
-        if n:
-            # Each change already got its own detailed notification from
-            # propose_from_review (auto-applied vs queued); this is just the
-            # weekly summary line. Pre-2026-06-12 it claimed everything was
-            # "待批准", which misled the owner when auto-apply was on.
-            if settings.auto_apply_params:
-                notifier.send(
-                    f"🤖 AI 优化器: {n} 条参数变更通过了回测验证 — "
-                    f"边界内的已自动应用(见上方单独通知), 越界的才会出现在审批队列。")
-            else:
-                notifier.send(f"🤖 AI 优化器提了 {n} 条参数建议 — 待你在 GUI/CLI/Telegram 批准。")
-    except Exception as e:
-        log.warning("weekly optimizer step failed: %s", e)
+    #
+    # PARAM_TUNE_MODE decides whether it runs at all. In manual mode the owner
+    # runs this same chain from the parameter panel, watching the progress and
+    # the measured deltas — standing down here is the whole switch. See
+    # src/param_tune.py.
+    if not param_tune.auto_enabled():
+        log.info(param_tune.skip_note("AI 优化器"))
+    else:
+        try:
+            from . import optimizer_ai
+            rev = report if report is not None else self_review.weekly_review(days=7)
+            n = optimizer_ai.propose_from_review(rev)
+            if n:
+                # Each change already got its own detailed notification from
+                # propose_from_review (auto-applied vs queued); this is just the
+                # weekly summary line. Pre-2026-06-12 it claimed everything was
+                # "待批准", which misled the owner when auto-apply was on.
+                if settings.auto_apply_params:
+                    notifier.send(
+                        f"🤖 AI 优化器: {n} 条参数变更通过了回测验证 — "
+                        f"边界内的已自动应用(见上方单独通知), 越界的才会出现在审批队列。")
+                else:
+                    notifier.send(f"🤖 AI 优化器提了 {n} 条参数建议 — 待你在 GUI/CLI/Telegram 批准。")
+        except Exception as e:
+            log.warning("weekly optimizer step failed: %s", e)
     # Bookkeeping — also independent so it always runs.
     try:
         approvals.purge_resolved()
@@ -1535,6 +1575,17 @@ def _grid_sweep_job(daily: bool) -> None:
     """
     key = "grid_sweep_daily" if daily else "grid_sweep_weekly"
     label = "daily neighborhood walk" if daily else "weekly quick grid"
+    # The sweep exists to enqueue parameter proposals, so in manual mode it has
+    # nothing left to do. record_run() still fires: the job DID reach its slot
+    # and decided, and leaving it unrecorded would make every restart think it
+    # was missed and re-fire the catchup.
+    if not param_tune.auto_enabled():
+        log.info(param_tune.skip_note(f"grid sweep ({label})"))
+        try:
+            cron_state.record_run(key)
+        except Exception as e:
+            log.warning("grid sweep bookkeeping failed: %s", e)
+        return
     log.info("grid sweep (%s): starting", label)
     try:
         from .optimize_system import optimize
