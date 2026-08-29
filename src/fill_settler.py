@@ -413,6 +413,50 @@ def mark_applied(coid: str, qty: int, price: float) -> None:
         _mark_applied_c(c, coid, int(qty), float(qty) * float(price))
 
 
+def mark_externally_booked(coid: str, qty: int, price: float,
+                           *, booked_by: str) -> bool:
+    """Record that ANOTHER path already put this order's fill in the ledger.
+
+    Sets filled_qty and applied_qty together, so the settler sees an order with
+    nothing left to apply rather than a fill it is about to book a second time.
+
+    Not `mark_applied`: that one goes through _mark_applied_c, whose guard is
+    `applied_qty + n <= filled_qty`. It is for a caller that applied a fill the
+    poll had ALREADY recorded. Here the poll never happened — filled_qty is 0
+    and the evidence came from the broker's order list instead — so the same
+    call would raise "applied_qty would exceed filled_qty". Both numbers have to
+    move, and they move from the broker's account of what it did.
+
+    This exists because reconcile's ghost handler books a close directly from
+    broker evidence, using the broker's order id. That order can still be open
+    in our own log — indeed it usually is, because "our log thinks it is still
+    working" is exactly the condition that produced the ghost. Once the manage
+    tick re-polls live orders (executor._refresh_live_orders), that order comes
+    back FILLED, settle_all selects it, and _apply_sell finds the position
+    already gone: qty > held, which is the oversell signature. It would halt
+    trading over a close that was booked correctly, minutes earlier, by design.
+
+    Returns True if an order row was updated.
+    """
+    row = order_log.get(coid)
+    if row is None:
+        return False
+    already = int(row.get("applied_qty") or 0)
+    if already >= int(qty):
+        return False
+    filled = max(int(row.get("filled_qty") or 0), int(qty))
+    with db.transaction() as c:
+        c.execute(
+            "UPDATE orders SET filled_qty = ?, applied_qty = ?, "
+            "applied_notional = ?, avg_fill_price = ?, state = ?, "
+            "resolved_at = ?, last_polled_at = ? WHERE client_order_id = ?",
+            (filled, filled, filled * float(price), float(price), "FILLED",
+             _now(), _now(), coid))
+    log.warning("order %s: %d share(s) @ $%.4f marked applied — the close was "
+                "already booked by %s", coid, filled, price, booked_by)
+    return True
+
+
 def settle_all(*, limit: int = 200) -> dict:
     """Settle every order with fills this software has not applied.
 

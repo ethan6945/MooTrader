@@ -727,6 +727,11 @@ class ExitFill:
     price: float
     filled: int
     client_order_id: str | None = None
+    # The BROKER's id for the exit order. Carried even when nothing filled,
+    # because that is exactly the case the position record needs it for: an
+    # order left working at the broker after the wait window closed is the one
+    # thing reconcile later has to recognise as ours.
+    broker_order_id: str | None = None
 
 
 def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
@@ -760,12 +765,14 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
             log.info("%s %s: booked at actual fill $%.2f (quote was $%.2f, "
                      "%+.1f bps)", symbol, reason, px, quote_px, slip_bps)
             return ExitFill(price=px, filled=got,
-                            client_order_id=placement.client_order_id)
+                            client_order_id=placement.client_order_id,
+                            broker_order_id=order_id)
         log.info("%s %s: nothing filled yet on order %s — booking nothing. The "
                  "order stays live; the position stays held.",
                  symbol, reason, order_id)
         return ExitFill(price=quote_px, filled=0,
-                        client_order_id=placement.client_order_id)
+                        client_order_id=placement.client_order_id,
+                        broker_order_id=order_id)
     except Exception as e:
         # A lookup failure is not evidence about the sale. Reporting zero filled
         # keeps the position held, which is the safe direction: the alternative
@@ -773,7 +780,9 @@ def _sell_and_book_price(client: MooClient, symbol: str, qty: int,
         # exit for them would be a sell we do not hold — a short.
         log.warning("%s %s: fill lookup failed (%s) — treating as unsold; the "
                     "order remains tracked", symbol, reason, e)
-        return ExitFill(price=quote_px, filled=0)
+        return ExitFill(price=quote_px, filled=0,
+                        client_order_id=placement.client_order_id,
+                        broker_order_id=order_id)
 
 
 def cancel_protective(client: MooClient, symbol: str, order_id: str,
@@ -948,6 +957,44 @@ def _exit_and_book(client: MooClient, symbol: str, trade: dict, trades: dict,
     return _book_exit(symbol, trade, trades, fill, reason)
 
 
+# How many exit order ids a position remembers. One is the common case; a
+# handful covers a name that had several exit attempts cancelled and replaced.
+# The list is bounded because it rides in the position's `extra` JSON blob.
+_EXIT_OID_MEMORY = 5
+
+
+def _remember_exit_order(symbol: str, trade: dict, fill: "ExitFill",
+                         reason: str) -> None:
+    """Record an exit order that is working at the broker on the position.
+
+    `exit_order_id` is read by reconcile to tell OUR exit from a hand-placed
+    one. Until this existed, nothing in the codebase ever wrote it — the key was
+    read in one place and written in none — so every exit that outlived its wait
+    window was attributed to the owner.
+
+    The order log remains the authority on who placed an order — its row is
+    durable before the broker is ever called, so it survives a crash this
+    mutation would not. This is the position's own copy, and it is what still
+    answers the question for a trade whose order log rows have aged out of the
+    broker's history window.
+
+    Mutates in place; the caller's `_save_open_trades` persists it, same as
+    every other field the manage pass sets (`breakeven_set`, the water marks).
+    """
+    oid = str(fill.broker_order_id or "").strip()
+    if oid in ("", "0", "None"):
+        return
+    seen = [str(x) for x in (trade.get("exit_order_ids") or []) if str(x)]
+    if oid not in seen:
+        seen.append(oid)
+    trade["exit_order_ids"] = seen[-_EXIT_OID_MEMORY:]
+    trade["exit_order_id"] = oid
+    trade["exit_intent"] = reason
+    log.info("%s %s: order %s is working at the broker — recorded on the "
+             "position so a late fill is attributed to us, not to you",
+             symbol, reason, oid)
+
+
 def _book_exit(symbol: str, trade: dict, trades: dict, fill: "ExitFill",
                reason: str) -> tuple[float, float, int]:
     """Book a completed sale and settle the position. Returns (pnl, price, sold).
@@ -958,6 +1005,17 @@ def _book_exit(symbol: str, trade: dict, trades: dict, fill: "ExitFill",
     decided here rather than in the caller.
     """
     if fill.filled <= 0:
+        # Nothing sold YET — but an order is working at the broker, and until
+        # something settles it the only record that it is ours lives in the
+        # order log. Write its id onto the position too.
+        #
+        # 2026-08-28 (MRK), 2026-08-27 (JNJ): a soft stop that filled after the
+        # 8s wait window left the broker flat and this record claiming 12
+        # shares. Reconcile found the sale, could not match the order id to
+        # anything on the trade, and booked the bot's OWN stop as a MANUAL_SELL
+        # — telling the owner they had sold it by hand, and putting a label on
+        # the trade that the SL re-entry cooldown does not match.
+        _remember_exit_order(symbol, trade, fill, reason)
         return 0.0, fill.price, 0
 
     # Through the settler, not around it.
@@ -1563,7 +1621,7 @@ def manage_open_trades(client: MooClient) -> list[dict]:
     this from different scheduler threads; the lock keeps their load→mutate→
     save cycles on the open-trades store from clobbering each other."""
     with _TRADES_LOCK:
-        _settle_outstanding_fills()
+        _settle_outstanding_fills(client)
         return _manage_open_trades_locked(client)
 
 
@@ -1623,7 +1681,7 @@ def manage_stops_only(client: MooClient) -> list[dict]:
     with _TRADES_LOCK:
         # Before reading positions, not after: a late fill may BE the position
         # this pass is about to decide a stop for.
-        _settle_outstanding_fills()
+        _settle_outstanding_fills(client)
         trades = _load_open_trades()
         if not trades:
             return []
@@ -1641,16 +1699,69 @@ def manage_stops_only(client: MooClient) -> list[dict]:
         return actions
 
 
-def _settle_outstanding_fills() -> None:
+# How often the manage tick may ask the broker about its live orders. The
+# history endpoint is rate-limited hard enough that reconcile_live batches every
+# order into one query, and in REAL mode a bracket's two legs are live for the
+# whole holding period — so an unthrottled poll here would hit that endpoint
+# every fast-stop tick, for days, to learn nothing. 30s keeps a late fill inside
+# one manage tick while leaving the endpoint alone the rest of the time.
+_LIVE_ORDER_REPOLL_SEC = 30.0
+_last_live_order_poll = 0.0
+
+
+def _refresh_live_orders(client: MooClient) -> None:
+    """Ask the broker what became of every order still open in our log.
+
+    This is the step that was missing. `settle_all` selects on
+    `filled_qty > applied_qty` — both columns local — and `filled_qty` is only
+    ever written by a poll. An order whose wait window closed at 0 filled is
+    therefore invisible to the sweep FOREVER: it is live at the broker, zero in
+    our table, and `0 > 0` selects nothing. Nothing else re-polls it either,
+    because the bracket-leg refresh only looks at stop_order_id/tp_order_id and
+    a soft exit is neither.
+
+    So the sweep's promise — apply fills that arrived after the wait window —
+    held only for orders whose fill had ALREADY been recorded, which is not the
+    case it was written for. Polling first is what makes it true.
+
+    Cheap when idle: no live orders means no broker call at all.
+    """
+    global _last_live_order_poll
+    try:
+        from . import order_log
+        if not order_log.live_orders():
+            return
+        now = time.time()
+        if now - _last_live_order_poll < _LIVE_ORDER_REPOLL_SEC:
+            return
+        _last_live_order_poll = now
+        summary = order_log.reconcile_live(client)
+        if summary.get("resolved"):
+            log.info("live-order refresh: %d of %d order(s) updated from the "
+                     "broker", summary["resolved"], summary["checked"])
+    except Exception as e:
+        # Never fatal here. An unpolled order is the status quo this function
+        # improves on; reconcile's ghost scan is still behind it, and halting
+        # the manage tick would remove the protective pass that follows.
+        log.warning("live-order refresh failed (settling on what we have): %s", e)
+
+
+def _settle_outstanding_fills(client: MooClient | None = None) -> None:
     """Apply any fills that arrived after their order's wait window closed.
 
     Runs at the top of every manage tick. Before this, a fill that landed one
     second after the entry stopped waiting updated the orders table and nothing
     else — the shares were at the broker and in no position, and the only thing
     that would ever have noticed was a restart.
+
+    Two steps, and the order matters: refresh the live orders from the broker,
+    THEN settle. Settling first only ever applies what a previous poll happened
+    to catch.
     """
     try:
         from . import fill_settler
+        if client is not None:
+            _refresh_live_orders(client)
         fill_settler.settle_all()
     except Exception as e:
         log.error("fill settlement sweep failed: %s", e)

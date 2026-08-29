@@ -141,6 +141,17 @@ def record_close(
     return row
 
 
+# Closes the OWNER caused, not the strategy. Two labels because there are two
+# routes: "MANUAL" is the owner asking the bot to close a position, "MANUAL_SELL"
+# is reconcile finding a sale the owner made in the broker app. Both belong in
+# the ops bucket and neither is strategy performance.
+#
+# This checked "MANUAL" alone, and reconcile has only ever written the other
+# one — so an owner's hand-placed sale counted in the headline win rate, which
+# is the exact pollution the bucket was added to prevent.
+OWNER_CLOSE_REASONS = frozenset({"MANUAL", "MANUAL_SELL"})
+
+
 def trade_stats(last_n: int = 50) -> dict:
     """Quick summary of recent closed trades — now reads from SQLite.
 
@@ -154,7 +165,7 @@ def trade_stats(last_n: int = 50) -> dict:
         return {"count": 0}
     ops_rows = [r for r in all_rows
                 if (r.get("strategy") == "reconcile_orphan_recovery"
-                    or r.get("exit_reason") == "MANUAL")]
+                    or r.get("exit_reason") in OWNER_CLOSE_REASONS)]
     ops = {"n": len(ops_rows), "pnl": round(sum(r["pnl"] for r in ops_rows), 2)}
     rows = [r for r in all_rows if r not in ops_rows]
     if not rows:

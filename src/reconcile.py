@@ -107,6 +107,97 @@ def _sell_after_entry(sell_time: str, opened_at: str) -> bool:
     return (sold - entered_et).total_seconds() > -60      # 60s clock-skew grace
 
 
+# Exit labels this software writes itself. An order log `intent` outside this
+# set is not promoted to an exit_reason — a label nothing downstream recognises
+# is worse than an honest "we know it was ours but not why", because the
+# consumers (the SL cooldown, the ops bucket, the optimizer) all match on the
+# vocabulary and silently ignore anything else.
+_KNOWN_EXIT_REASONS = {
+    "SL", "SL_BRACKET", "BREAKEVEN", "TP", "TP_BRACKET", "TP1", "TP2",
+    "MAX_HOLD", "STALL_OUT", "BLACKLIST", "GAP_RISK", "OVER_CAP", "MANUAL",
+}
+
+# Reasons that mean "this name just stopped out". Booking one of these has to
+# arm the same-day re-entry cooldown, exactly as the executor's own exit paths
+# do — see db.last_sl_close_for_symbol, whose audit found 29 rebleed losses
+# worth -$425 from re-buying a name the bar after its stop.
+_STOP_OUT_REASONS = {"SL", "SL_BRACKET"}
+
+
+def _settle_out_our_order(broker_oid: str, qty: int, price: float) -> None:
+    """Close the books on the order this ghost was booked from.
+
+    The close is now in the ledger, but the order it came from may still be
+    open in our own log — which is the normal case, since an order our log
+    thinks is working is precisely what leaves the broker flat and produces a
+    ghost. Left that way, the next poll resolves it to FILLED, the settler
+    picks it up, finds no position to reduce, and halts trading for an oversell
+    that is really a double-count of a close already booked here.
+    """
+    oid = str(broker_oid or "").strip()
+    if not oid:
+        return
+    try:
+        from . import fill_settler, order_log
+        row = order_log.by_broker_id(oid)
+        if row is None:
+            return
+        fill_settler.mark_externally_booked(
+            row["client_order_id"], qty, price, booked_by="reconcile")
+    except Exception as e:
+        # Never fatal: the close is already committed, and the worst case is
+        # the pre-existing behaviour.
+        log.warning("could not mark broker order %s as booked: %s", oid, e)
+
+
+def _attribute_sell(broker_oid: str, our_oids: set[str]) -> tuple[bool, str]:
+    """Who placed this sell, and what was it for? → (by_bot, exit_reason).
+
+    The order log is the authority, not the position record. Its whole design
+    is that a row is written and flushed BEFORE the broker is called, so every
+    order this software has ever sent is in it — which makes "is this id in our
+    order log?" a direct answer to "did we place it?", where the position
+    record only ever held a partial copy.
+
+    That copy is still consulted, for a trade whose order log rows have aged
+    out of the account's history.
+
+    Before this, attribution read three keys off the position, one of which
+    (`exit_order_id`) was written nowhere in the codebase and two of which are
+    None in SIMULATE, where there is no bracket. The set was reliably empty, so
+    every ghost resolved to MANUAL_SELL — the software telling its owner they
+    had sold by hand, about its own stop-loss order. It also cost the trade its
+    real label: MANUAL_SELL matches neither the SL cooldown query nor the ops
+    bucket, so a stop-out both vanished from the guard that exists to stop it
+    being re-bought and counted as strategy performance.
+    """
+    oid = str(broker_oid or "").strip()
+    row = None
+    if oid:
+        try:
+            from . import order_log
+            row = order_log.by_broker_id(oid)
+        except Exception as e:
+            log.warning("order-log lookup for broker order %s failed: %s", oid, e)
+    if row is None:
+        if oid and oid in our_oids:
+            # Ours by the position's own record; the log cannot say what for.
+            return True, "BOT_SELL_UNRECORDED"
+        return False, "MANUAL_SELL"
+
+    kind = str(row.get("kind") or "").upper()
+    intent = str(row.get("intent") or "").upper().strip()
+    if kind == "STOP":
+        return True, "SL_BRACKET"
+    if kind == "TP":
+        return True, "TP_BRACKET"
+    if intent in _KNOWN_EXIT_REASONS:
+        return True, intent
+    log.info("ghost attribution: broker order %s is ours (kind=%s intent=%r) "
+             "but carries no recognised exit reason", oid, kind or "?", intent)
+    return True, "BOT_SELL_UNRECORDED"
+
+
 def _quarantine_unexplained(symbol: str, trade: dict | None, ghost: dict) -> None:
     """Park an unexplainable close in data/unexplained_closes.jsonl.
 
@@ -457,7 +548,11 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
             opened_at = str((trade or {}).get("opened_at") or "")
             our_oids = {str((trade or {}).get(k) or "")
                         for k in ("stop_order_id", "tp_order_id", "exit_order_id")}
+            our_oids.update(str(x) for x in
+                            ((trade or {}).get("exit_order_ids") or []))
             our_oids.discard("")
+            our_oids.discard("0")
+            our_oids.discard("None")
             sells = [s for s in sells
                      if not opened_at or not s["time"]
                      or _sell_after_entry(s["time"], opened_at)]
@@ -488,8 +583,7 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
                 continue
 
             last_sell = sells[-1]
-            by_bot = last_sell["order_id"] in our_oids
-            reason = "BOT_SELL_UNRECORDED" if by_bot else "MANUAL_SELL"
+            by_bot, reason = _attribute_sell(last_sell["order_id"], our_oids)
             booked = None
             try:
                 qty = int(trade.get("qty") or g.get("our_qty") or 0)
@@ -499,6 +593,13 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
                           "pnl": round(pnl, 2), "reason": reason,
                           "order_id": last_sell["order_id"],
                           "sold_at": last_sell["time"]}
+                if reason in _STOP_OUT_REASONS:
+                    # The executor arms this on its own exit paths; a stop that
+                    # is booked HERE instead reached the books by a different
+                    # route, not a different event, and must arm it too.
+                    executor._set_reentry_cooldown(sym, reason)
+                _settle_out_our_order(last_sell["order_id"], qty,
+                                      last_sell["price"])
             except Exception as e:
                 log.warning("ghost %s: booking close failed: %s", sym, e)
             our_trades.pop(sym, None)
@@ -513,8 +614,11 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
             if booked:
                 try:
                     from . import notifier
-                    who = ("机器人自己的卖单（本地未记录）" if by_bot
-                           else "券商端的手动卖单（不是机器人下的）")
+                    if by_bot:
+                        who = (f"机器人自己的卖单（{booked['reason']}，"
+                               f"成交晚于本地等待窗口，非手动操作）")
+                    else:
+                        who = "券商端的手动卖单（不是机器人下的）"
                     notifier.send(f"📝 {sym} {booked['qty']} 股平仓已入账 @ "
                                   f"${booked['exit']:.2f} — 来源：{who}，"
                                   f"券商订单号 {booked['order_id']}，"
@@ -604,6 +708,30 @@ def _reconcile_locked(broker_positions: pd.DataFrame, auto_fix: bool = True,
     return result
 
 
+def _ghost_outcome(fix: dict | None) -> str:
+    """The ' → what happened' tail on a GHOST alert line.
+
+    Empty when nothing was fixed, so a ghost that really is still outstanding
+    reads exactly as it did before.
+    """
+    if not fix:
+        return ""
+    booked = fix.get("booked")
+    if booked:
+        return (f" → 已入账 {booked['reason']} @ ${booked['exit']:.2f} "
+                f"(${booked['pnl']:+.0f})，记录已清理")
+    if fix.get("netted_against_short"):
+        return (f" → 并非卖出：账户净空 {fix['netted_against_short']} 股，"
+                f"记录已删除，未记盈亏")
+    if fix.get("phantom"):
+        return " → 买单从未成交，记录已删除，未记盈亏"
+    if fix.get("unexplained"):
+        return " → 券商无成交卖单，记录已删除、未记盈亏，明细已隔离待核对"
+    if fix.get("type") == "GHOST_DROPPED":
+        return " → 记录已删除"
+    return ""
+
+
 def _shorts_alert_due() -> bool:
     """True at most once per NY day — short drift is a standing condition, not
     an event, so it must not re-alert every 15-minute scan."""
@@ -643,9 +771,16 @@ def log_reconcile(result: dict) -> str:
         line = f"ORPHAN: {o['symbol']} qty={o['broker_qty']} in broker, not tracked"
         log.warning("  %s", line)
         msg_lines.append(line)
+    # What the auto-fixer did, keyed by symbol. A ghost that was resolved
+    # seconds before this message was built read as an open problem — "broker
+    # empty", no verb, no outcome — which is how a handled event arrives on the
+    # owner's phone looking like an unhandled one.
+    fixed = {f["symbol"]: f for f in result.get("fixes_applied") or []
+             if f.get("symbol")}
     for g in result["ghosts"]:
         entry = g.get("entry") or 0
         line = f"GHOST: {g['symbol']} qty={g['our_qty']} @ ${entry:.2f} tracked, broker empty"
+        line += _ghost_outcome(fixed.get(g["symbol"]))
         log.warning("  %s", line)
         msg_lines.append(line)
     for m in result["mismatches"]:
