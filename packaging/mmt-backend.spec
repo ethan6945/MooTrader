@@ -22,9 +22,9 @@ ROOT = Path(SPECPATH).resolve().parent
 # collect_submodules("src") silently returns an empty list (it swallows the
 # ImportError), the src hidden imports vanish, and the build still succeeds:
 # every src module reachable from web.server gets pulled in by static analysis
-# anyway, so the only casualties are the handful nothing imports — including
-# src.signal_reporter, a worker entry point. That failure surfaces as a
-# ModuleNotFoundError the first time the user runs the signal reporter.
+# anyway, so the only casualties are the handful nothing imports — the worker
+# entry points among them. That failure surfaces as a ModuleNotFoundError the
+# first time the user runs one.
 sys.path.insert(0, str(ROOT))
 
 # ── bundled resources ────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ hiddenimports = [
     # Worker modules: reached only through runpy at runtime (entry.py), so
     # nothing statically imports them and the graph walk would miss the entire
     # trading engine. Collecting the whole package also covers the lazy
-    # in-function imports (src.optimize_system, src.sandbox, src.optimizer).
+    # in-function imports (src.optimize_system, src.optimizer).
     # src/pattern_vision.py was deleted 2026-08-21 — it was matplotlib's only
     # importer and nothing imported it, so the filter that used to exclude it
     # here now names a module that does not exist.
@@ -68,15 +68,13 @@ hiddenimports = [
     # dialect by string name.
     *collect_submodules("optuna"),
     "sqlalchemy.dialects.sqlite",
-    # pyarrow backs the parquet K-line cache in src/sandbox.py, which the daily
-    # and weekly grid sweeps run from the scheduler — this is a live path, not
-    # an optional extra.
+    # pyarrow backs the parquet K-line cache behind src/sim_feed.py, which
+    # src/backtest.py and src/optimizer.py read — the daily and weekly grid
+    # sweeps run from the scheduler, so this is a live path, not an extra.
+    # (It used to say src/sandbox.py; that module went out with 52b7cab.)
     "pyarrow",
     "pyarrow.parquet",
     "pandas.io.parquet",
-    # AI provider (src/ai.py) — `from google import genai` is a namespace pkg.
-    "google.genai",
-    "google.genai.types",
     # FinBERT (src/news_score_local.py). ~25 MB for the pair, which is what
     # makes the local scorer work from the .app at all — torch + transformers
     # would have been 1-2 GB. Imported lazily inside functions, so the graph

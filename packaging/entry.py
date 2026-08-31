@@ -12,9 +12,8 @@ single binary, and argv decides the role:
 
 web.server._worker_cmd() builds the second form from sys.executable, which under
 PyInstaller is this binary. runpy hands the target module the exact argv it
-would have seen under `python -m`, so src/main.py and src/signal_reporter.py
-keep their existing `if __name__ == "__main__"` blocks with no frozen-only
-branches of their own.
+would have seen under `python -m`, so src/main.py keeps its existing
+`if __name__ == "__main__"` block with no frozen-only branches of its own.
 """
 from __future__ import annotations
 
@@ -25,15 +24,14 @@ from pathlib import Path
 
 
 # Every module the running bot needs that PyInstaller could plausibly miss:
-# dynamic importers, lazily-imported engine modules, and the two worker entry
-# points nothing statically references. A missing hidden import otherwise shows
+# dynamic importers, lazily-imported engine modules, and the worker entry point
+# nothing statically references. A missing hidden import otherwise shows
 # up hours later as a scheduler that dies on its first grid sweep.
 _CRITICAL = (
     "pandas", "numpy", "pyarrow", "pyarrow.parquet", "pandas_ta_classic",
     "moomoo", "yfinance", "optuna", "sqlalchemy",
     "apscheduler.schedulers.background", "flask", "dotenv", "requests",
-    "google.genai",
-    "src.main", "src.signal_reporter", "src.optimize_system", "src.sandbox",
+    "src.main", "src.optimize_system",
     "src.optimizer", "src.executor", "src.moo_client", "src.ai", "src.db",
     "web.server",
     # News-driven mode and its sources (2026-08-07). All default OFF, but a
@@ -79,8 +77,9 @@ def _import_check() -> int:
             print(f"  FAIL  {name}: {type(e).__name__}: {e}")
 
     # pyarrow can import and still fail to write: the parquet codepath pulls in
-    # compiled extensions the analyser resolves separately. src/sandbox.py caches
-    # every K-line bar this way, so a broken round-trip breaks the grid sweeps.
+    # compiled extensions the analyser resolves separately. src/sim_feed.py
+    # caches every K-line bar this way, so a broken round-trip breaks the grid
+    # sweeps. (It used to name src/sandbox.py, deleted in 52b7cab.)
     try:
         import tempfile
 

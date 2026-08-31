@@ -57,6 +57,11 @@ WHAT IT COVERS
   test_worker_cmd        — how the app launches its own worker. The frozen
                            shape takes --worker, not -m; getting it wrong
                            starts a second web server instead of a trading loop
+  test_macos_parity      — the macOS app calls the endpoints this server still
+                           serves, and its own Codable types decode what they
+                           return. 0f6b502 deleted five signal-* routes; the
+                           SwiftUI app kept calling all five for a week and
+                           showed an empty panel instead of an error
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -117,6 +122,7 @@ CHECKS = {
     "atr":        ("scripts/test_atr_agreement.py",       True,  True,  120),
     "setwrite":   ("scripts/test_setting_writes.py",     True,  True,  120),
     "websmoke":   ("scripts/test_web_smoke.py",         True,  True,  120),
+    "macparity":  ("scripts/test_macos_parity.py",       True,  True,  240),
     "redaction":  ("scripts/test_env_redaction.py",      True,  True,  120),
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),
