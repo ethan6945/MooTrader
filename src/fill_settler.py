@@ -332,6 +332,32 @@ def _apply_sell(row: dict, qty: int, price: float,
     except Exception as e:
         log.error("%s: close booked but PnL state update failed: %s", symbol, e)
 
+    # Tombstone the close so reconcile's orphan/mismatch scan ignores a broker
+    # snapshot that still shows the shares. The fill has cleared here; the
+    # position feed has not necessarily caught up, and reconcile compares
+    # against whatever snapshot the scan started with.
+    #
+    # This lived in executor._close_and_log, which stopped being the close path
+    # when every exit moved through this settler (2026-08-15). Nothing armed the
+    # grace after that: `recent_closes` last gained an entry on 2026-08-28, and
+    # only because reconcile's ghost branch still books through the executor.
+    # With the grace dead, a bot sale inside the lag window came back as
+    # "broker has it, we don't" — an ORPHAN — and was re-adopted as a position
+    # the owner had bought by hand, which is what sends 检测到手动持仓 and queues
+    # a takeover approval for a trade the bot had just exited. A partial sale
+    # (TP1/TP2) hit the same gap as a qty MISMATCH, and "adopting the broker's
+    # qty" there re-inflates the record so the next stop oversells.
+    #
+    # The settler is the one writer for closes, so the tombstone belongs here:
+    # this covers the late fills the sweep settles too, which is the case with
+    # the widest lag and never went through the executor at all.
+    try:
+        from .reconcile import record_recent_close
+        record_recent_close(symbol)
+    except Exception as e:
+        log.warning("%s: recent-close tombstone failed (%s) — reconcile may "
+                    "read the in-flight position as a manual buy", symbol, e)
+
     _refresh_mirror()
     log.info("%s: -%d shares booked as %s @ $%.4f (pnl %+.2f), %d remain",
              symbol, qty, reason, price, pnl, remaining)
