@@ -87,12 +87,30 @@ def describe() -> str:
 
 
 def require(what: str) -> None:
-    """Raise unless this process may change broker state."""
+    """Raise unless this process may change broker state.
+
+    Two questions, asked in this order: was this process granted the capability,
+    and is this installation licensed to use it. The grant is about which
+    process this is; the licence is about whether the copy may trade at all.
+
+    The licence check sits here rather than at startup for the same reason the
+    grant does — it is the narrowest choke point, shared by the three methods
+    that change broker state. An unlicensed copy therefore still starts,
+    connects, scores, backtests and shows every panel; it just cannot reach the
+    order book. That is also why the trial cannot expire mid-decision: the gate
+    is consulted between orders, not inside one.
+    """
     if not _permitted:
         raise OrdersNotPermitted(
             f"{what} refused — {describe()}. This process is running without "
             f"order capability; nothing it does may reach the broker's order "
             f"book.")
+
+    from . import licence
+    try:
+        licence.require_trading()
+    except licence.NotLicensed as e:
+        raise OrdersNotPermitted(f"{what} refused — {e}") from e
 
 
 def reset_for_tests() -> None:
