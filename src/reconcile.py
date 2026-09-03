@@ -57,8 +57,14 @@ def _iso_age_s(ts, now: datetime | None = None) -> float | None:
 def record_recent_close(symbol: str) -> None:
     """Tombstone a bot-side close so the orphan scan ignores the broker's
     still-filling position for RECENT_CLOSE_GRACE_S. Called by
-    executor._close_and_log on every close. Map is pruned to 24h so it
-    stays bounded."""
+    fill_settler._apply_sell, which is the one writer for closes, and by
+    executor._close_and_log, which still books reconcile's ghost branch and
+    the no-order-id fallback. Arming twice only rewrites a timestamp.
+
+    Do not narrow this back to the executor: naming it as the sole caller is
+    what hid the 2026-08-15 regression, when every exit moved to the settler
+    and nothing armed the grace for the next five days. Map is pruned to 24h
+    so it stays bounded."""
     def _upd(state: dict) -> dict:
         now = datetime.utcnow()
         closes = state.get("recent_closes") or {}

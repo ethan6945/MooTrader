@@ -60,8 +60,18 @@ Thumbs.db
 .claude/settings.local.json
 
 # ============== Optional: keep config templates in repo ==============
-# (config/watchlist.json IS tracked — auto-refreshes weekly)
 config/watchlist.json.bak
+# config/watchlist.json is NOT tracked. src/watchlist_updater.py rewrites it
+# every week from the momentum ranking, so a tracked copy is a per-machine
+# runtime product that shows up as a diff on any machine the refresh has run
+# on — the file's own header already says hand edits get overwritten.
+#
+# It IS required at startup: main.load_watchlist() reads it with a bare
+# read_text() and dies on a missing file (staging hit exactly that), and
+# packaging/mmt-backend.spec bundles config/*.json as the templates seeded
+# into the app home. So a fresh clone must generate one — run the universe
+# refresh — before the bot or a packaged build will come up.
+config/watchlist.json
 
 # ============== Compiled / temp ==============
 *.tmp
