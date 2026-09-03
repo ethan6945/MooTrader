@@ -4,13 +4,12 @@
 
 **A self-hosted, AI-assisted swing-trading bot for US stocks — you run it from your browser.**
 
-[![release](https://img.shields.io/github/v/release/ethan6945/MooTrader?color=2ea44f&label=release)](https://github.com/ethan6945/MooTrader/releases/latest)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-proprietary-red)
 
 English · [简体中文](README.zh-CN.md)
 
@@ -83,8 +82,7 @@ Set a panel password in Settings and flip on LAN access, and the same panel open
 **You need:** a Mac (macOS 14+), a moomoo/Futu account with paper trading enabled, and the **OpenD** gateway installed and logged in — the bot talks to it on `127.0.0.1:11111`. There is no way around that step. A [DeepSeek](https://platform.deepseek.com) key powers the AI parts; [Tavily](https://app.tavily.com) (news) and a [Telegram bot](https://t.me/BotFather) are optional but recommended.
 
 ```bash
-git clone https://github.com/ethan6945/MooTrader.git
-cd MooTrader
+cd MooTrader          # this checkout — the source is not published
 uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # fill in your keys — every line is documented
 ./start-web.command
@@ -106,7 +104,7 @@ python -m src.backtest_v4 --days 180
 
 ### Prefer an app?
 
-There's a native macOS wrapper in `macos/` (and a `.dmg` on the [releases page](https://github.com/ethan6945/MooTrader/releases/latest)) — same backend, plus a menu-bar status icon and approval notifications. It's a convenience layer; the web panel is where the full feature set lives.
+There's a native macOS app — same backend, plus a menu-bar status icon and approval notifications. It ships as a signed `.dmg`; its source is not distributed. It's a convenience layer; the web panel is where the full feature set lives.
 
 ---
 
@@ -136,4 +134,4 @@ Free and open source, no paywall. A ⭐ helps · [Buy Me a Coffee](https://buyme
 
 ## License
 
-[MIT](LICENSE) © 2026
+[Proprietary](LICENSE) © 2026 Ethan Tan — all rights reserved. Versions up to v2.6.1 were released under MIT; that grant stands for those versions only.

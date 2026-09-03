@@ -4,13 +4,12 @@
 
 **自己家里跑的美股短线交易机器人 —— 打开浏览器就能用。**
 
-[![release](https://img.shields.io/github/v/release/ethan6945/MooTrader?color=2ea44f&label=release)](https://github.com/ethan6945/MooTrader/releases/latest)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-proprietary-red)
 
 [English](README.md) · 简体中文
 
@@ -83,8 +82,7 @@ flowchart LR
 **需要准备：** 一台 Mac（macOS 14+）、一个开通了模拟交易的 moomoo/富途账户，以及装好并登录的 **OpenD** 网关 —— 机器人是通过 `127.0.0.1:11111` 跟它说话的，这一步绕不过去。AI 部分需要一个 [DeepSeek](https://platform.deepseek.com) key；[Tavily](https://app.tavily.com)（新闻）和 [Telegram bot](https://t.me/BotFather) 可选，但建议配上。
 
 ```bash
-git clone https://github.com/ethan6945/MooTrader.git
-cd MooTrader
+cd MooTrader          # 就是这份 checkout —— 源码不再公开发布
 uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # 填 key，每一行模板里都有说明
 ./start-web.command
@@ -106,7 +104,7 @@ python -m src.backtest_v4 --days 180
 
 ### 想要 App？
 
-`macos/` 里有一个原生 macOS 外壳（[releases 页](https://github.com/ethan6945/MooTrader/releases/latest) 有打包好的 `.dmg`）—— 同一个后端，多了菜单栏状态图标和审批通知。它只是个方便的壳子，完整功能还是在网页面板里。
+有一个原生 macOS 应用 —— 同一个后端，多了菜单栏状态图标和审批通知。它以签名的 `.dmg` 形式分发，源码不公开。它只是个方便的壳子，完整功能还是在网页面板里。
 
 ---
 
@@ -136,4 +134,4 @@ python -m src.backtest_v4 --days 180
 
 ## 许可
 
-[MIT](LICENSE) © 2026
+[专有授权](LICENSE) © 2026 Ethan Tan —— 保留所有权利。v2.6.1 及之前的版本以 MIT 发布，该授权仅对那些版本继续有效。
