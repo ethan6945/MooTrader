@@ -130,16 +130,31 @@ _N_PARAMS = _load_parameters()
 
 
 def app_version() -> str:
-    """The build's version string, from the ONE place it is declared —
-    macos/Resources/Info.plist (frozen: the copy at MooTrader.app/Contents).
+    """The build's version string, from the ONE place it is declared — the
+    VERSION file at the repo root (frozen: the copy bundled beside it).
 
     Read at runtime rather than duplicated into a Python constant, because two
     declarations drift and the whole point of showing a version in the UI is to
     be able to trust it. Unknown -> "dev": a repo checkout with no bundle is a
     real, normal case, and pretending it has a release number would be worse
     than admitting it doesn't.
+
+    This used to read macos/Resources/Info.plist. That stopped working for
+    anyone but the author on 2026-09-03, when macos/ left the repository and
+    the native app stopped being distributed as source: every checkout without
+    it reported "dev", which for a paid build is the version a customer would
+    quote in a support request. Info.plist is still consulted last, because a
+    frozen .app built before this change has no VERSION beside it.
     """
     import plistlib
+    for vf in (BUNDLE_DIR / "VERSION",
+               Path(__file__).resolve().parent.parent / "VERSION"):
+        try:
+            v = vf.read_text().strip()
+            if v:
+                return v
+        except OSError:
+            continue
     candidates = []
     if IS_FROZEN:
         # BUNDLE_DIR is .../MooTrader.app/Contents/Resources/backend/_internal

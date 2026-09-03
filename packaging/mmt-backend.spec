@@ -33,6 +33,9 @@ sys.path.insert(0, str(ROOT))
 # .env and data/, would leak the developer's API keys and live trade history
 # into a public release.
 datas = [(str(ROOT / "web" / "static"), "web/static")]
+# VERSION is what src.config.app_version() reads first; without it a frozen
+# build reports "dev".
+datas += [(str(ROOT / "VERSION"), ".")]
 # Config templates, seeded into the app home on first run by src/config.py.
 # *.json only — it skips watchlist.json.bak.
 datas += [(str(p), "config") for p in sorted((ROOT / "config").glob("*.json"))]
