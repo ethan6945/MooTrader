@@ -73,6 +73,51 @@ config/watchlist.json.bak
 # refresh — before the bot or a packaged build will come up.
 config/watchlist.json
 
+# ============== Databases — private, never a source file ==============
+# Everything the bot writes already lives under data/, which is ignored above.
+# These are the second line: a trader.db copied to the repo root to inspect it
+# is still live trade history, and build.sh's secret scan already refuses to
+# ship a bundle containing one. SQLite keeps -wal/-shm sidecars beside the file
+# and they hold committed rows, so they go wherever the database goes.
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# ============== Signing material ==============
+# *.pem and *.key are at the top with the secrets. These are the rest of what a
+# signing identity is: the app is ad-hoc signed today, but a Developer ID
+# certificate exported for notarisation is a .p12 with a private key inside.
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+
+# ============== Release images ==============
+# macos/.gitignore already covers dist/. This catches an image built or copied
+# anywhere else — 122 MB each, and they belong on a GitHub release, not in git.
+*.dmg
+
+# ============== Swift / Xcode local state ==============
+# Absent while the build goes through `swift build`, but both appear the first
+# time macos/Package.swift is opened in Xcode.
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+
+# ============== macOS strays / merge leftovers ==============
+# ._* are AppleDouble resource forks, written whenever the repo touches a
+# non-APFS volume — a USB stick, some network shares. Icon? is the custom
+# folder icon Finder writes. *.orig and *.rej are what a failed merge or a
+# rejected patch hunk leaves behind.
+._*
+Icon?
+*.orig
+*.rej
+
 # ============== Compiled / temp ==============
 *.tmp
 *.temp
