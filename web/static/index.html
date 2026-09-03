@@ -568,6 +568,23 @@
           <button class="sm" id="btnEnvToggle">—</button></div>
       </div>
 
+      <div class="set-sec" id="secLicence"><h3 id="sLicH">授权 Licence</h3>
+        <div class="set-row"><div style="flex:1">
+          <b id="licState">—</b>
+          <div class="setdesc" id="licDetail"></div>
+          <div class="setdesc" style="margin-top:6px">
+            <span id="licMachineL">本机识别码</span>
+            <code id="licMachine" style="user-select:all">—</code></div>
+        </div></div>
+        <div class="set-row" id="licActivateRow"><div style="flex:1">
+          <b id="licKeyL">授权码</b><div class="setdesc" id="licKeyD"></div></div>
+          <span style="display:flex;gap:6px;align-items:center">
+            <input id="licKey" type="text" spellcheck="false" placeholder="MT1.…"
+                   style="min-width:240px"/>
+            <button class="sm" id="btnActivate">激活</button></span></div>
+        <div id="licMsg" class="setdesc" style="margin-top:6px"></div>
+      </div>
+
       <!-- 策略模式 / 新闻源 / FinBERT / 资金 / 运行配置 / AI 引擎 all moved to
            the parameter console (🎛). They were settings that change what the
            bot TRADES, sitting beside theme and language; and four of the Run
@@ -1192,6 +1209,13 @@ const PT={
     s_keys:'API Keys',
     s_keys_d:'框里是<b>当前的 key</b>（中间打码）。点 👁 显示完整内容，改完点「保存」写入 <code>.env</code>，<b>重启交易循环后生效</b>。',
     s_key_save:'保存', s_key_eye:'显示 / 隐藏', s_key_unset:'(未设置)',
+    s_lic:'授权 Licence', s_lic_key_l:'授权码',
+    s_lic_key_d:'粘贴购买后收到的授权码，激活后本机永久可用。',
+    s_lic_machine_l:'本机识别码',
+    lic_state_licensed:'已授权', lic_state_trial:'试用中',
+    lic_state_expired:'试用已结束', lic_state_revoked:'授权已失效',
+    lic_paste_first:'请先粘贴授权码。', lic_checking:'验证中…',
+    s_lic_b:'激活',
     s_key_masked:'这还是马赛克后的值。先点 👁 显示，再修改保存。',
     s_appear:'外观 Appearance',
     s_theme_l:'主题 Theme', s_theme_d:'深色 / 浅色界面配色。立即生效，记在本浏览器。',
@@ -1306,6 +1330,13 @@ const PT={
     c_apply:'Write these parameters? Effective on the next scan, no restart:\n\n',
 
     set_title:'⚙ Settings',
+    s_lic:'Licence', s_lic_key_l:'Licence key',
+    s_lic_key_d:'Paste the key you received after buying. Activation is permanent on this computer.',
+    s_lic_machine_l:'This computer',
+    lic_state_licensed:'Licensed', lic_state_trial:'Trial',
+    lic_state_expired:'Trial ended', lic_state_revoked:'Licence inactive',
+    lic_paste_first:'Paste your licence key first.', lic_checking:'Checking…',
+    s_lic_b:'Activate',
     s_trade:'Trading mode',
     s_trade_l:'Paper / Live',
     s_trade_d:'🧪 Paper trades virtual money; 💵 live is real money. Switching writes to .env and needs '
@@ -1413,6 +1444,8 @@ function applyPanelLang(){
    ['#sAppearH','s_appear'],['#sThemeL','s_theme_l'],['#sThemeD','s_theme_d'],
    ['#sLangL','s_lang_l'],['#sLangD','s_lang_d'],['#sDataH','s_data'],
    ['#sResetL','s_reset_l'],['#sResetD','s_reset_d'],['#btnResetSet','s_reset_b'],
+   ['#sLicH','s_lic'],['#licKeyL','s_lic_key_l'],['#licKeyD','s_lic_key_d'],
+   ['#licMachineL','s_lic_machine_l'],['#btnActivate','s_lic_b'],
    ['#sSupportH','s_support'],['#sSupportL','s_support_l'],['#sSupportD','s_support_d'],
    ['#sAccessH','s_access'],['#sLanL','s_lan_l'],['#sLanD','s_lan_d'],
    ['#sLogoutL','s_logout_l'],['#sLogoutD','s_logout_d'],['#btnLogout','s_logout_b'],
@@ -1464,6 +1497,38 @@ async function loadSettings(){
   }catch(e){}
   loadWebAccess();
   loadTradeEnv();
+  loadLicence();
+}
+
+// The panel never receives the licence key back — it is a bearer credential and
+// /api/licence is deliberately write-only for it. What it shows is the state and
+// the machine id, which is what a customer has to quote in order to buy one.
+async function loadLicence(){
+  try{
+    const l=await api('/api/licence');
+    const badge={licensed:'✅',trial:'⏳',expired:'🔒',revoked:'🚫'}[l.state]||'';
+    $('#licState').textContent=badge+' '+T('lic_state_'+l.state);
+    $('#licDetail').textContent=l.detail||'';
+    $('#licMachine').textContent=l.machine||'—';
+    // An active licence has nothing left to enter; showing the box invites
+    // someone to paste a second key over a working one.
+    $('#licActivateRow').style.display = (l.state==='licensed')?'none':'';
+  }catch(e){}
+}
+
+async function activateLicence(){
+  const key=$('#licKey').value.trim();
+  const msg=$('#licMsg');
+  if(!key){msg.textContent=T('lic_paste_first');return;}
+  const btn=$('#btnActivate'); btn.disabled=true; msg.textContent=T('lic_checking');
+  try{
+    const r=await fetch('/api/licence/activate',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+    const d=await r.json();
+    msg.textContent=d.message||d.error||'';
+    if(d.ok){$('#licKey').value=''; loadLicence();}
+  }catch(e){msg.textContent=String(e);}
+  finally{btn.disabled=false;}
 }
 
 // Restored: loadTradeEnv, loadWebAccess, saveKey, showRestart, toggleKey.
@@ -1977,6 +2042,7 @@ $('#tuneModal').onclick=e=>{if(e.target.id==='tuneModal')$('#tuneModal').classLi
 
 $('#btnSettings').onclick=async()=>{await loadSettings();await loadFinbert();$('#settingsModal').classList.remove('hidden');};
 $('#btnCloseSet').onclick=()=>$('#settingsModal').classList.add('hidden');
+$('#btnActivate').onclick=activateLicence;
 $('#settingsModal').onclick=e=>{if(e.target.id==='settingsModal')$('#settingsModal').classList.add('hidden');};
 $('#selTheme').onchange=e=>applyTheme(e.target.value);
 $('#selLang').onchange=e=>applyLang(e.target.value);

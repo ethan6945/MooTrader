@@ -782,6 +782,47 @@ def _fetch_sectors() -> dict:
             "live": session == "open", "asof": asof}
 
 
+@app.route("/api/licence")
+def api_licence():
+    """Trial / licence state for the panel. Never returns the key itself.
+
+    The key is a bearer credential — anyone holding it can activate on their
+    own machine up to the licence's limit — so it is write-only over this API.
+    The panel shows what state the copy is in and the machine id to quote when
+    buying, and nothing that helps someone re-use a licence they can already see.
+    """
+    from src import licence
+    st = licence.status()
+    return jsonify({
+        "state": st.state,
+        "may_trade": st.may_trade,
+        "days_left": st.days_left,
+        "detail": st.detail,
+        "licence_id": st.licence_id,
+        "machine": licence.machine_id(),
+        "trial_days": licence.TRIAL_DAYS,
+    })
+
+
+@app.route("/api/licence/activate", methods=["POST"])
+def api_licence_activate():
+    """Take a licence key from the panel and try to activate this installation."""
+    from src import licence
+    key = ((request.json or {}).get("key") or "").strip()
+    # One response shape for every outcome. The empty-key case used to answer
+    # with "error" while a rejected key answered with "message", so the panel
+    # had to know which failure it was looking at to find the sentence to show.
+    if not key:
+        message, ok = "Paste your licence key first.", False
+    else:
+        ok, message = licence.activate(key)
+    st = licence.status()
+    return (jsonify({"ok": ok, "message": message, "error": None if ok else message,
+                     "state": st.state, "detail": st.detail,
+                     "licence_id": st.licence_id}),
+            200 if ok else 400)
+
+
 @app.route("/api/sectors")
 def api_sectors():
     cached = _sector_cache["data"]

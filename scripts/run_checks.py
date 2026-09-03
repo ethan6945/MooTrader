@@ -70,6 +70,9 @@ WHAT IT COVERS
   test_licence           — trial, licence and forgery. An expired trial stops
                            orders and nothing else, and nothing short of the
                            issuer's private key produces a licence.
+  test_licence_server    — activation, the machine cap, revocation, and the
+                           failure direction: the issuer's host being down must
+                           not stop a customer trading.
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -135,6 +138,7 @@ CHECKS = {
     "budget":     ("scripts/test_auto_budget.py",        True,  True,  120),
     "tombstone":  ("scripts/test_close_tombstone.py",    True,  True,  180),
     "licence":    ("scripts/test_licence.py",            True,  True,  120),
+    "licsrv":     ("scripts/test_licence_server.py",     True,  True,  240),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),
     "secrets":    ("scripts/check_no_secrets.py",        False, False, 180),
 }

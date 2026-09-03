@@ -53,6 +53,22 @@ SIGNING_PUBLIC_KEY = bytes.fromhex(
 TRIAL_DAYS = 30
 _PREFIX = "MT1"
 
+# Where a first activation phones home. Empty disables the online step entirely,
+# which is the right setting for a build that must work air-gapped.
+def _server() -> str:
+    import os
+    from .config import ROOT                                   # noqa: F401
+    return (os.getenv("MMT_LICENCE_SERVER", "") or "").strip().rstrip("/")
+
+
+# How long an activated copy trades without being able to reach the server.
+# Reaching it is not a condition of trading: the server going down must not stop
+# a customer's bot mid-session, so an unreachable server FAILS OPEN and is
+# retried later. Only an explicit "revoked" answer closes the gate. The window
+# exists so a revoked licence cannot simply firewall the check away forever.
+RECHECK_EVERY_S = 7 * 86400
+RECHECK_GRACE_S = 30 * 86400
+
 
 class NotLicensed(Exception):
     """Trading is not permitted: no licence, and the trial is over or broken."""
@@ -109,11 +125,13 @@ def _b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def verify(key: str) -> dict | None:
-    """Return the payload of a well-signed licence, else None.
+def verify_signature_only(key: str) -> dict | None:
+    """Payload of a licence whose signature and expiry are good, else None.
 
-    Checks, in order: shape, signature, machine binding, expiry. A licence that
-    fails any of them is not a licence.
+    Deliberately does NOT check the machine binding, because the two callers
+    that need this are not the machine the licence is for: the activation
+    service, which must validate a licence it will never run on, and any tool
+    that inspects a key. verify() is what an installation asks about itself.
     """
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -134,12 +152,6 @@ def verify(key: str) -> dict | None:
     except (InvalidSignature, ValueError, json.JSONDecodeError):
         return None
 
-    bound = payload.get("machine") or ""
-    if bound and bound != machine_id():
-        log.warning("licence %s is bound to another machine",
-                    payload.get("id", "?"))
-        return None
-
     expires = payload.get("expires")
     if expires:
         try:
@@ -152,11 +164,33 @@ def verify(key: str) -> dict | None:
     return payload
 
 
+def verify(key: str) -> dict | None:
+    """Return the payload of a licence valid FOR THIS MACHINE, else None.
+
+    Signature and expiry, then the machine binding. A licence that fails any of
+    them is not a licence here.
+    """
+    payload = verify_signature_only(key)
+    if payload is None:
+        return None
+    bound = payload.get("machine") or ""
+    if bound and bound != machine_id():
+        log.warning("licence %s is bound to another machine",
+                    payload.get("id", "?"))
+        return None
+    return payload
+
+
 # ── stored state ─────────────────────────────────────────────────────────────
 
 def _paths() -> tuple[Path, Path]:
     from .config import ROOT
     return ROOT / "data" / ".licence", ROOT / "data" / ".trial"
+
+
+def _receipt_path() -> Path:
+    from .config import ROOT
+    return ROOT / "data" / ".activation"
 
 
 def _seal(data: dict) -> str:
@@ -226,22 +260,131 @@ def stored_licence() -> str:
         return ""
 
 
+def _call_server(path: str, body: dict, timeout: float = 8.0) -> dict | None:
+    """POST to the activation service. None means "could not reach it".
+
+    None and a refusal are deliberately different values. Only the service
+    saying no closes the gate; not being able to ask keeps it open, because a
+    customer's bot must not stop trading because the issuer's host is down.
+    """
+    base = _server()
+    if not base:
+        return None
+    import json as _json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        base + path, data=_json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return _json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            return _json.loads(e.read().decode())
+        except Exception:
+            log.warning("activation service returned HTTP %s", e.code)
+            return None
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log.warning("activation service unreachable: %s", e)
+        return None
+
+
+def _read_receipt() -> dict:
+    try:
+        return _unseal(_receipt_path().read_text()) or {}
+    except OSError:
+        return {}
+
+
+def _write_receipt(rec: dict) -> None:
+    try:
+        pth = _receipt_path()
+        pth.parent.mkdir(parents=True, exist_ok=True)
+        pth.write_text(_seal(rec))
+    except OSError as e:
+        log.warning("could not persist activation receipt: %s", e)
+
+
 def activate(key: str) -> tuple[bool, str]:
-    """Verify a licence key and store it. Returns (ok, message for the user)."""
+    """Verify a licence key, register it with the service, and store it.
+
+    The signature is checked locally FIRST, so a typo or a forgery never reaches
+    the network and the customer gets an instant answer. Only a genuine licence
+    is worth an activation slot.
+
+    If a service is configured it decides the rest: it counts activations,
+    binds the machine, and can refuse a revoked or over-used licence. If it is
+    not configured, or cannot be reached, activation still succeeds — a licence
+    that verifies is a licence, and refusing to activate one because the
+    issuer's host is offline punishes the customer for the issuer's outage.
+    """
     payload = verify(key)
     if payload is None:
         return False, ("That licence key is not valid for this machine. Check "
                        "it was copied whole, and that it was issued for this "
                        "computer.")
+
+    lic_id = payload.get("id", "?")
+    answer = _call_server("/activate", {
+        "licence": key.strip(), "machine": machine_id(), "id": lic_id})
+
+    if answer is not None and not answer.get("ok"):
+        reason = answer.get("error") or "the licence service refused it"
+        log.warning("activation refused for %s: %s", lic_id, reason)
+        return False, reason
+
     lic_path, _ = _paths()
     try:
         lic_path.parent.mkdir(parents=True, exist_ok=True)
         lic_path.write_text(key.strip())
     except OSError as e:
         return False, f"The licence is valid but could not be saved: {e}"
-    log.info("licence %s activated (%s)", payload.get("id", "?"),
-             payload.get("edition", "?"))
+
+    now = int(time.time())
+    _write_receipt({"id": lic_id, "activated": now,
+                    "last_ok": now if answer is not None else 0,
+                    "online": answer is not None})
+    log.info("licence %s activated (%s, %s)", lic_id,
+             payload.get("edition", "?"),
+             "registered" if answer is not None else "offline")
+    if answer is None and _server():
+        return True, (f"Activated — {payload.get('edition', 'licensed')}. The "
+                      f"licence service could not be reached; it will be "
+                      f"registered automatically later.")
     return True, f"Activated — {payload.get('edition', 'licensed')}."
+
+
+def _revoked(lic_id: str) -> bool:
+    """Has the service explicitly revoked this licence?
+
+    Only ever returns True on an explicit answer. Unreachable is not revoked;
+    it just means the receipt goes stale, and after RECHECK_GRACE_S a stale
+    receipt is what stops trading — otherwise blocking the host in /etc/hosts
+    would be a permanent bypass.
+    """
+    if not _server():
+        return False
+    rec = _read_receipt()
+    now = int(time.time())
+    last_ok = int(rec.get("last_ok") or 0)
+    if last_ok and now - last_ok < RECHECK_EVERY_S:
+        return False
+
+    answer = _call_server("/check", {"id": lic_id, "machine": machine_id()},
+                          timeout=5.0)
+    if answer is None:
+        if last_ok and now - last_ok > RECHECK_GRACE_S:
+            log.warning("licence %s has not been confirmed for %d days",
+                        lic_id, (now - last_ok) // 86400)
+            return True
+        return False
+    if answer.get("ok"):
+        rec.update({"id": lic_id, "last_ok": now})
+        _write_receipt(rec)
+        return False
+    log.warning("licence %s was revoked by the service", lic_id)
+    return True
 
 
 # ── the question everything else asks ────────────────────────────────────────
@@ -260,10 +403,14 @@ def status() -> Status:
     if key:
         payload = verify(key)
         if payload:
+            lic_id = payload.get("id", "?")
+            if _revoked(lic_id):
+                return Status("revoked", False, 0,
+                              "This licence is no longer active. Contact "
+                              "support if you believe that is wrong.", lic_id)
             return Status("licensed", True, None,
-                          f"Licensed to {payload.get('id', '?')}"
-                          f" ({payload.get('edition', 'perpetual')}).",
-                          payload.get("id"))
+                          f"Licensed to {lic_id}"
+                          f" ({payload.get('edition', 'perpetual')}).", lic_id)
         return Status("expired", False, 0,
                       "The stored licence is no longer valid for this machine. "
                       "Enter a current licence key to keep trading.")
