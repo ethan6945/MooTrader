@@ -19,12 +19,16 @@ import signal
 import shlex
 import subprocess
 import time
+import logging
 from pathlib import Path
 
-from . import proc
+from . import proc as _proc
 from .config import ROOT
 
+log = logging.getLogger(__name__)
+
 CAFFEINATE_PID = ROOT / "logs" / "caffeinate.pid"
+_CAFFEINATE = Path("/usr/bin/caffeinate")
 LID_STATE_FILE = ROOT / "data" / "lid_setup.json"
 
 
@@ -45,7 +49,7 @@ def _stop(pid_file: Path) -> bool:
         pid_file.unlink(missing_ok=True)
         return False
     try:
-        proc.signal_tree(pid, signal.SIGTERM)
+        _proc.signal_tree(pid, signal.SIGTERM)
     except Exception:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -69,11 +73,18 @@ def is_on() -> bool:
 def _start_caffeinate() -> None:
     if is_on():
         return
+    # caffeinate is macOS's. Windows has SetThreadExecutionState and Linux has
+    # systemd-inhibit, neither wired up here — so on those platforms this is a
+    # no-op that says so, rather than a crash or a toggle that silently lies
+    # about keeping the machine awake.
+    if not _CAFFEINATE.exists():
+        log.info("keep-awake is macOS-only; this platform will sleep normally")
+        return
     proc = subprocess.Popen(
-        ["/usr/bin/caffeinate", "-i", "-s"],
+        [str(_CAFFEINATE), "-i", "-s"],
         cwd=str(ROOT),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **proc.spawn_kwargs(),
+        **_proc.spawn_kwargs(),
     )
     CAFFEINATE_PID.write_text(str(proc.pid))
 

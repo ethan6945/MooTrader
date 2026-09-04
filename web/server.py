@@ -344,7 +344,10 @@ def _stop_opend() -> bool:
     if pid is None:
         # Also try killing any futu-opend by name (belt-and-suspenders)
         try:
-            subprocess.run(["pkill", "-x", "futu-opend"], timeout=3)
+            subprocess.run(
+                ["taskkill", "/IM", "futu-opend.exe", "/F"] if proc.IS_WINDOWS
+                else ["pkill", "-x", "futu-opend"], timeout=3,
+                capture_output=True)
         except Exception:
             pass
         try:
