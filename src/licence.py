@@ -267,9 +267,9 @@ class Status:
     days_left: int | None
     detail: str
     licence_id: str | None = None
-    # The calendar date the current state runs out — the trial's last day, or a
-    # dated licence's expiry. None for a perpetual licence. A countdown alone
-    # ("14 days left") cannot be checked against anything; a date can.
+    # The day the trial runs out. None once licensed — every licence issued is
+    # perpetual, so there is nothing for it to name. A countdown alone ("14
+    # days left") cannot be checked against anything; a date can.
     ends_on: str | None = None
 
 
@@ -279,18 +279,9 @@ def status() -> Status:
         payload = verify(key)
         if payload:
             lic_id = payload.get("id", "?")
-            ends = payload.get("expires") or None
-            left = None
-            if ends:
-                try:
-                    left = max(0, (date.fromisoformat(ends)
-                                   - datetime.now(timezone.utc).date()).days)
-                except ValueError:
-                    ends = None
-            return Status("licensed", True, left,
+            return Status("licensed", True, None,
                           f"Licensed to {lic_id}"
-                          f" ({payload.get('edition', 'perpetual')}).",
-                          lic_id, ends)
+                          f" ({payload.get('edition', 'perpetual')}).", lic_id)
         return Status("expired", False, 0,
                       "The stored licence is no longer valid for this machine. "
                       "Enter a current licence key to keep trading.")

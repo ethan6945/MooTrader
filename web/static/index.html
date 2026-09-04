@@ -1248,7 +1248,6 @@ const PT={
     lic_buy_d:'试用期内功能完整，到期后除下单外一切照常。永久授权一次付费，仅此一次：把下面的「本机识别码」用 WhatsApp 发给我，我把授权码发回给你。',
     s_lic_price_l:'永久授权', s_lic_wa_l:'WhatsApp',
     lic_days_left:'天后到期', lic_day_left:'天后到期', lic_ends_on:'到期日',
-    lic_badge:'✦ MooTrader Unlimited', lic_badge_dated:'✦ MooTrader Licensed',
     s_lic_machine_l:'本机识别码',
     lic_state_licensed:'已授权', lic_state_trial:'试用中',
     lic_state_expired:'试用已结束', lic_state_revoked:'授权已失效',
@@ -1371,7 +1370,6 @@ const PT={
     lic_buy_d:'The trial is the full software. When it ends everything keeps working except placing orders. A licence is a one-off payment: send the machine id below over WhatsApp and I will send a key back.',
     s_lic_price_l:'Lifetime licence', s_lic_wa_l:'WhatsApp',
     lic_days_left:'days left', lic_day_left:'day left', lic_ends_on:'ends',
-    lic_badge:'✦ MooTrader Unlimited', lic_badge_dated:'✦ MooTrader Licensed',
     s_lic_machine_l:'This computer',
     lic_state_licensed:'Licensed', lic_state_trial:'Trial',
     lic_state_expired:'Trial ended', lic_state_revoked:'Licence inactive',
@@ -1555,14 +1553,10 @@ async function loadLicence(){
     // what they get instead.
     $('#licBuy').hidden = paid;
     $('#licBadge').hidden = !paid;
-    // "Unlimited" has to mean unlimited. A dated licence — a trial extension,
-    // a goodwill reissue — is licensed but not perpetual, and calling it
-    // Unlimited beside a countdown that contradicts it is the panel lying.
-    $('#licBadge').textContent = T(l.ends_on ? 'lic_badge_dated' : 'lic_badge');
 
-    // The countdown runs whenever anything is counting down: a trial, or a
-    // dated licence. A perpetual licence has nothing to count.
-    const c=$('#licCount'), counting = l.days_left!=null;
+    // Only the trial counts down. Licences are perpetual — that is the only
+    // kind issued — so a licensed copy has nothing left to count.
+    const c=$('#licCount'), counting = l.state==='trial' && l.days_left!=null;
     c.hidden = !counting;
     if(counting){
       c.classList.toggle('crit', l.days_left<=3);

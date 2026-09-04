@@ -2,8 +2,6 @@
 """Issue licence keys. Runs on the ISSUER's machine only.
 
   python scripts/licence_gen.py --machine <id-from-customer> --id MT-0001
-  python scripts/licence_gen.py --machine <id> --id MT-0002 --years 2
-  python scripts/licence_gen.py --machine <id> --id MT-0003 --perpetual
   python scripts/licence_gen.py --show-public
 
 There is a web page for the same thing, which is the one to use day to day:
@@ -34,7 +32,7 @@ import argparse
 import base64
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 KEYGEN_DIR = Path(__file__).resolve().parent.parent / "Keygen Activator"
@@ -85,17 +83,6 @@ def main() -> int:
     ap.add_argument("--id", help="override the auto-assigned MT-NNNN. The web "
                                  "keygen assigns numbers from the same log and "
                                  "counter; pass this only to reissue a known id.")
-    ap.add_argument("--years", type=float, metavar="N",
-                    help="licence runs for N years from today (default 1). A "
-                         "dated licence is the only answer this scheme has to a "
-                         "refund: nothing offline can withdraw a key that has "
-                         "already been handed over, but one that lapses stops "
-                         "on its own.")
-    ap.add_argument("--perpetual", action="store_true",
-                    help="never expires. Sells better and is unrevocable — use "
-                         "it for your own machines and for customers you would "
-                         "not want to chase.")
-    ap.add_argument("--expires", help="YYYY-MM-DD, overriding --years")
     ap.add_argument("--edition", help="label shown in the panel; derived from "
                                       "the term when omitted")
     ap.add_argument("--show-public", action="store_true",
@@ -113,39 +100,13 @@ def main() -> int:
 
     lic_id = args.id or _next_id()
 
-    # Perpetual unless a term is asked for: USD 30 buys the software outright.
-    if args.years is None and not args.expires:
-        args.perpetual = True
-
-    if args.perpetual and args.expires:
-        ap.error("--perpetual and --expires contradict each other")
-    if args.expires:
-        try:
-            date.fromisoformat(args.expires)
-        except ValueError:
-            ap.error("--expires must be YYYY-MM-DD")
-        expires = args.expires
-    elif args.perpetual:
-        expires = None
-    else:
-        expires = (date.today() + timedelta(days=round((args.years or 1) * 365))
-                   ).isoformat()
-
-    if args.edition:
-        edition = args.edition
-    elif expires is None:
-        edition = "perpetual"
-    elif args.years is not None and abs(args.years - 1.0) < 1e-9 and not args.expires:
-        edition = "1 year"
-    else:
-        edition = f"until {expires}"
-
+    # One product: USD 30 buys it outright. Nothing issues a dated licence.
     payload = {
         "id": lic_id,
         "machine": (args.machine or "").strip().lower(),
-        "edition": edition,
+        "edition": args.edition or "perpetual",
         "issued": date.today().isoformat(),
-        "expires": expires,
+        "expires": None,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     licence = f"MT1.{_b64(raw)}.{_b64(key.sign(raw))}"

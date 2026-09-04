@@ -141,15 +141,10 @@ check("an expired trial names the date it ended",
       licence.status().ends_on is not None)
 if HAVE_KEY:
     _clear()
-    licence.activate(_issue(expires="2027-09-05", edition="1 year"))
-    st = licence.status()
-    check("a dated licence counts down too", st.days_left is not None)
-    check("...and carries its end date", st.ends_on == "2027-09-05")
-    _clear()
     licence.activate(_issue())
     st = licence.status()
-    check("a perpetual licence counts nothing", st.days_left is None)
-    check("...and has no end date", st.ends_on is None)
+    check("a licence counts nothing — every one issued is perpetual",
+          st.days_left is None and st.ends_on is None)
 
 section(5, "forgeries are refused")
 check("garbage is not a licence", licence.verify("nonsense") is None)
