@@ -128,10 +128,6 @@ Credentials live in `.env`; strategy parameters live in `config/parameters.json`
 
 A personal research project, not financial advice. Backtests don't predict the future, a regime change can break any strategy, and the author is not liable for any loss you take using this.
 
-## Support
-
-Free and open source, no paywall. A ⭐ helps · [Buy Me a Coffee](https://buymeacoffee.com/ethan6945) · [GitHub Sponsors](https://github.com/sponsors/ethan6945)
-
 ## License
 
 [Proprietary](LICENSE) © 2026 Ethan Tan — all rights reserved. Versions up to v2.6.1 were released under MIT; that grant stands for those versions only.

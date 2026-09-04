@@ -568,23 +568,6 @@
           <button class="sm" id="btnEnvToggle">—</button></div>
       </div>
 
-      <div class="set-sec" id="secLicence"><h3 id="sLicH">授权 Licence</h3>
-        <div class="set-row"><div style="flex:1">
-          <b id="licState">—</b>
-          <div class="setdesc" id="licDetail"></div>
-          <div class="setdesc" style="margin-top:6px">
-            <span id="licMachineL">本机识别码</span>
-            <code id="licMachine" style="user-select:all">—</code></div>
-        </div></div>
-        <div class="set-row" id="licActivateRow"><div style="flex:1">
-          <b id="licKeyL">授权码</b><div class="setdesc" id="licKeyD"></div></div>
-          <span style="display:flex;gap:6px;align-items:center">
-            <input id="licKey" type="text" spellcheck="false" placeholder="MT1.…"
-                   style="min-width:240px"/>
-            <button class="sm" id="btnActivate">激活</button></span></div>
-        <div id="licMsg" class="setdesc" style="margin-top:6px"></div>
-      </div>
-
       <!-- 策略模式 / 新闻源 / FinBERT / 资金 / 运行配置 / AI 引擎 all moved to
            the parameter console (🎛). They were settings that change what the
            bot TRADES, sitting beside theme and language; and four of the Run
@@ -607,10 +590,21 @@
           <button class="danger sm" id="btnResetSet">—</button></div>
       </div>
 
-      <div class="set-sec" id="secSupport"><h3 id="sSupportH">支持 Support</h3>
-        <div class="set-row"><div style="flex:1"><b id="sSupportL">支持这个项目</b>
-          <div class="setdesc" id="sSupportD"></div></div>
-          <button class="sm" onclick="window.open('https://buymeacoffee.com/ethan6945','_blank')">☕ Buy me a coffee</button></div>
+      <div class="set-sec" id="secLicence"><h3 id="sLicH">授权 Licence</h3>
+        <div class="set-row"><div style="flex:1">
+          <b id="licState">—</b>
+          <div class="setdesc" id="licDetail"></div>
+          <div class="setdesc" style="margin-top:6px">
+            <span id="licMachineL">本机识别码</span>
+            <code id="licMachine" style="user-select:all">—</code></div>
+        </div></div>
+        <div class="set-row" id="licActivateRow"><div style="flex:1">
+          <b id="licKeyL">授权码</b><div class="setdesc" id="licKeyD"></div></div>
+          <span style="display:flex;gap:6px;align-items:center">
+            <input id="licKey" type="text" spellcheck="false" placeholder="MT1.…"
+                   style="min-width:240px"/>
+            <button class="sm" id="btnActivate">激活</button></span></div>
+        <div id="licMsg" class="setdesc" style="margin-top:6px"></div>
       </div>
 
       <div class="set-sec" id="secAccess"><h3 id="sAccessH">访问 Access</h3>
@@ -1224,8 +1218,6 @@ const PT={
     s_reset_l:'重设统计 Reset Stats',
     s_reset_d:'把 今日盈亏、总盈亏（累计）、交易笔数/胜率、回撤峰值从现在清零重算。历史成交记录保留（History 仍可见）。需二次确认。',
     s_reset_b:'重设',
-    s_support:'支持 Support', s_support_l:'支持这个项目 Support this project',
-    s_support_d:'如果这个软件帮到了你，欢迎请作者喝杯咖啡 ☕',
     s_access:'访问 Access',
     s_lan_l:'手机 / 局域网访问',
     s_lan_d:'开启后，同一 WiFi 或 Tailscale 下的设备可访问本面板（需先设好访问密码）。'
@@ -1360,8 +1352,6 @@ const PT={
     s_reset_d:"Zero out today's P&L, cumulative P&L, trade count / win rate and the drawdown peak, and "
              +'recount from now. Closed trades are kept and stay visible under History. Asks twice.',
     s_reset_b:'Reset',
-    s_support:'Support', s_support_l:'Support this project',
-    s_support_d:'If this software helped you, a coffee is welcome ☕',
     s_access:'Access',
     s_lan_l:'Phone / LAN access',
     s_lan_d:'Lets devices on the same WiFi or Tailscale open this panel — set an access password first. '
@@ -1445,7 +1435,6 @@ function applyPanelLang(){
    ['#sResetL','s_reset_l'],['#sResetD','s_reset_d'],['#btnResetSet','s_reset_b'],
    ['#sLicH','s_lic'],['#licKeyL','s_lic_key_l'],['#licKeyD','s_lic_key_d'],
    ['#licMachineL','s_lic_machine_l'],['#btnActivate','s_lic_b'],
-   ['#sSupportH','s_support'],['#sSupportL','s_support_l'],['#sSupportD','s_support_d'],
    ['#sAccessH','s_access'],['#sLanL','s_lan_l'],['#sLanD','s_lan_d'],
    ['#sLogoutL','s_logout_l'],['#sLogoutD','s_logout_d'],['#btnLogout','s_logout_b'],
    ['#sExitL','s_exit_l'],['#sExitD','s_exit_d'],['#btnExit','s_exit_b'],

@@ -128,10 +128,6 @@ python -m src.backtest_v4 --days 180
 
 个人研究项目，不构成投资建议。回测不能预测未来，市场风格一变任何策略都可能亏钱，作者不对你使用本程序产生的任何损失负责。
 
-## 支持
-
-完全免费开源，没有付费墙。点个 ⭐ 就很好 · [Buy Me a Coffee](https://buymeacoffee.com/ethan6945) · [GitHub Sponsors](https://github.com/sponsors/ethan6945)
-
 ## 许可
 
 [专有授权](LICENSE) © 2026 Ethan Tan —— 保留所有权利。v2.6.1 及之前的版本以 MIT 发布，该授权仅对那些版本继续有效。
