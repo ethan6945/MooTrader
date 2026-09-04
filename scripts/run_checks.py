@@ -73,6 +73,9 @@ WHAT IT COVERS
   test_licence_server    — activation, the machine cap, revocation, and the
                            failure direction: the issuer's host being down must
                            not stop a customer trading.
+  test_licence_crl       — revocation with no server: a signed list on
+                           read-only hosting, and the two replay attacks that
+                           come with not owning the host it is served from.
   test_env_redaction     — no credential reaches a snapshot or a log line
   test_auto_budget       — compounding math, and the freeze over it
   config_baseline        — .env / .env.example / db / README / CODE DEFAULTS
@@ -139,6 +142,7 @@ CHECKS = {
     "tombstone":  ("scripts/test_close_tombstone.py",    True,  True,  180),
     "licence":    ("scripts/test_licence.py",            True,  True,  120),
     "licsrv":     ("scripts/test_licence_server.py",     True,  True,  240),
+    "licrl":      ("scripts/test_licence_crl.py",        True,  True,  180),
     "baseline":   ("scripts/config_baseline.py",         False, False, 120),
     "secrets":    ("scripts/check_no_secrets.py",        False, False, 180),
 }
