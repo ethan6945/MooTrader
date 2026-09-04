@@ -37,7 +37,28 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-PRIVATE_KEY = Path(__file__).resolve().parent.parent / "Keygen Activator" / "signing-private.pem"
+KEYGEN_DIR = Path(__file__).resolve().parent.parent / "Keygen Activator"
+PRIVATE_KEY = KEYGEN_DIR / "signing-private.pem"
+
+
+def _next_id() -> str:
+    """Same number the web keygen would assign — the log and the counter, whichever
+    is higher. Two tools that number independently would collide on the first
+    licence issued from the other one."""
+    import re
+    high = 0
+    try:
+        for r in json.loads((KEYGEN_DIR / "issued.json").read_text()):
+            m = re.fullmatch(r"MT-(\d+)", str(r.get("id", "")))
+            if m:
+                high = max(high, int(m.group(1)))
+    except (OSError, ValueError):
+        pass
+    try:
+        high = max(high, int((KEYGEN_DIR / "next-id.txt").read_text().strip()))
+    except (OSError, ValueError):
+        pass
+    return f"MT-{high + 1:04d}"
 
 
 def _b64(b: bytes) -> str:
@@ -61,8 +82,9 @@ def main() -> int:
                                       "Omit to issue an UNBOUND licence, which "
                                       "works on every machine — rarely what you "
                                       "want.")
-    ap.add_argument("--id", help="licence id you will recognise later, e.g. an "
-                                 "order number")
+    ap.add_argument("--id", help="override the auto-assigned MT-NNNN. The web "
+                                 "keygen assigns numbers from the same log and "
+                                 "counter; pass this only to reissue a known id.")
     ap.add_argument("--years", type=float, default=1.0, metavar="N",
                     help="licence runs for N years from today (default 1). A "
                          "dated licence is the only answer this scheme has to a "
@@ -89,8 +111,7 @@ def main() -> int:
         print(pub.hex())
         return 0
 
-    if not args.id:
-        ap.error("--id is required")
+    lic_id = args.id or _next_id()
 
     if args.perpetual and args.expires:
         ap.error("--perpetual and --expires contradict each other")
@@ -116,7 +137,7 @@ def main() -> int:
         edition = f"until {expires}"
 
     payload = {
-        "id": args.id,
+        "id": lic_id,
         "machine": (args.machine or "").strip().lower(),
         "edition": edition,
         "issued": date.today().isoformat(),
