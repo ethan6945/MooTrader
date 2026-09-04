@@ -85,7 +85,7 @@ def main() -> int:
     ap.add_argument("--id", help="override the auto-assigned MT-NNNN. The web "
                                  "keygen assigns numbers from the same log and "
                                  "counter; pass this only to reissue a known id.")
-    ap.add_argument("--years", type=float, default=1.0, metavar="N",
+    ap.add_argument("--years", type=float, metavar="N",
                     help="licence runs for N years from today (default 1). A "
                          "dated licence is the only answer this scheme has to a "
                          "refund: nothing offline can withdraw a key that has "
@@ -113,6 +113,10 @@ def main() -> int:
 
     lic_id = args.id or _next_id()
 
+    # Perpetual unless a term is asked for: USD 30 buys the software outright.
+    if args.years is None and not args.expires:
+        args.perpetual = True
+
     if args.perpetual and args.expires:
         ap.error("--perpetual and --expires contradict each other")
     if args.expires:
@@ -124,14 +128,14 @@ def main() -> int:
     elif args.perpetual:
         expires = None
     else:
-        expires = (date.today() + timedelta(days=round(args.years * 365))
+        expires = (date.today() + timedelta(days=round((args.years or 1) * 365))
                    ).isoformat()
 
     if args.edition:
         edition = args.edition
     elif expires is None:
         edition = "perpetual"
-    elif abs(args.years - 1.0) < 1e-9 and not args.expires:
+    elif args.years is not None and abs(args.years - 1.0) < 1e-9 and not args.expires:
         edition = "1 year"
     else:
         edition = f"until {expires}"

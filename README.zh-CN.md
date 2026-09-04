@@ -9,6 +9,8 @@
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
+![Trial](https://img.shields.io/badge/trial-30%20days%20free-2ea44f)
+![Licence](https://img.shields.io/badge/lifetime-USD%2030-blue)
 ![License](https://img.shields.io/badge/license-proprietary-red)
 
 [English](README.md) · 简体中文
@@ -74,6 +76,20 @@ flowchart LR
 | **参数** | 全部策略参数，每一条都有大白话说明，并标明哪些下次扫描就生效、哪些要重启；调参开关（手动 / 每周）和「立即回测调参」按钮也在这一页 |
 
 在设置里设好访问密码、打开「手机 / 局域网访问」，同一个 WiFi（或 Tailscale）下的手机就能开同一个面板。
+
+---
+
+## 价格
+
+**30 天免费，功能一点不留。** 试用期就是完整的软件 —— 所有策略、所有面板，包括真实下单。
+到期后软件照常运行，唯一停掉的是下单：它仍然会扫描、打分、预测、回测，所以过期的试用版
+会告诉你它**本来会**怎么做。
+
+**永久授权 USD 30，一次付清。** 没有订阅、不用续费、不抽成。
+
+购买方式：打开 **设置 → 授权**，把里面显示的**本机识别码**用 WhatsApp 发给我 ——
+**@ethan45** —— 我把授权码发回给你。粘贴进同一个面板，这台电脑就永久授权了。
+授权码是针对那一台电脑签发的，所以我只需要那个识别码。
 
 ---
 

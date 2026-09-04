@@ -9,6 +9,8 @@
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
+![Trial](https://img.shields.io/badge/trial-30%20days%20free-2ea44f)
+![Licence](https://img.shields.io/badge/lifetime-USD%2030-blue)
 ![License](https://img.shields.io/badge/license-proprietary-red)
 
 English · [简体中文](README.zh-CN.md)
@@ -74,6 +76,24 @@ You don't drive it from a terminal. You open the panel, press **▶ Start**, and
 | **Parameters** | Every strategy parameter with a plain-language description, which ones take effect on the next scan, and which need a restart — plus the tuning switch (manual / weekly) and the button that runs a tuning pass now |
 
 Set a panel password in Settings and flip on LAN access, and the same panel opens on your phone over WiFi (or Tailscale).
+
+---
+
+## Pricing
+
+**30 days free, with nothing held back.** The trial is the whole program — every
+strategy, every panel, live orders included. When it ends the software keeps
+running exactly as before, and the one thing that stops is placing orders: it
+still scans, scores, forecasts and backtests, so an expired trial tells you what
+it *would* have done.
+
+**A lifetime licence is USD 30, paid once.** No subscription, no renewal, no
+per-trade cut.
+
+To buy one, open **Settings → Licence** and send me the **machine id** shown
+there over WhatsApp — **@ethan45** — and I will send a key back. Paste it into
+the same panel and the copy is licensed permanently. The key is issued for that
+one computer, so the id is the only thing I need.
 
 ---
 
