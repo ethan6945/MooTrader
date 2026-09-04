@@ -26,8 +26,14 @@ WHAT THIS DOES NOT DO
   bytecode decompiled, and the call below patched to return True. That is true
   of every client-side check in any language and it is not worth pretending
   otherwise. This raises sharing from "send them the folder" to "decompile and
-  patch it", which is the honest goal. Revocation and activation counting are
-  what the online step is for; neither is possible offline.
+  patch it", which is the honest goal.
+
+  Withdraw a licence. This is offline by choice — nothing here reaches the
+  network, and a signature already handed out cannot be taken back by one. A
+  refund or a chargeback has no technical answer; issue short-dated licences
+  and renew them if that matters. Adding revocation later does not help the
+  copies already sold, because those builds have nothing that would go looking
+  for it: a revocation mechanism has to ship BEFORE the licence it revokes.
 """
 from __future__ import annotations
 
@@ -53,39 +59,6 @@ SIGNING_PUBLIC_KEY = bytes.fromhex(
 TRIAL_DAYS = 30
 _PREFIX = "MT1"
 
-# Where a first activation phones home. Empty disables the online step entirely,
-# which is the right setting for a build that must work air-gapped.
-def _server() -> str:
-    import os
-    from .config import ROOT                                   # noqa: F401
-    return (os.getenv("MMT_LICENCE_SERVER", "") or "").strip().rstrip("/")
-
-
-# How long an activated copy trades without being able to reach the server.
-# Reaching it is not a condition of trading: the server going down must not stop
-# a customer's bot mid-session, so an unreachable server FAILS OPEN and is
-# retried later. Only an explicit "revoked" answer closes the gate. The window
-# exists so a revoked licence cannot simply firewall the check away forever.
-RECHECK_EVERY_S = 7 * 86400
-RECHECK_GRACE_S = 30 * 86400
-
-
-# A revocation list is the no-server answer to the one thing offline licensing
-# cannot do. Revocation only needs to be READ, and read-only hosting is free
-# everywhere — GitHub Pages, Cloudflare Pages, a gist. The issuer signs a list
-# with the same private key and publishes the file; there is nothing to run.
-#
-# Empty disables it, which is the correct setting for an air-gapped build.
-def _crl_url() -> str:
-    import os
-    return (os.getenv("MMT_LICENCE_CRL", "") or "").strip()
-
-
-# A list older than this is treated as unreachable rather than as proof of
-# innocence — otherwise serving one stale file forever is a permanent bypass.
-CRL_MAX_AGE_S = 30 * 86400
-CRL_REFRESH_S = 24 * 3600
-_CRL_PREFIX = "MTCRL1"
 
 
 class NotLicensed(Exception):
@@ -143,13 +116,11 @@ def _b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def verify_signature_only(key: str) -> dict | None:
-    """Payload of a licence whose signature and expiry are good, else None.
+def verify(key: str) -> dict | None:
+    """Return the payload of a licence valid FOR THIS MACHINE, else None.
 
-    Deliberately does NOT check the machine binding, because the two callers
-    that need this are not the machine the licence is for: the activation
-    service, which must validate a licence it will never run on, and any tool
-    that inspects a key. verify() is what an installation asks about itself.
+    Checks, in order: shape, signature, expiry, machine binding. A licence that
+    fails any of them is not a licence here.
     """
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -179,18 +150,6 @@ def verify_signature_only(key: str) -> dict | None:
                 return None
         except ValueError:
             return None
-    return payload
-
-
-def verify(key: str) -> dict | None:
-    """Return the payload of a licence valid FOR THIS MACHINE, else None.
-
-    Signature and expiry, then the machine binding. A licence that fails any of
-    them is not a licence here.
-    """
-    payload = verify_signature_only(key)
-    if payload is None:
-        return None
     bound = payload.get("machine") or ""
     if bound and bound != machine_id():
         log.warning("licence %s is bound to another machine",
@@ -205,10 +164,6 @@ def _paths() -> tuple[Path, Path]:
     from .config import ROOT
     return ROOT / "data" / ".licence", ROOT / "data" / ".trial"
 
-
-def _receipt_path() -> Path:
-    from .config import ROOT
-    return ROOT / "data" / ".activation"
 
 
 def _seal(data: dict) -> str:
@@ -278,79 +233,18 @@ def stored_licence() -> str:
         return ""
 
 
-def _call_server(path: str, body: dict, timeout: float = 8.0) -> dict | None:
-    """POST to the activation service. None means "could not reach it".
-
-    None and a refusal are deliberately different values. Only the service
-    saying no closes the gate; not being able to ask keeps it open, because a
-    customer's bot must not stop trading because the issuer's host is down.
-    """
-    base = _server()
-    if not base:
-        return None
-    import json as _json
-    import urllib.error
-    import urllib.request
-    req = urllib.request.Request(
-        base + path, data=_json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return _json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        try:
-            return _json.loads(e.read().decode())
-        except Exception:
-            log.warning("activation service returned HTTP %s", e.code)
-            return None
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        log.warning("activation service unreachable: %s", e)
-        return None
-
-
-def _read_receipt() -> dict:
-    try:
-        return _unseal(_receipt_path().read_text()) or {}
-    except OSError:
-        return {}
-
-
-def _write_receipt(rec: dict) -> None:
-    try:
-        pth = _receipt_path()
-        pth.parent.mkdir(parents=True, exist_ok=True)
-        pth.write_text(_seal(rec))
-    except OSError as e:
-        log.warning("could not persist activation receipt: %s", e)
-
-
 def activate(key: str) -> tuple[bool, str]:
-    """Verify a licence key, register it with the service, and store it.
+    """Verify a licence key and store it. Returns (ok, message for the user).
 
-    The signature is checked locally FIRST, so a typo or a forgery never reaches
-    the network and the customer gets an instant answer. Only a genuine licence
-    is worth an activation slot.
-
-    If a service is configured it decides the rest: it counts activations,
-    binds the machine, and can refuse a revoked or over-used licence. If it is
-    not configured, or cannot be reached, activation still succeeds — a licence
-    that verifies is a licence, and refusing to activate one because the
-    issuer's host is offline punishes the customer for the issuer's outage.
+    Nothing leaves the machine. The signature proves the issuer wrote it, and
+    the machine binding proves it was written for this computer; neither needs
+    to be asked of anyone.
     """
     payload = verify(key)
     if payload is None:
         return False, ("That licence key is not valid for this machine. Check "
                        "it was copied whole, and that it was issued for this "
                        "computer.")
-
-    lic_id = payload.get("id", "?")
-    answer = _call_server("/activate", {
-        "licence": key.strip(), "machine": machine_id(), "id": lic_id})
-
-    if answer is not None and not answer.get("ok"):
-        reason = answer.get("error") or "the licence service refused it"
-        log.warning("activation refused for %s: %s", lic_id, reason)
-        return False, reason
 
     lic_path, _ = _paths()
     try:
@@ -359,159 +253,9 @@ def activate(key: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"The licence is valid but could not be saved: {e}"
 
-    now = int(time.time())
-    _write_receipt({"id": lic_id, "activated": now,
-                    "last_ok": now if answer is not None else 0,
-                    "online": answer is not None})
-    log.info("licence %s activated (%s, %s)", lic_id,
-             payload.get("edition", "?"),
-             "registered" if answer is not None else "offline")
-    if answer is None and _server():
-        return True, (f"Activated — {payload.get('edition', 'licensed')}. The "
-                      f"licence service could not be reached; it will be "
-                      f"registered automatically later.")
+    log.info("licence %s activated (%s)", payload.get("id", "?"),
+             payload.get("edition", "?"))
     return True, f"Activated — {payload.get('edition', 'licensed')}."
-
-
-def verify_crl(blob: str) -> dict | None:
-    """Payload of a well-signed revocation list, else None.
-
-    Signed with the same key as licences, so a published list cannot be forged,
-    edited, or replaced with an empty one by whoever hosts or proxies the file.
-    """
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PublicKey)
-        from cryptography.exceptions import InvalidSignature
-    except ImportError:                                   # pragma: no cover
-        return None
-    parts = (blob or "").strip().split(".")
-    if len(parts) != 3 or parts[0] != _CRL_PREFIX:
-        return None
-    try:
-        raw, sig = _b64d(parts[1]), _b64d(parts[2])
-        Ed25519PublicKey.from_public_bytes(SIGNING_PUBLIC_KEY).verify(sig, raw)
-        return json.loads(raw)
-    except (InvalidSignature, ValueError, json.JSONDecodeError):
-        return None
-
-
-def _fetch_crl() -> dict | None:
-    """Download and validate the list. None means "could not use one".
-
-    Two replay defences, because the file is served by a host the issuer does
-    not control and an attacker only has to REPLACE it with an older copy to
-    un-revoke themselves:
-
-      * serial never goes backwards. The highest one seen is remembered, and a
-        list numbered below it is rejected outright.
-      * issued must be recent. A list older than CRL_MAX_AGE_S is not evidence
-        that nothing has been revoked since; it is a stale file.
-    """
-    url = _crl_url()
-    if not url:
-        return None
-    import urllib.error
-    import urllib.request
-    try:
-        with urllib.request.urlopen(url, timeout=8) as r:
-            blob = r.read().decode()
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        log.warning("revocation list unreachable: %s", e)
-        return None
-
-    payload = verify_crl(blob)
-    if payload is None:
-        log.warning("revocation list failed signature checks — ignoring it")
-        return None
-
-    rec = _read_receipt()
-    serial = int(payload.get("serial") or 0)
-    seen = int(rec.get("crl_serial") or 0)
-    if serial < seen:
-        log.warning("revocation list serial went backwards (%d < %d) — "
-                    "ignoring a replayed list", serial, seen)
-        return None
-
-    issued = payload.get("issued") or ""
-    try:
-        age = (datetime.now(timezone.utc).date()
-               - date.fromisoformat(issued)).days * 86400
-    except ValueError:
-        return None
-    if age > CRL_MAX_AGE_S:
-        log.warning("revocation list is %d days old — treating as unreachable",
-                    age // 86400)
-        return None
-
-    rec.update({"crl_serial": serial, "crl_ok": int(time.time())})
-    _write_receipt(rec)
-    return payload
-
-
-def _revoked_by_list(lic_id: str) -> bool:
-    """Is this licence on the published list? Same failure direction as always.
-
-    Not being able to read the list keeps the gate open, until the receipt goes
-    stale past the grace — so blocking the URL buys a month, not forever.
-    """
-    if not _crl_url():
-        return False
-    rec = _read_receipt()
-    now = int(time.time())
-    last = int(rec.get("crl_ok") or 0)
-
-    if last and now - last < CRL_REFRESH_S:
-        return lic_id in (rec.get("crl_ids") or [])
-
-    payload = _fetch_crl()
-    if payload is None:
-        if last and now - last > RECHECK_GRACE_S:
-            log.warning("no usable revocation list for %d days",
-                        (now - last) // 86400)
-            return True
-        return lic_id in (rec.get("crl_ids") or [])
-
-    ids = [str(x) for x in (payload.get("revoked") or [])]
-    rec = _read_receipt()
-    rec["crl_ids"] = ids
-    _write_receipt(rec)
-    if lic_id in ids:
-        log.warning("licence %s is on the published revocation list", lic_id)
-        return True
-    return False
-
-
-def _revoked(lic_id: str) -> bool:
-    """Has the service explicitly revoked this licence?
-
-    Only ever returns True on an explicit answer. Unreachable is not revoked;
-    it just means the receipt goes stale, and after RECHECK_GRACE_S a stale
-    receipt is what stops trading — otherwise blocking the host in /etc/hosts
-    would be a permanent bypass.
-    """
-    if not _server():
-        return False
-    rec = _read_receipt()
-    now = int(time.time())
-    last_ok = int(rec.get("last_ok") or 0)
-    if last_ok and now - last_ok < RECHECK_EVERY_S:
-        return False
-
-    answer = _call_server("/check", {"id": lic_id, "machine": machine_id()},
-                          timeout=5.0)
-    if answer is None:
-        if last_ok and now - last_ok > RECHECK_GRACE_S:
-            log.warning("licence %s has not been confirmed for %d days",
-                        lic_id, (now - last_ok) // 86400)
-            return True
-        return False
-    if answer.get("ok"):
-        rec.update({"id": lic_id, "last_ok": now})
-        _write_receipt(rec)
-        return False
-    log.warning("licence %s was revoked by the service", lic_id)
-    return True
 
 
 # ── the question everything else asks ────────────────────────────────────────
@@ -531,14 +275,6 @@ def status() -> Status:
         payload = verify(key)
         if payload:
             lic_id = payload.get("id", "?")
-            # Either mechanism can revoke, and neither requires the other: the
-            # service if one is hosted, the published list if not. Both are
-            # optional, and with neither configured this is pure offline
-            # verification, which is the default.
-            if _revoked(lic_id) or _revoked_by_list(lic_id):
-                return Status("revoked", False, 0,
-                              "This licence is no longer active. Contact "
-                              "support if you believe that is wrong.", lic_id)
             return Status("licensed", True, None,
                           f"Licensed to {lic_id}"
                           f" ({payload.get('edition', 'perpetual')}).", lic_id)
