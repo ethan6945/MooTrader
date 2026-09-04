@@ -151,6 +151,11 @@
   .eqtip{position:absolute;pointer-events:none;background:rgba(17,23,38,.94);border:1px solid var(--border2);
     border-radius:9px;padding:6px 10px;font-size:11.5px;color:var(--strong);transform:translate(-50%,-130%);white-space:nowrap;z-index:5;box-shadow:0 8px 24px -8px rgba(0,0,0,.6);line-height:1.5}
   .hidden{display:none!important}
+  /* The `hidden` ATTRIBUTE only carries the UA default `display:none`, which
+     any rule setting display beats. .lic-count sets display:flex, so the trial
+     countdown stayed on screen next to the Unlimited badge showing its "—"
+     placeholder. Any element toggled with .hidden = true needs this. */
+  [hidden]{display:none!important}
 
   /* ── light theme ── */
   body.light{--bg:#eef2f7;--card:rgba(255,255,255,.88);--card-solid:#ffffff;--card2:#e9eef5;--border:#d7dfe9;--border2:#c3cfdf;
