@@ -46,7 +46,7 @@ import platform
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -267,6 +267,10 @@ class Status:
     days_left: int | None
     detail: str
     licence_id: str | None = None
+    # The calendar date the current state runs out — the trial's last day, or a
+    # dated licence's expiry. None for a perpetual licence. A countdown alone
+    # ("14 days left") cannot be checked against anything; a date can.
+    ends_on: str | None = None
 
 
 def status() -> Status:
@@ -275,9 +279,18 @@ def status() -> Status:
         payload = verify(key)
         if payload:
             lic_id = payload.get("id", "?")
-            return Status("licensed", True, None,
+            ends = payload.get("expires") or None
+            left = None
+            if ends:
+                try:
+                    left = max(0, (date.fromisoformat(ends)
+                                   - datetime.now(timezone.utc).date()).days)
+                except ValueError:
+                    ends = None
+            return Status("licensed", True, left,
                           f"Licensed to {lic_id}"
-                          f" ({payload.get('edition', 'perpetual')}).", lic_id)
+                          f" ({payload.get('edition', 'perpetual')}).",
+                          lic_id, ends)
         return Status("expired", False, 0,
                       "The stored licence is no longer valid for this machine. "
                       "Enter a current licence key to keep trading.")
@@ -289,13 +302,17 @@ def status() -> Status:
                       "backwards. Enter a licence key to trade.")
     used = (int(time.time()) - int(rec["first_run"])) / 86400
     left = max(0, TRIAL_DAYS - int(used))
+    ends_on = (datetime.fromtimestamp(int(rec["first_run"]), timezone.utc).date()
+               + timedelta(days=TRIAL_DAYS)).isoformat()
     if left <= 0:
         return Status("expired", False, 0,
-                      f"The {TRIAL_DAYS}-day trial has ended. Everything except "
-                      f"placing orders keeps working; enter a licence key to "
-                      f"resume trading.")
+                      f"The {TRIAL_DAYS}-day trial ended on {ends_on}. "
+                      f"Everything except placing orders keeps working; enter a "
+                      f"licence key to resume trading.",
+                      None, ends_on)
     return Status("trial", True, left,
-                  f"Trial — {left} day{'s' if left != 1 else ''} of trading left.")
+                  f"Trial — {left} day{'s' if left != 1 else ''} of trading "
+                  f"left, until {ends_on}.", None, ends_on)
 
 
 def require_trading() -> None:

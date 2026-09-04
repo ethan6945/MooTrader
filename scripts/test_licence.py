@@ -124,7 +124,34 @@ else:
         check("the order goes through", False)
 
 # ── 4 ────────────────────────────────────────────────────────────────────────
-section(4, "forgeries are refused")
+section(4, "the countdown")
+_clear()
+st = licence.status()
+check("a fresh trial ends TRIAL_DAYS out",
+      st.days_left == licence.TRIAL_DAYS and st.ends_on is not None)
+for used, want in ((23, 7), (27, 3), (29, 1), (31, 0)):
+    rec = licence._read_trial()
+    rec["first_run"] = int(time.time()) - used * 86400
+    rec["last_seen"] = int(time.time())
+    licence._paths()[1].write_text(licence._seal(rec))
+    st = licence.status()
+    check(f"day {used}: {want} left", st.days_left == want)
+check("the last day says 'day', not 'days'", "1 day of" in st.detail or want == 0)
+check("an expired trial names the date it ended",
+      licence.status().ends_on is not None)
+if HAVE_KEY:
+    _clear()
+    licence.activate(_issue(expires="2027-09-05", edition="1 year"))
+    st = licence.status()
+    check("a dated licence counts down too", st.days_left is not None)
+    check("...and carries its end date", st.ends_on == "2027-09-05")
+    _clear()
+    licence.activate(_issue())
+    st = licence.status()
+    check("a perpetual licence counts nothing", st.days_left is None)
+    check("...and has no end date", st.ends_on is None)
+
+section(5, "forgeries are refused")
 check("garbage is not a licence", licence.verify("nonsense") is None)
 check("an empty key is not a licence", licence.verify("") is None)
 check("the right shape with a junk signature fails",
@@ -142,7 +169,7 @@ if HAVE_KEY:
     check("an unbound licence still verifies", licence.verify(_issue(machine="")) is not None)
 
 # ── 5 ────────────────────────────────────────────────────────────────────────
-section(5, "the trial record cannot be edited by hand")
+section(6, "the trial record cannot be edited by hand")
 _clear()
 licence._read_trial()
 _, trial_path = licence._paths()
@@ -153,7 +180,7 @@ rec = licence._read_trial()
 check("a hand-edited record is discarded and the trial restarts",
       rec["first_run"] <= int(time.time()) + 1)
 
-section(6, "a clock moved backwards is treated as tampering")
+section(7, "a clock moved backwards is treated as tampering")
 _clear()
 rec = licence._read_trial()
 rec["last_seen"] = int(time.time()) + 10 * 86400      # pretend we saw the future

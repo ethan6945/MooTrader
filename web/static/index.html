@@ -193,6 +193,19 @@
   .lic-k{color:var(--muted);font-size:11.5px;margin-right:7px}
   .lic-price{font-size:15px;letter-spacing:.2px}
   .lic-wa{font-weight:600}
+  /* The countdown takes the badge's slot: a trial is counting down to the
+     state the badge represents, so they are never both shown. It warms from
+     neutral to amber to red as the days run out — a number that looks the same
+     on day 30 and day 2 is not a countdown, it is a label. */
+  .lic-count{align-self:center;display:flex;align-items:baseline;gap:5px;
+    white-space:nowrap;padding:4px 13px;border-radius:99px;
+    border:1px solid var(--line,#2a2f3a);background:rgba(127,127,127,.10)}
+  .lic-count .lic-n{font-size:17px;font-weight:700;letter-spacing:.2px}
+  .lic-count .lic-u{font-size:11px;color:var(--muted)}
+  .lic-count.warn{border-color:#b7791f;background:rgba(245,158,11,.13)}
+  .lic-count.warn .lic-n{color:#f0b429}
+  .lic-count.crit{border-color:#c53030;background:rgba(239,68,68,.14)}
+  .lic-count.crit .lic-n{color:#fc8181}
   .lic-badge{align-self:center;white-space:nowrap;padding:5px 13px;border-radius:99px;
     font-size:12px;font-weight:700;letter-spacing:.4px;
     color:#0b3b1e;background:linear-gradient(135deg,#8ef0b4,#33c97a);
@@ -605,6 +618,9 @@
           <b id="licState">—</b>
           <div class="setdesc" id="licDetail"></div></div>
           <div id="licBadge" class="lic-badge" hidden>✦ MooTrader Unlimited</div>
+          <div id="licCount" class="lic-count" hidden>
+            <span class="lic-n" id="licCountN">—</span>
+            <span class="lic-u" id="licCountU"></span></div>
         </div>
 
         <!-- Everything below is for someone who has not bought yet, and all of
@@ -1231,6 +1247,8 @@ const PT={
     s_lic_key_d:'粘贴收到的授权码，激活后本机永久可用。',
     lic_buy_d:'试用期内功能完整，到期后除下单外一切照常。永久授权一次付费，仅此一次：把下面的「本机识别码」用 WhatsApp 发给我，我把授权码发回给你。',
     s_lic_price_l:'永久授权', s_lic_wa_l:'WhatsApp',
+    lic_days_left:'天后到期', lic_day_left:'天后到期', lic_ends_on:'到期日',
+    lic_badge:'✦ MooTrader Unlimited', lic_badge_dated:'✦ MooTrader Licensed',
     s_lic_machine_l:'本机识别码',
     lic_state_licensed:'已授权', lic_state_trial:'试用中',
     lic_state_expired:'试用已结束', lic_state_revoked:'授权已失效',
@@ -1352,6 +1370,8 @@ const PT={
     s_lic_key_d:'Paste the key you received. Activation is permanent on this computer.',
     lic_buy_d:'The trial is the full software. When it ends everything keeps working except placing orders. A licence is a one-off payment: send the machine id below over WhatsApp and I will send a key back.',
     s_lic_price_l:'Lifetime licence', s_lic_wa_l:'WhatsApp',
+    lic_days_left:'days left', lic_day_left:'day left', lic_ends_on:'ends',
+    lic_badge:'✦ MooTrader Unlimited', lic_badge_dated:'✦ MooTrader Licensed',
     s_lic_machine_l:'This computer',
     lic_state_licensed:'Licensed', lic_state_trial:'Trial',
     lic_state_expired:'Trial ended', lic_state_revoked:'Licence inactive',
@@ -1535,6 +1555,22 @@ async function loadLicence(){
     // what they get instead.
     $('#licBuy').hidden = paid;
     $('#licBadge').hidden = !paid;
+    // "Unlimited" has to mean unlimited. A dated licence — a trial extension,
+    // a goodwill reissue — is licensed but not perpetual, and calling it
+    // Unlimited beside a countdown that contradicts it is the panel lying.
+    $('#licBadge').textContent = T(l.ends_on ? 'lic_badge_dated' : 'lic_badge');
+
+    // The countdown runs whenever anything is counting down: a trial, or a
+    // dated licence. A perpetual licence has nothing to count.
+    const c=$('#licCount'), counting = l.days_left!=null;
+    c.hidden = !counting;
+    if(counting){
+      c.classList.toggle('crit', l.days_left<=3);
+      c.classList.toggle('warn', l.days_left>3 && l.days_left<=7);
+      $('#licCountN').textContent=l.days_left;
+      $('#licCountU').textContent=T(l.days_left===1?'lic_day_left':'lic_days_left');
+      c.title = l.ends_on ? T('lic_ends_on')+' '+l.ends_on : '';
+    }
   }catch(e){}
 }
 

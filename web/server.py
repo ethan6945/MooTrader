@@ -799,6 +799,7 @@ def api_licence():
         "days_left": st.days_left,
         "detail": st.detail,
         "licence_id": st.licence_id,
+        "ends_on": st.ends_on,
         "machine": licence.machine_id(),
         "trial_days": licence.TRIAL_DAYS,
     })
