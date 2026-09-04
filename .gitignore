@@ -133,6 +133,12 @@ keygen.command
 # bought it for donations is not a thing to ship.
 .github/FUNDING.yml
 
+# ============== Promo video ==============
+# Rendered from docs/screenshots by a script; it is a build product, and a
+# binary that changes wholesale on every re-render is the wrong thing to keep
+# diffs of. Attach it to a release or send it directly.
+docs/promo/
+
 # ============== Release images ==============
 # macos/.gitignore already covers dist/. This catches an image built or copied
 # anywhere else — 122 MB each, and they belong on a GitHub release, not in git.
