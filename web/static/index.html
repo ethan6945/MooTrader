@@ -616,7 +616,15 @@
       <div class="set-sec" id="secLicence"><h3 id="sLicH">授权 Licence</h3>
         <div class="set-row"><div style="flex:1">
           <b id="licState">—</b>
-          <div class="setdesc" id="licDetail"></div></div>
+          <div class="setdesc" id="licDetail"></div>
+          <!-- The machine id is NOT part of the purchase block. It was, and it
+               vanished the moment a copy was activated — which is exactly when
+               a customer next needs it: to move machines, to be reissued a key,
+               or to answer "which install is this?" in a support message. -->
+          <div class="setdesc" style="margin-top:6px">
+            <span id="licMachineL">本机识别码</span>
+            <code id="licMachine" style="user-select:all">—</code></div>
+          </div>
           <div id="licBadge" class="lic-badge" hidden>✦ MooTrader Unlimited</div>
           <div id="licCount" class="lic-count" hidden>
             <span class="lic-n" id="licCountN">—</span>
@@ -634,8 +642,6 @@
                    <b class="lic-price">USD 30</b></div>
               <div><span class="lic-k" id="licWaL">WhatsApp</span>
                    <code class="lic-wa" style="user-select:all">@ethan45</code></div>
-              <div><span class="lic-k" id="licMachineL">本机识别码</span>
-                   <code id="licMachine" style="user-select:all">—</code></div>
             </div>
           </div>
           <div class="set-row" id="licActivateRow"><div style="flex:1">
