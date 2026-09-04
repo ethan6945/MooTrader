@@ -5,7 +5,8 @@
 **A self-hosted, AI-assisted swing-trading bot for US stocks — you run it from your browser.**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
-![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-14+-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
@@ -18,7 +19,7 @@ English · [简体中文](README.zh-CN.md)
 </div>
 
 <p align="center">
-  <img src="docs/screenshots/web-tour.gif" width="92%" alt="The web panel: dashboard, history, signal desk"/>
+  <img src="docs/screenshots/01-dashboard.png" width="92%" alt="The web panel: dashboard, history, signal desk"/>
   <br/>
   <em>The whole thing is a web panel — dashboard, history, signal desk. This is a paper account.</em>
 </p>
@@ -41,7 +42,7 @@ flowchart LR
     E --> F["📊 close + log"]
 ```
 
-Everything runs on your own Mac, against your own broker account through the official OpenD gateway. **Paper trading is the default** — switching to real money takes a deliberate step in the panel (trade password, no open positions, second confirmation).
+Everything runs on your own computer — macOS or Windows — against your own broker account through the official OpenD gateway. **Paper trading is the default** — switching to real money takes a deliberate step in the panel (trade password, no open positions, second confirmation).
 
 You don't drive it from a terminal. You open the panel, press **▶ Start**, and then mostly read Telegram: it pushes every fill, stop and status change. Parameters only move when you say so — the tuner runs when you press its button (or weekly, if you switch it), and every change it finds waits for your tick.
 
@@ -64,8 +65,9 @@ You don't drive it from a terminal. You open the panel, press **▶ Start**, and
 ## The panel
 
 <p align="center">
-  <img src="docs/screenshots/web-console.gif" width="88%" alt="Parameters console and settings, both in the browser"/>
+  <img src="docs/screenshots/01-dashboard.png" width="92%" alt="Dashboard — budget, P&L, sector heatmap, activity and open positions"/>
 </p>
+
 
 | Tab | What's there |
 |---|---|
@@ -74,6 +76,11 @@ You don't drive it from a terminal. You open the panel, press **▶ Start**, and
 | **Signal** | A watch desk that scans your list every 5 minutes for breakouts, volume spikes, VWAP flips and RSI extremes, and pushes them to Telegram |
 | **⚙ Settings** | Paper/live switch, API keys, theme, EN/中文, panel access |
 | **Parameters** | Every strategy parameter with a plain-language description, which ones take effect on the next scan, and which need a restart — plus the tuning switch (manual / weekly) and the button that runs a tuning pass now |
+
+<p align="center">
+  <img src="docs/screenshots/05-parameters.png" width="46%" alt="Parameter console"/>
+  <img src="docs/screenshots/04-settings.png" width="46%" alt="Settings, including the licence panel"/>
+</p>
 
 Set a panel password in Settings and flip on LAN access, and the same panel opens on your phone over WiFi (or Tailscale).
 
@@ -99,34 +106,58 @@ one computer, so the id is the only thing I need.
 
 ## Getting started
 
-**You need:** a Mac (macOS 14+), a moomoo/Futu account with paper trading enabled, and the **OpenD** gateway installed and logged in — the bot talks to it on `127.0.0.1:11111`. There is no way around that step. A [DeepSeek](https://platform.deepseek.com) key powers the AI parts; [Tavily](https://app.tavily.com) (news) and a [Telegram bot](https://t.me/BotFather) are optional but recommended.
+**Both platforms need the same three things:** a moomoo/Futu account with paper
+trading enabled, the **OpenD** gateway installed and logged in (the bot talks to
+it on `127.0.0.1:11111` — there is no way around that step), and a
+[DeepSeek](https://platform.deepseek.com) key for the AI parts.
+[Tavily](https://app.tavily.com) (news) and a
+[Telegram bot](https://t.me/BotFather) are optional but recommended.
+
+Download the source archive from
+[Releases](https://github.com/ethan6945/MooTrader/releases) — the same archive
+on both platforms — and unzip it somewhere you can find again. Everything the
+bot writes stays in that folder.
+
+### macOS 14+
 
 ```bash
-cd MooTrader          # this checkout — the source is not published
+cd MooTrader
 uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # fill in your keys — every line is documented
-./start-web.command
 ```
 
-`start-web.command` brings up OpenD, starts the panel and opens <http://127.0.0.1:8770>. Press **▶ Start** and it begins trading on paper. `stop-web.command` shuts it all down; closing the browser does not stop trading.
+Then **double-click `start-web.command`**. It launches OpenD if it is not
+already up, waits for the gateway, starts the panel and opens your browser. The
+window closes itself; the panel keeps running. **Double-click `stop-web.command`**
+to stop everything.
 
-<details>
-<summary>CLI equivalents</summary>
+### Windows 10/11
 
-```bash
-python -m src.main start          # start the trading scheduler
-python -m src.main stop           # stop it
-python -m src.main scan           # a single scan, for debugging
-python -m src.backtest_v4 --days 180
+```bat
+cd MooTrader
+py -3.11 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env
 ```
 
-</details>
+Open `.env` in Notepad and fill in your keys. **Start OpenD yourself and finish
+the login** — unlike the Mac launcher, `start-web.bat` does not open it for you,
+because OpenD keeps its own login session and cannot be signed into unattended.
 
-### Prefer an app?
+Then **double-click `start-web.bat`**. It checks that OpenD is listening, starts
+the panel hidden, and opens your browser. Closing the window leaves the panel
+running; **double-click `stop-web.bat`** to stop everything.
 
-There's a native macOS app — same backend, plus a menu-bar status icon and approval notifications. It ships as a signed `.dmg`; its source is not distributed. It's a convenience layer; the web panel is where the full feature set lives.
+> Windows support is new and has not been through a full live session yet. If
+> something does not work, tell me — the trial exists partly so you can find out
+> before paying.
 
----
+### Then
+
+The panel opens at `http://127.0.0.1:8770`. Press **▶ Start** to run the trading
+loop. It starts in **paper mode**; switching to real money needs your trade
+password, no open positions, and a second confirmation.
+
 
 ## Under the hood
 

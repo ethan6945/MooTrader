@@ -1273,6 +1273,10 @@ const PT={
     lic_buy_d:'试用期内功能完整，到期后除下单外一切照常。永久授权一次付费，仅此一次：把下面的「本机识别码」用 WhatsApp 发给我，我把授权码发回给你。',
     s_lic_price_l:'永久授权', s_lic_wa_l:'WhatsApp',
     lic_days_left:'天后到期', lic_day_left:'天后到期', lic_ends_on:'到期日',
+    lic_s_trial:'试用中 —— 还可以下单 {n} 天，到 {d} 为止。',
+    lic_s_expired:'30 天试用已于 {d} 结束。除下单外一切照常运行，输入授权码即可恢复交易。',
+    lic_s_revoked:'这个授权已失效。如果你认为这是错的，请联系我。',
+    lic_s_licensed:'已授权给 {id} —— 本机永久可用。',
     s_lic_machine_l:'本机识别码',
     lic_state_licensed:'已授权', lic_state_trial:'试用中',
     lic_state_expired:'试用已结束', lic_state_revoked:'授权已失效',
@@ -1395,6 +1399,10 @@ const PT={
     lic_buy_d:'The trial is the full software. When it ends everything keeps working except placing orders. A licence is a one-off payment: send the machine id below over WhatsApp and I will send a key back.',
     s_lic_price_l:'Lifetime licence', s_lic_wa_l:'WhatsApp',
     lic_days_left:'days left', lic_day_left:'day left', lic_ends_on:'ends',
+    lic_s_trial:'Trial — {n} more days of trading, until {d}.',
+    lic_s_expired:'The 30-day trial ended on {d}. Everything except placing orders keeps working; enter a licence key to resume trading.',
+    lic_s_revoked:'This licence is no longer active. Contact me if you believe that is wrong.',
+    lic_s_licensed:'Licensed to {id} — permanent on this computer.',
     s_lic_machine_l:'This computer',
     lic_state_licensed:'Licensed', lic_state_trial:'Trial',
     lic_state_expired:'Trial ended', lic_state_revoked:'Licence inactive',
@@ -1571,13 +1579,27 @@ async function loadSettings(){
 // The panel never receives the licence key back — it is a bearer credential and
 // /api/licence is deliberately write-only for it. What it shows is the state and
 // the machine id, which is what a customer has to quote in order to buy one.
+function licSentence(l){
+  const d=l.days_left, on=l.ends_on;
+  if(l.state==='trial')    return T('lic_s_trial').replace('{n}',d).replace('{d}',on||'');
+  if(l.state==='expired')  return T('lic_s_expired').replace('{d}',on||'');
+  if(l.state==='revoked')  return T('lic_s_revoked');
+  if(l.state==='licensed') return T('lic_s_licensed').replace('{id}',l.licence_id||'');
+  return '';
+}
+
 async function loadLicence(){
   try{
     const l=await api('/api/licence');
     const paid = l.state==='licensed';
     const mark={licensed:'✅',trial:'⏳',expired:'🔒',revoked:'🚫'}[l.state]||'';
     $('#licState').textContent=mark+' '+T('lic_state_'+l.state);
-    $('#licDetail').textContent=l.detail||'';
+    // Composed here, not taken from the server. `detail` is one English
+    // sentence, and it was rendering inside an otherwise Chinese panel — the
+    // API returns state, days_left and ends_on, which is everything needed to
+    // say it in whichever language the user picked. The server string stays as
+    // the fallback for a state this does not know about.
+    $('#licDetail').textContent = licSentence(l) || l.detail || '';
     $('#licMachine').textContent=l.machine||'—';
     $('#licBuyD').textContent=T('lic_buy_d');
     // Someone who has paid should never be shown the price again, or a box
@@ -2631,7 +2653,11 @@ checkApprovals();   // one-time pending-approvals popup on page open
 
 {const t=(location.hash||'').slice(1); if(['dash','hist','sig'].includes(t))setTab(t);
  if(t==='settings'||t==='access'){loadSettings().then(()=>{$('#settingsModal').classList.remove('hidden');
-   if(t==='access')setTimeout(()=>$('#secAccess').scrollIntoView({block:'start'}),150);});}}
+   if(t==='access')setTimeout(()=>$('#secAccess').scrollIntoView({block:'start'}),150);});}
+ // #params opens the parameter console directly. The other four deep links
+ // already existed; this one was missing, so the console — the page someone is
+ // most likely to want a bookmark to — was the one you had to click to reach.
+ if(t==='params'){loadParams().then(()=>$('#paramsModal').classList.remove('hidden'));}}
 </script>
 
 <!-- Stop: which stop. Two buttons because the two outcomes differ, and a

@@ -5,7 +5,8 @@
 **自己家里跑的美股短线交易机器人 —— 打开浏览器就能用。**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
-![macOS](https://img.shields.io/badge/platform-macOS%2014+-000000?logo=apple&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-14+-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?logo=windows&logoColor=white)
 ![Broker](https://img.shields.io/badge/broker-OpenD%20OpenAPI-FF6A00)
 ![AI](https://img.shields.io/badge/AI-DeepSeek-8E75B2)
 ![Status](https://img.shields.io/badge/status-paper%20trading-yellow)
@@ -18,7 +19,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/screenshots/web-tour.zh.gif" width="92%" alt="网页面板：仪表盘、历史、盯盘信号台"/>
+  <img src="docs/screenshots/01-dashboard.png" width="92%" alt="网页面板：仪表盘、历史、盯盘信号台"/>
   <br/>
   <em>整个软件就是这个网页面板 —— 仪表盘、历史、盯盘信号台。图中是模拟盘账户。</em>
 </p>
@@ -64,8 +65,9 @@ flowchart LR
 ## 面板长什么样
 
 <p align="center">
-  <img src="docs/screenshots/web-console.zh.gif" width="88%" alt="参数面板与设置，都在浏览器里"/>
+  <img src="docs/screenshots/01-dashboard.png" width="92%" alt="仪表盘"/>
 </p>
+
 
 | 页签 | 里面有什么 |
 |---|---|
@@ -95,34 +97,49 @@ flowchart LR
 
 ## 怎么跑起来
 
-**需要准备：** 一台 Mac（macOS 14+）、一个开通了模拟交易的 moomoo/富途账户，以及装好并登录的 **OpenD** 网关 —— 机器人是通过 `127.0.0.1:11111` 跟它说话的，这一步绕不过去。AI 部分需要一个 [DeepSeek](https://platform.deepseek.com) key；[Tavily](https://app.tavily.com)（新闻）和 [Telegram bot](https://t.me/BotFather) 可选，但建议配上。
+**两个平台都需要同样三样东西：** 一个开通了模拟交易的 moomoo/富途账户、装好并登录的
+**OpenD** 网关（机器人通过 `127.0.0.1:11111` 跟它说话，这一步绕不过去），以及一个
+[DeepSeek](https://platform.deepseek.com) key。[Tavily](https://app.tavily.com)（新闻）
+和 [Telegram bot](https://t.me/BotFather) 可选，但建议配上。
+
+从 [Releases](https://github.com/ethan6945/MooTrader/releases) 下载源码压缩包 ——
+两个平台是同一个包 —— 解压到一个你找得回来的地方。机器人写的所有东西都留在那个文件夹里。
+
+### macOS 14+
 
 ```bash
-cd MooTrader          # 就是这份 checkout —— 源码不再公开发布
+cd MooTrader
 uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # 填 key，每一行模板里都有说明
-./start-web.command
 ```
 
-`start-web.command` 会拉起 OpenD、启动面板并打开 <http://127.0.0.1:8770>。按 **▶ Start** 就开始在模拟盘上跑了。要全部停掉用 `stop-web.command`；只关浏览器不会停止交易。
+然后**双击 `start-web.command`**。它会在 OpenD 没开的时候帮你打开、等网关就绪、
+启动面板并打开浏览器。那个窗口会自己关掉，面板继续在后台跑。
+**双击 `stop-web.command`** 停掉全部。
 
-<details>
-<summary>对应的命令行</summary>
+### Windows 10/11
 
-```bash
-python -m src.main start          # 启动交易调度器
-python -m src.main stop           # 停掉它
-python -m src.main scan           # 只扫一次，调试用
-python -m src.backtest_v4 --days 180
+```bat
+cd MooTrader
+py -3.11 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env
 ```
 
-</details>
+用记事本打开 `.env` 填好 key。**先自己启动 OpenD 并完成登录** —— 和 Mac 的启动器不同，
+`start-web.bat` 不会帮你开 OpenD，因为它有自己的登录会话，没法无人值守地登进去。
 
-### 想要 App？
+然后**双击 `start-web.bat`**。它会先确认 OpenD 在监听，再隐藏启动面板并打开浏览器。
+关掉窗口不影响面板运行；**双击 `stop-web.bat`** 停掉全部。
 
-有一个原生 macOS 应用 —— 同一个后端，多了菜单栏状态图标和审批通知。它以签名的 `.dmg` 形式分发，源码不公开。它只是个方便的壳子，完整功能还是在网页面板里。
+> Windows 支持是新加的，还没跑过一次完整的实盘交易日。有问题告诉我 ——
+> 试用期存在的意义之一，就是让你在付钱之前先发现这些。
 
----
+### 然后
+
+面板在 `http://127.0.0.1:8770`。按 **▶ 启动** 跑交易循环。默认是**模拟盘**；
+切到实盘需要交易密码、当前无持仓、外加二次确认。
+
 
 ## 内部结构
 
