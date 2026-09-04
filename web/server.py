@@ -43,6 +43,7 @@ from flask import Flask, jsonify, make_response, redirect, request, send_from_di
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import ai, approvals, clock, db, keepawake, risk_manager  # noqa: E402
+from src import proc
 from src.config import BUNDLE_DIR, IS_FROZEN, ROOT, settings  # noqa: E402
 
 # This module had no logger, while api_exit's error path already called
@@ -355,7 +356,7 @@ def _stop_opend() -> bool:
     # the old version's `except Exception` fallback was unreachable because
     # every kill failure is an OSError subclass caught by the first clause.
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        proc.signal_tree(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         try:
             os.kill(pid, signal.SIGTERM)
@@ -386,7 +387,7 @@ def _stop_pid(pid_file: Path) -> bool:
             pass
         return False
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        proc.signal_tree(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     except Exception:
@@ -2222,7 +2223,16 @@ def _schedule_web_restart(port: int, host: str) -> None:
         f"WEB_HOST={h} WEB_PORT={p} nohup {relaunch} "
         f"> logs/web.log 2>&1 & echo $! > logs/web.pid"
     )
-    subprocess.Popen(["/bin/bash", "-lc", script], start_new_session=True,
+    if proc.IS_WINDOWS:
+        # The script above is bash: sleep, kill -0, lsof, nohup. Rather than
+        # translate it into cmd.exe and ship an untested restart path, say so —
+        # a restart that half-works leaves no server listening at all, and the
+        # user cannot get back into the panel to fix it.
+        raise RuntimeError(
+            "Changing the web host requires restarting the server, which this "
+            "build cannot do automatically on Windows. Stop the panel and run "
+            "start-web.bat again; the new setting is already saved.")
+    subprocess.Popen(["/bin/bash", "-lc", script], **proc.spawn_kwargs(),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -2450,7 +2460,7 @@ def api_self_review_run():
     log = (ROOT / "logs" / "self_review.log").open("a")
     subprocess.Popen(
         _worker_cmd("src.main", "review"),
-        cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
+        cwd=str(ROOT), stdout=log, stderr=log, **proc.spawn_kwargs(),
     )
     return jsonify({"ok": True, "started": True})
 
@@ -2651,7 +2661,7 @@ def _self_review_catchup_on_boot() -> None:
         log = (ROOT / "logs" / "self_review.log").open("a")
         subprocess.Popen(
             _worker_cmd("src.main", "review"),
-            cwd=str(ROOT), stdout=log, stderr=log, start_new_session=True,
+            cwd=str(ROOT), stdout=log, stderr=log, **proc.spawn_kwargs(),
         )
     except Exception as e:
         print(f"self-review catchup check skipped: {e}", file=sys.stderr)

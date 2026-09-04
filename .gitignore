@@ -124,6 +124,14 @@ macos/
 # *.pem above already catches the key itself; this catches the issue log and
 # anything else that ends up in there.
 Keygen Activator/
+# Its launcher too. It carries no secret, but it is the issuer's tool: shipping
+# it to customers hands them a button labelled "mint licences" that fails only
+# because the key file is missing.
+keygen.command
+
+# GitHub's Sponsor button. The software is paid now; asking the people who
+# bought it for donations is not a thing to ship.
+.github/FUNDING.yml
 
 # ============== Release images ==============
 # macos/.gitignore already covers dist/. This catches an image built or copied

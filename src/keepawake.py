@@ -21,6 +21,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import proc
 from .config import ROOT
 
 CAFFEINATE_PID = ROOT / "logs" / "caffeinate.pid"
@@ -44,7 +45,7 @@ def _stop(pid_file: Path) -> bool:
         pid_file.unlink(missing_ok=True)
         return False
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        proc.signal_tree(pid, signal.SIGTERM)
     except Exception:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -72,7 +73,7 @@ def _start_caffeinate() -> None:
         ["/usr/bin/caffeinate", "-i", "-s"],
         cwd=str(ROOT),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **proc.spawn_kwargs(),
     )
     CAFFEINATE_PID.write_text(str(proc.pid))
 

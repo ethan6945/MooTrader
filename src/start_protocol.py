@@ -51,6 +51,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db, start_audit, start_lease
+from . import proc as _proc
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -462,7 +463,7 @@ def commit(req: StartRequest, *, home: Path | None = None,
     try:
         logf = (home / "logs" / "scheduler.log").open("a")
         proc = subprocess.Popen(cmd, cwd=str(home), env=env, stdout=logf,
-                                stderr=logf, start_new_session=True)
+                                stderr=logf, **_proc.spawn_kwargs())
 
         deadline = time.time() + timeout
         ready = None
@@ -546,7 +547,7 @@ def commit(req: StartRequest, *, home: Path | None = None,
         detail = getattr(e, "detail", type(e).__name__)
         if proc is not None and proc.poll() is None:
             try:
-                os.killpg(os.getpgid(proc.pid), 15)
+                _proc.signal_tree(proc.pid, signal.SIGTERM)
             except OSError:
                 proc.terminate()
             try:
@@ -617,7 +618,7 @@ def stop(source: str = "cli", *, home: Path | None = None,
     stopped = False
     if isinstance(pid, int) and pid != os.getpid():
         try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            _proc.signal_tree(pid, signal.SIGTERM)
             stopped = True
         except (OSError, ProcessLookupError):
             # Already gone. Not an error — but the lease and session it left
@@ -635,7 +636,7 @@ def stop(source: str = "cli", *, home: Path | None = None,
                 log.warning("stop: pid %s did not exit within %gs — SIGKILL",
                             pid, timeout)
                 try:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    _proc.signal_tree(pid, _proc.SIGKILL)
                 except OSError:
                     pass
 
