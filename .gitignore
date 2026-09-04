@@ -113,6 +113,18 @@ config/watchlist.json
 #   * A clone can build the backend, not the app.
 macos/
 
+# ============== The signing key — never in the repository ==============
+# "Keygen Activator/" holds the Ed25519 private key that issues licences, and
+# whoever has it can mint them for free, which makes every licence already sold
+# worthless. It lives beside the repo rather than inside version control, and
+# the folder is deliberately NOT hidden — an owner who can see it is an owner
+# who remembers to back it up. There is no recovery from losing it: a new key
+# invalidates every licence ever issued.
+#
+# *.pem above already catches the key itself; this catches the issue log and
+# anything else that ends up in there.
+Keygen Activator/
+
 # ============== Release images ==============
 # macos/.gitignore already covers dist/. This catches an image built or copied
 # anywhere else — 122 MB each, and they belong on a GitHub release, not in git.

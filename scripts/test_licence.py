@@ -63,7 +63,7 @@ def _issue(**over) -> str:
     import base64, json
     from cryptography.hazmat.primitives import serialization
     key = serialization.load_pem_private_key(
-        (Path.home() / ".mootrader-licence" / "signing-private.pem").read_bytes(),
+        (ROOT / "Keygen Activator" / "signing-private.pem").read_bytes(),
         password=None)
     payload = {"id": "MT-TEST", "machine": licence.machine_id(),
                "edition": "perpetual", "issued": "2026-09-03", "expires": None}
@@ -73,7 +73,7 @@ def _issue(**over) -> str:
     return f"MT1.{b64(raw)}.{b64(key.sign(raw))}"
 
 
-HAVE_KEY = (Path.home() / ".mootrader-licence" / "signing-private.pem").exists()
+HAVE_KEY = (ROOT / "Keygen Activator" / "signing-private.pem").exists()
 
 # ── 1 ────────────────────────────────────────────────────────────────────────
 section(1, "a fresh install is in trial and may trade")

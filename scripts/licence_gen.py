@@ -2,10 +2,22 @@
 """Issue licence keys. Runs on the ISSUER's machine only.
 
   python scripts/licence_gen.py --machine <id-from-customer> --id MT-0001
-  python scripts/licence_gen.py --machine <id> --id MT-0002 --expires 2027-09-03
+  python scripts/licence_gen.py --machine <id> --id MT-0002 --years 2
+  python scripts/licence_gen.py --machine <id> --id MT-0003 --perpetual
   python scripts/licence_gen.py --show-public
 
-The private key lives at ~/.mootrader-licence/signing-private.pem and NOTHING
+There is a web page for the same thing, which is the one to use day to day:
+  cd "Keygen Activator" && ../.venv/bin/python keygen.py
+
+Licences run for ONE YEAR unless told otherwise, and that default is doing real
+work. This scheme is offline: a signature handed to a customer cannot be taken
+back by another one, so a refund, a chargeback or a key that turns up on a forum
+has no technical answer at all. A licence that lapses is the only one there is.
+--perpetual is for your own machines, and for customers you would not want to
+have to chase.
+
+The private key lives in "Keygen Activator/" beside this repo — visible, not
+hidden, so it is one folder an owner can see and remember to back up. NOTHING
 else may ever hold it — not the repo, not a build, not a backup that leaves this
 machine. Anyone with it can mint licences, which makes every issued licence
 worthless. src/licence.py carries only the public half.
@@ -22,10 +34,10 @@ import argparse
 import base64
 import json
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
-PRIVATE_KEY = Path.home() / ".mootrader-licence" / "signing-private.pem"
+PRIVATE_KEY = Path(__file__).resolve().parent.parent / "Keygen Activator" / "signing-private.pem"
 
 
 def _b64(b: bytes) -> str:
@@ -51,8 +63,19 @@ def main() -> int:
                                       "want.")
     ap.add_argument("--id", help="licence id you will recognise later, e.g. an "
                                  "order number")
-    ap.add_argument("--edition", default="perpetual")
-    ap.add_argument("--expires", help="YYYY-MM-DD; omit for perpetual")
+    ap.add_argument("--years", type=float, default=1.0, metavar="N",
+                    help="licence runs for N years from today (default 1). A "
+                         "dated licence is the only answer this scheme has to a "
+                         "refund: nothing offline can withdraw a key that has "
+                         "already been handed over, but one that lapses stops "
+                         "on its own.")
+    ap.add_argument("--perpetual", action="store_true",
+                    help="never expires. Sells better and is unrevocable — use "
+                         "it for your own machines and for customers you would "
+                         "not want to chase.")
+    ap.add_argument("--expires", help="YYYY-MM-DD, overriding --years")
+    ap.add_argument("--edition", help="label shown in the panel; derived from "
+                                      "the term when omitted")
     ap.add_argument("--show-public", action="store_true",
                     help="print the public key, to paste into src/licence.py")
     args = ap.parse_args()
@@ -68,18 +91,36 @@ def main() -> int:
 
     if not args.id:
         ap.error("--id is required")
+
+    if args.perpetual and args.expires:
+        ap.error("--perpetual and --expires contradict each other")
     if args.expires:
         try:
             date.fromisoformat(args.expires)
         except ValueError:
             ap.error("--expires must be YYYY-MM-DD")
+        expires = args.expires
+    elif args.perpetual:
+        expires = None
+    else:
+        expires = (date.today() + timedelta(days=round(args.years * 365))
+                   ).isoformat()
+
+    if args.edition:
+        edition = args.edition
+    elif expires is None:
+        edition = "perpetual"
+    elif abs(args.years - 1.0) < 1e-9 and not args.expires:
+        edition = "1 year"
+    else:
+        edition = f"until {expires}"
 
     payload = {
         "id": args.id,
         "machine": (args.machine or "").strip().lower(),
-        "edition": args.edition,
+        "edition": edition,
         "issued": date.today().isoformat(),
-        "expires": args.expires,
+        "expires": expires,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     licence = f"MT1.{_b64(raw)}.{_b64(key.sign(raw))}"

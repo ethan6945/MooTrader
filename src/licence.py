@@ -54,7 +54,7 @@ log = logging.getLogger(__name__)
 # Public half of the issuer's Ed25519 key. Safe to publish: it verifies and
 # cannot sign. The private half lives only on the issuer's machine.
 SIGNING_PUBLIC_KEY = bytes.fromhex(
-    "b7a1ce641ab856a95fc00b93e435708a1db9db386a84b41d18455313d0ebebb3")
+    "ece3cddcf8479a9ac6cae738a93659a92d1ed15a64604da5101adf9f0e2007e9")
 
 TRIAL_DAYS = 30
 _PREFIX = "MT1"
