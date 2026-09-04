@@ -56,6 +56,20 @@
   button.danger{color:var(--red);border-color:rgba(248,81,73,.5)}
   button.danger:hover{background:var(--red);border-color:var(--red);color:#fff}
   button.sm{padding:5px 12px;font-size:12px;border-radius:8px}
+  /* Icon-only button. The reveal control was a 👁 emoji that swapped to 🙈 —
+     a see-no-evil monkey standing in for "hidden", rendered by whichever font
+     the OS picked, at whatever size and colour that font decided. A stroked SVG
+     takes the text colour, scales cleanly, and looks the same on every machine. */
+  button.icon{display:inline-flex;align-items:center;justify-content:center;
+    width:30px;height:30px;padding:0;border-radius:8px;color:var(--muted);
+    background:transparent;border:1px solid transparent}
+  button.icon:hover{color:var(--text);background:var(--card2);border-color:var(--border)}
+  button.icon:active{transform:translateY(.5px)}
+  button.icon svg{width:16px;height:16px;display:block;
+    fill:none;stroke:currentColor;stroke-width:1.6;
+    stroke-linecap:round;stroke-linejoin:round}
+  /* Revealed is a state worth seeing at a glance: a plaintext key is on screen. */
+  button.icon.on{color:var(--amber)}
   button:disabled{opacity:.55;cursor:default}
 
   /* ── tabs (segmented control) ── */
@@ -1252,7 +1266,7 @@ const PT={
     s_env_real_s:'💵 实盘', s_env_sim_s:'🧪 模拟',
     s_env_to_sim:'切回模拟 🧪', s_env_to_real:'切到实盘 💵',
     s_keys:'API Keys',
-    s_keys_d:'框里是<b>当前的 key</b>（中间打码）。点 👁 显示完整内容，改完点「保存」写入 <code>.env</code>，<b>重启交易循环后生效</b>。',
+    s_keys_d:'框里是<b>当前的 key</b>（中间打码）。点右侧的眼睛图标显示完整内容，改完点「保存」写入 <code>.env</code>，<b>重启交易循环后生效</b>。',
     s_key_save:'保存', s_key_eye:'显示 / 隐藏', s_key_unset:'(未设置)',
     s_lic:'授权 Licence', s_lic_key_l:'授权码',
     s_lic_key_d:'粘贴收到的授权码，激活后本机永久可用。',
@@ -1264,7 +1278,7 @@ const PT={
     lic_state_expired:'试用已结束', lic_state_revoked:'授权已失效',
     lic_paste_first:'请先粘贴授权码。', lic_checking:'验证中…',
     s_lic_b:'激活',
-    s_key_masked:'这还是马赛克后的值。先点 👁 显示，再修改保存。',
+    s_key_masked:'这还是马赛克后的值。先点眼睛图标显示，再修改保存。',
     s_appear:'外观 Appearance',
     s_theme_l:'主题 Theme', s_theme_d:'深色 / 浅色界面配色。立即生效，记在本浏览器。',
     s_theme_dark:'Dark 深色', s_theme_light:'Light 浅色',
@@ -1397,10 +1411,10 @@ const PT={
     s_env_real_s:'💵 live', s_env_sim_s:'🧪 paper',
     s_env_to_sim:'Back to paper 🧪', s_env_to_real:'Go live 💵',
     s_keys:'API keys',
-    s_keys_d:'Each box holds the <b>current key</b>, masked through the middle. Click 👁 to see it whole; '
+    s_keys_d:'Each box holds the <b>current key</b>, masked through the middle. Click the eye to see it whole; '
             +'edit and Save writes to <code>.env</code>, <b>effective after the trading loop restarts</b>.',
     s_key_save:'Save', s_key_eye:'Show / hide', s_key_unset:'(not set)',
-    s_key_masked:'That is still the masked value. Click 👁 to reveal it first, then edit and save.',
+    s_key_masked:'That is still the masked value. Click the eye to reveal it first, then edit and save.',
     s_appear:'Appearance',
     s_theme_l:'Theme', s_theme_d:'Dark or light. Applies immediately, remembered in this browser.',
     s_theme_dark:'Dark', s_theme_light:'Light',
@@ -1524,6 +1538,11 @@ function applyPanelLang(){
 function applyTheme(t){document.body.classList.toggle('light',t==='light');localStorage.setItem('theme',t);drawEqDash();}
 
 // ── settings ──
+// Feather-style eye / eye-off, inlined so there is no icon font to load and
+// they inherit currentColor from the button.
+const EYE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1.5 12S5 5.5 12 5.5 22.5 12 22.5 12 19 18.5 12 18.5 1.5 12 1.5 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.9 5.7A9.8 9.8 0 0 1 12 5.5c7 0 10.5 6.5 10.5 6.5a18.6 18.6 0 0 1-3.3 4.2M6.5 7.3A18.4 18.4 0 0 0 1.5 12S5 18.5 12 18.5a9.9 9.9 0 0 0 3.9-.76"/><path d="M9.8 9.9a3.2 3.2 0 0 0 4.4 4.4"/><path d="m3 3 18 18"/></svg>';
+
 async function loadSettings(){
   try{const s=await api('/api/settings?lang='+LANG);
     // A contact string (SEC_EDGAR_USER_AGENT) is not a secret — a password
@@ -1538,8 +1557,10 @@ async function loadSettings(){
        <input id="k_${k.key}" type="text" data-masked="1" spellcheck="false"
               value="${(k.masked||'').replace(/"/g,'&quot;')}"
               placeholder="${k.set?'':T('s_key_unset')}"/>
-       <button class="sm" id="eye_${k.key}" title="${T('s_key_eye')}"
-               onclick="toggleKey('${k.key}')">👁</button>
+       <button class="icon" id="eye_${k.key}" type="button"
+               title="${T('s_key_eye')}" aria-label="${T('s_key_eye')}"
+               aria-pressed="false"
+               onclick="toggleKey('${k.key}')">${EYE}</button>
        <button class="sm" onclick="saveKey('${k.key}')">${T('s_key_save')}</button></span></div>`).join('');
   }catch(e){}
   loadWebAccess();
@@ -1668,7 +1689,9 @@ async function toggleKey(k){
     try{
       const r=await api('/api/settings/key/reveal',{method:'POST',
         headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})});
-      el.value=r.value||''; el.dataset.masked='0'; eye.textContent='🙈';
+      el.value=r.value||''; el.dataset.masked='0';
+      eye.innerHTML=EYE_OFF; eye.classList.add('on');
+      eye.setAttribute('aria-pressed','true');
     }catch(e){ alert(T('k_read_failed')+e.message); }
   }else{
     // Back to masked means reloading it — the panel does not keep a plaintext
