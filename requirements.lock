@@ -48,7 +48,6 @@ anyio==4.14.1
 APScheduler==3.11.3
 beautifulsoup4==4.15.0
 blinker==1.9.0
-bottle==0.13.4
 certifi==2026.6.17
 cffi==2.1.0
 charset-normalizer==3.4.9
@@ -61,8 +60,6 @@ cycler==0.12.1
 distro==1.9.0
 Flask==3.1.3
 fonttools==4.63.0
-google-auth==2.55.2
-google-genai==2.10.0
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
@@ -87,31 +84,20 @@ peewee==4.1.1
 pillow==12.3.0
 platformdirs==4.10.0
 protobuf==7.35.1
-proxy_tools==0.1.0
 pyarrow==25.0.0
-pyasn1==0.6.3
-pyasn1_modules==0.4.2
 pycparser==3.0
 pycryptodome==3.23.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.20.0
-pyobjc-core==12.2.1
-pyobjc-framework-Cocoa==12.2.1
-pyobjc-framework-Quartz==12.2.1
-pyobjc-framework-Security==12.2.1
-pyobjc-framework-UniformTypeIdentifiers==12.2.1
-pyobjc-framework-WebKit==12.2.1
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-telegram-bot==22.8
 pytz==2026.2
-pywebview==6.2.1
 PyYAML==6.0.3
 requests==2.34.2
 rich==15.0.0
-rumps==0.4.0
 simplejson==4.1.1
 six==1.17.0
 sniffio==1.3.1
@@ -126,3 +112,16 @@ urllib3==2.7.0
 websockets==16.0
 Werkzeug==3.1.8
 yfinance==1.5.1
+
+# NOT here, deliberately:
+#   rumps / pywebview / pyobjc-*  — the menu-bar and embedded-browser shells,
+#     replaced by the native app on 2026-07-20. They are also macOS-ONLY, so
+#     pinning them made this file uninstallable on Windows — which is the
+#     platform the README now sends people here from.
+#   google-genai / google-auth    — the Gemini provider went in f354f4f. The
+#     only mention left in the tree was a logger NAME, not an import.
+
+# FinBERT (FINBERT_ENABLED, default off). Missing from this file until
+# 2026-09-05, so an install from the lock alone could not score news locally.
+onnxruntime==1.28.0
+tokenizers==0.23.1

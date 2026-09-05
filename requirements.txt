@@ -1,28 +1,34 @@
-# DEVELOPMENT deps — intentionally loose, follows upstream.
+# DEVELOPMENT deps — loose (`>=`), for working on this on one machine.
 #
-# ⚠ Do NOT use this file for a packaged build or to reproduce a backtest
-# result: use requirements.lock (exact `==` pins). The floors below have
-# already drifted a major version from what is actually installed and traded
-# (pandas 2.2->3.0, numpy 1.26->2.4, moomoo-api 9.3->10.8), and this project's
-# validation rests on live<->backtest numerical parity. See requirements.lock.
+# ⚠ INSTALL FROM requirements.lock INSTEAD unless you are developing. The lock
+# has exact `==` pins and is the only combination that has actually been traded
+# and backtested; this project's validation rests on live<->backtest numerical
+# parity, and a resolver is free to pick anything at or above a floor.
+#
+# The floors here are no longer historical minimums — they are the majors that
+# have been validated. They used to sit a full major release below what was
+# installed (pandas 2.2 vs 3.0, numpy 1.26 vs 2.4, moomoo-api 9.3 vs 10.8 — the
+# BROKER SDK, which is order placement itself), so a fresh `pip install -r` gave
+# a dependency set nobody had ever run. Raise them together with the lock.
 
-moomoo-api>=9.3.5308
-pandas>=2.2.0
-numpy>=1.26.0
-pyarrow>=16.0.0          # parquet engine — sandbox kline/VIX cache (data/sandbox_cache)
-pandas-ta-classic>=0.3.0
-google-genai>=1.0.0      # Gemini SDK — src/ai.py `from google import genai`
-optuna>=4.0.0            # nightly optimizer (src/optimizer.py)
-python-telegram-bot>=21.0
-python-dotenv>=1.0.0
-APScheduler>=3.10.0
-pytz>=2024.1
-requests>=2.31.0
-yfinance>=0.2.40
-lxml>=5.0.0
-matplotlib>=3.8.0
-flask>=3.0.0
+moomoo-api>=10.8.6808
+pandas>=3.0.0
+numpy>=2.4.0
+pyarrow>=25.0.0          # parquet engine — sandbox kline/VIX cache (data/sandbox_cache)
+pandas-ta-classic>=0.6.0
+optuna>=4.9.0            # nightly optimizer (src/optimizer.py)
+python-telegram-bot>=22.0
+python-dotenv>=1.2.0
+APScheduler>=3.11.0
+pytz>=2026.1
+requests>=2.34.0
+yfinance>=1.5.0
+lxml>=6.0.0               # pd.read_html parser — src/watchlist_updater.py
+matplotlib>=3.11.0
+flask>=3.1.0
 # (xgboost / scikit-learn / joblib removed 2026-06-03 with the inert ML subsystem)
+# (google-genai removed 2026-09-05 — the Gemini provider went in f354f4f and the
+#  only mention left was a logger NAME, not an import. 10.6 MB per install.)
 #
 # FinBERT (src/news_score_local.py, FINBERT_ENABLED, default off) runs on these
 # two rather than on torch: ~25 MB against 1-2 GB, which is what lets the local
@@ -30,6 +36,6 @@ flask>=3.0.0
 # not shipped — they download once, on explicit consent, to a shared per-machine
 # path both installs resolve to. A source install that already has
 # transformers + torch will use those instead, with no second copy.
-onnxruntime>=1.17.0
-tokenizers>=0.15.0
+onnxruntime>=1.28.0
+tokenizers>=0.23.0
 # (rumps / pywebview removed 2026-07-20 — replaced by the native SwiftUI shell in macos/)

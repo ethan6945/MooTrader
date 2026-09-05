@@ -143,7 +143,7 @@ bot writes stays in that folder.
 
 ```bash
 cd MooTrader-2.7.0
-uv venv --python 3.11 && uv pip install -r requirements.txt
+uv venv --python 3.11 && uv pip install -r requirements.lock
 cp .env.example .env      # fill in your keys — every line is documented
 ```
 
@@ -157,7 +157,7 @@ to stop everything.
 ```bat
 cd MooTrader-2.7.0
 py -3.11 -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements.lock
 copy .env.example .env
 ```
 

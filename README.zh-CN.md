@@ -123,7 +123,7 @@ AI 只读新闻、写注释，不扣扳机。这不是保守，是为了让实�
 
 ```bash
 cd MooTrader-2.7.0
-uv venv --python 3.11 && uv pip install -r requirements.txt
+uv venv --python 3.11 && uv pip install -r requirements.lock
 cp .env.example .env      # 填 key，每一行模板里都有说明
 ```
 
@@ -136,7 +136,7 @@ cp .env.example .env      # 填 key，每一行模板里都有说明
 ```bat
 cd MooTrader-2.7.0
 py -3.11 -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements.lock
 copy .env.example .env
 ```
 
