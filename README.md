@@ -33,11 +33,9 @@ English · [简体中文](README.zh-CN.md)
 
 ## What it does
 
-Rules decide every entry and exit. The AI reads the news and annotates — it
-never pulls the trigger, which is what keeps live trading comparable with the
-backtest.
-
-During US market hours it works one list of stocks on a loop:
+**It runs itself.** Scan, score, order, manage, stop, target, close, log — the
+whole chain, with no button to press. During US market hours it works one list
+of stocks on a loop:
 
 ```mermaid
 flowchart LR
@@ -53,8 +51,18 @@ is sent anywhere else. **Paper trading is the default**, and switching to real
 money takes a trade password, no open positions and a second confirmation.
 
 You never touch a terminal: open the panel, press **▶ Start**, and read Telegram
-— it pushes every fill, stop and status change. Parameters move only when you
-tick them.
+— it pushes every fill, stop and status change.
+
+**The parameters improve themselves.** The tuner reads your real fills, asks the
+AI what to change, backtests each idea, and keeps only what beats your current
+settings across two windows without deepening drawdown. By default every
+surviving change waits for your tick; switch on auto-apply and anything that
+passed validation and sits inside bounds you set goes live immediately — with a
+Telegram notification, and a watcher that rolls it back if live results degrade.
+
+The AI reads news and annotates; it does not pull the trigger. That is not
+timidity — it is what keeps live results comparable with the backtest, and a
+system that improvises makes its own backtest meaningless.
 
 **Good for:** running a rule-based strategy without sitting at the screen, and
 being able to see exactly why every order happened.
