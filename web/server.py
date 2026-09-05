@@ -1,6 +1,6 @@
 """Web dashboard backend (Flask) — monitor + control the bot from a browser.
 
-Runs as its OWN background process (start-web.command). The trading scheduler
+Runs as its OWN background process (macos-start-web.command / windows-start-web.bat). The trading scheduler
 (`python -m src.main run`) is a SEPARATE background process — closing the browser
 does NOT stop trading; this server just reads the bot's state (data/account.json
 + SQLite) and sends control actions (start/stop, approvals, budget).
@@ -685,6 +685,12 @@ def api_status():
         acct["auto_budget"] = auto_budget.status()
     except Exception:
         pass
+    # Which file to tell the user to double-click. The panel is served to
+    # whatever device is looking at it — a phone on the LAN, say — so this is
+    # the SERVER's platform, not the browser's, and hardcoding the .command
+    # name told every Windows user to open a file they do not have.
+    acct["launcher"] = ("windows-start-web.bat" if proc.IS_WINDOWS
+                        else "macos-start-web.command")
     return jsonify(acct)
 
 
@@ -2234,7 +2240,7 @@ def _schedule_web_restart(port: int, host: str) -> None:
         raise RuntimeError(
             "Changing the web host requires restarting the server, which this "
             "build cannot do automatically on Windows. Stop the panel and run "
-            "start-web.bat again; the new setting is already saved.")
+            "windows-start-web.bat again; the new setting is already saved.")
     subprocess.Popen(["/bin/bash", "-lc", script], **proc.spawn_kwargs(),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

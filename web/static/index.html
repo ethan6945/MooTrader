@@ -741,8 +741,11 @@ function renderAiBanner(h){
 $('#aiBannerDismiss').onclick=()=>{AI_BANNER_DISMISSED=$('#aiBanner').dataset.key||'';$('#aiBanner').classList.add('hidden');};
 
 async function refresh(){
+  // The server says which launcher this install has; the panel may be open on
+  // a phone, so the browser's own platform is the wrong thing to ask.
   let a; try{a=await api('/api/status?lang='+LANG);}catch(e){return;}
   LAST_STATUS=a;
+  if(a.launcher && a.launcher!==LAUNCHER){LAUNCHER=a.launcher; subLauncher();}
   renderAiBanner(a.ai_health);
   const run=a.scheduler_running;
   $('#sched').innerHTML=`<span class="dot ${run?'live':''}" style="background:${run?'#3fb950':'#f85149'};color:${run?'#3fb950':'#f85149'}"></span>${run?T('tb_sched_run'):T('tb_sched_stop')}`;
@@ -1114,7 +1117,7 @@ $('#awake').onclick=async()=>{
     AWAKE_ON=!!d.on; AWAKE_LID=!!d.lid;
   }catch(e){
     // Don't silently lie — surface that the request failed (usually: web server
-    // running old code without /api/caffeinate → relaunch start-web.command).
+    // running old code without /api/caffeinate → relaunch {launcher}).
     el.innerHTML='☕ '+(LANG==='en'?'err':'出错'); el.style.color='#f85149';
     AWAKE_BUSY=false; return;
   }
@@ -1156,12 +1159,13 @@ async function doStop(kind){
         +'justify-content:center;font:15px -apple-system,sans-serif;color:#8b949e;'
         +'text-align:center;line-height:1.9">'
         +(zh?'<div>已停止 —— 调度器、网页面板全部关闭。<br>'
-             +'要再次启动，双击项目文件夹里的 <b>start-web.command</b>。<br>'
+             +'要再次启动，双击项目文件夹里的 <b>{launcher}</b>。<br>'
              +'<span style="opacity:.6">这个标签页可以关掉了。</span></div>'
             :'<div>Stopped — scheduler and web panel are both down.<br>'
-             +'To start again, double-click <b>start-web.command</b> in the project folder.<br>'
+             +'To start again, double-click <b>{launcher}</b> in the project folder.<br>'
              +'<span style="opacity:.6">You can close this tab.</span></div>')
         +'</div>';
+      subLauncher();
       return;
     }
     await api('/api/scheduler/stop',{method:'POST'});
@@ -1186,7 +1190,7 @@ const I18N={
       stop_sched:'■ Scheduler only',
       stop_sched_d:'No more scanning or orders. The panel stays up; positions and the ledger remain visible.',
       stop_all:'■ Stop and quit everything',
-      stop_all_d:'Scheduler and web panel both shut down. Double-click start-web.command to come back.',
+      stop_all_d:'Scheduler and web panel both shut down. Double-click {launcher} to come back.',
       stop_cancel:'Cancel',t_dash:'Dashboard',t_hist:'History',t_sig:'Signal',positions:'Open Positions',equity:'Equity · cumulative realized',sectors:'US Sectors · Live',
       activity:'Recent Activity',record:'Trade Record',approvals:'Pending Approvals',deployed:'Deployed / Budget',today:"Today P&L · realized",total:'Total P&L · cum. realized',
       unreal:'Unrealized P&L · open',pos_unit:'position(s)',
@@ -1302,7 +1306,7 @@ const PT={
     s_logout_d:'清除本设备的登录状态。设了「网页访问密码」时，下次打开需重新输入密码。',
     s_logout_b:'退出',
     s_exit_l:'退出 UI Exit UI',
-    s_exit_d:'停止所有服务（OpenD · 交易调度器 · 网页面板）并关闭浏览器标签。下次使用时重新双击 start-web.command。',
+    s_exit_d:'停止所有服务（OpenD · 交易调度器 · 网页面板）并关闭浏览器标签。下次使用时重新双击 {launcher}。',
     s_exit_b:'退出全部',
     c_reset:'重设统计?\n\n将把 今日盈亏、总盈亏（累计）、交易笔数/胜率、回撤峰值从现在清零重算。历史成交保留。',
     c_reset2:'再次确认:确定重设?计数从零开始。',
@@ -1311,7 +1315,7 @@ const PT={
     c_lan_off:'关闭为仅本机访问?\n\n手机/其他设备将无法再连接。网页服务会重启几秒。',
     c_lan_fail:'切换失败',
     c_logout:'退出登录?\n\n设了访问密码时,下次打开需重新输入密码。',
-    c_exit:'退出全部服务?\n\n将停止 OpenD · 交易调度器 · 网页面板。\n下次使用时重新双击 start-web.command 即可。',
+    c_exit:'退出全部服务?\n\n将停止 OpenD · 交易调度器 · 网页面板。\n下次使用时重新双击 {launcher} 即可。',
     c_exit_done:'所有服务已停止。浏览器将关闭此页面。',
     k_saved:'已保存', k_save_failed:'保存失败', k_read_failed:'读取失败: ',
     restart_t:'正在切换访问模式…', restart_d:'网页服务重启中，几秒后自动刷新',
@@ -1445,7 +1449,7 @@ const PT={
     s_logout_b:'Log out',
     s_exit_l:'Exit UI',
     s_exit_d:'Stops everything — OpenD, the trading scheduler and this panel — and closes the browser tab. '
-            +'Double-click start-web.command to come back.',
+            +'Double-click {launcher} to come back.',
     s_exit_b:'Exit all',
     c_reset:"Reset stats?\n\nToday's P&L, cumulative P&L, trade count / win rate and the drawdown peak are "
            +'zeroed and recounted from now. Closed trades are kept.',
@@ -1458,7 +1462,7 @@ const PT={
     c_lan_fail:'Could not switch',
     c_logout:'Log out?\n\nWith an access password set, you will need it again next time.',
     c_exit:'Exit everything?\n\nThis stops OpenD, the trading scheduler and this panel.\nDouble-click '
-          +'start-web.command to come back.',
+          +'{launcher} to come back.',
     c_exit_done:'Everything has stopped. The browser will close this tab.',
     k_saved:'Saved', k_save_failed:'Save failed', k_read_failed:'Could not read: ',
     restart_t:'Switching access mode…', restart_d:'The web server is restarting; this page reloads in a few seconds',
@@ -1488,11 +1492,25 @@ const PT={
     tb_dismiss:'Got it', tb_updated:'updated ',
   },
 };
+// Filled from /api/status. Until the first poll lands the macOS name is the
+// safer default: it is what the overwhelming majority of installs are, and the
+// string is only ever advice.
+let LAUNCHER='macos-start-web.command';
+// T() covers strings built through the phrase table. This covers everything
+// else — the static markup, whatever data-i18n wrote, and the stopped-page
+// innerHTML — because a placeholder left visible reads as a bug to the user.
+function subLauncher(){
+  const w=document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const hits=[]; let n;
+  while(n=w.nextNode()) if(n.nodeValue.indexOf('{launcher}')>=0) hits.push(n);
+  hits.forEach(t=>t.nodeValue=t.nodeValue.split('{launcher}').join(LAUNCHER));
+}
 function T(k,...a){
   const v=(PT[LANG]||PT.zh)[k];
-  return typeof v==='function' ? v(...a) : (v===undefined?k:v);
+  const out = typeof v==='function' ? v(...a) : (v===undefined?k:v);
+  return typeof out==='string' ? out.split('{launcher}').join(LAUNCHER) : out;
 }
-function applyLang(l){LANG=l;document.querySelectorAll('[data-i18n]').forEach(e=>{const m=I18N[l]&&I18N[l][e.dataset.i18n];if(m)e.textContent=m;});localStorage.setItem('lang',l);applyPanelLang();refresh();renderSectors();}
+function applyLang(l){LANG=l;document.querySelectorAll('[data-i18n]').forEach(e=>{const m=I18N[l]&&I18N[l][e.dataset.i18n];if(m)e.textContent=m;});localStorage.setItem('lang',l);applyPanelLang();subLauncher();refresh();renderSectors();}
 // The two JS-built panels. Their headings are set here; their bodies are
 // re-rendered, because the descriptions are the server's and it has to be asked
 // again in the new language.
@@ -2680,7 +2698,7 @@ checkApprovals();   // one-time pending-approvals popup on page open
             onclick="doStop('all')">
       <b data-i18n="stop_all">■ 停止并退出整个软件</b>
       <div style="font-weight:400;color:#8b949e;font-size:12.5px;margin-top:2px"
-           data-i18n="stop_all_d">调度器 + 网页面板全部关闭。要再开得双击 start-web.command。</div>
+           data-i18n="stop_all_d">调度器 + 网页面板全部关闭。要再开得双击 {launcher}。</div>
     </button>
     <button class="sm" style="width:100%" onclick="document.getElementById('stopChoice').style.display='none'"
             data-i18n="stop_cancel">取消</button>

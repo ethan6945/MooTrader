@@ -126,9 +126,9 @@ uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # fill in your keys — every line is documented
 ```
 
-Then **double-click `start-web.command`**. It launches OpenD if it is not
+Then **double-click `macos-start-web.command`**. It launches OpenD if it is not
 already up, waits for the gateway, starts the panel and opens your browser. The
-window closes itself; the panel keeps running. **Double-click `stop-web.command`**
+window closes itself; the panel keeps running. **Double-click `macos-stop-web.command`**
 to stop everything.
 
 ### Windows 10/11
@@ -141,12 +141,12 @@ copy .env.example .env
 ```
 
 Open `.env` in Notepad and fill in your keys. **Start OpenD yourself and finish
-the login** — unlike the Mac launcher, `start-web.bat` does not open it for you,
+the login** — unlike the Mac launcher, `windows-start-web.bat` does not open it for you,
 because OpenD keeps its own login session and cannot be signed into unattended.
 
-Then **double-click `start-web.bat`**. It checks that OpenD is listening, starts
+Then **double-click `windows-start-web.bat`**. It checks that OpenD is listening, starts
 the panel hidden, and opens your browser. Closing the window leaves the panel
-running; **double-click `stop-web.bat`** to stop everything.
+running; **double-click `windows-stop-web.bat`** to stop everything.
 
 > Windows support is new and has not been through a full live session yet. If
 > something does not work, tell me — the trial exists partly so you can find out

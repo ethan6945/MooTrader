@@ -6,7 +6,7 @@
 #
 # The trading scheduler is a SEPARATE process: press ▶ in the panel to start
 # it. ■ Stop there asks whether to stop just the scheduler or quit everything.
-# To stop from the Finder instead, double-click stop-web.command.
+# To stop from the Finder instead, double-click macos-stop-web.command.
 #
 # Restarts the web server rather than reusing a running one. Flask does not
 # reload changed code, so "already running" would silently serve whatever was
@@ -86,7 +86,7 @@ for i in $(seq 1 40); do
         say "✓ panel on http://127.0.0.1:$PORT  (pid $WEB_PID)"
         open "http://127.0.0.1:$PORT"
         sleep 1
-        osascript -e 'tell application "Terminal" to close (every window whose name contains "start-web")' >/dev/null 2>&1 &
+        osascript -e 'tell application "Terminal" to close (every window whose name contains "macos-start-web")' >/dev/null 2>&1 &
         exit 0
     fi
     kill -0 "$WEB_PID" 2>/dev/null || break

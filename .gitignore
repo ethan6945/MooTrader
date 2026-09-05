@@ -1,29 +1,43 @@
-# ============== Secrets — NEVER commit these ==============
-# Anything env-shaped, not just the two names that were listed. A migration
-# backup called .env.repo-before-migration matched neither `.env` nor
-# `.env.*.local`, so it was a tracked path holding four live credentials —
-# caught by check_no_secrets before it reached a commit, which is luck rather
-# than design. The old repository was deleted over exactly this kind of leak.
+# ============== Secrets ==============
 .env
 .env.*
 *.pem
 *.key
-# (.env.example IS tracked — it's the template, no real values)
 !.env.example
 
 # ============== Runtime / generated data ==============
-# Live trade history, balances, open positions, audit logs.
-# Everything in data/ is per-machine state; keep template only.
 data/*
 !data/.gitkeep
-
-# Logs
 logs/*
 !logs/.gitkeep
 *.log
-
-# Backups
 *.bak
+config/watchlist.json
+config/watchlist.json.bak
+config/parameters_history.jsonl
+
+# ============== Databases ==============
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# ============== Signing / certificates ==============
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+
+# ============== Not distributed ==============
+macos/
+Keygen Activator/
+keygen.command
+docs/promo/
+.github/FUNDING.yml
+*.dmg
 
 # ============== Python ==============
 __pycache__/
@@ -34,138 +48,32 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-
-# Virtualenv
 .venv/
 venv/
 env/
 ENV/
-
-# pytest / coverage / linters
 .pytest_cache/
 .coverage
 htmlcov/
 .ruff_cache/
 .mypy_cache/
 
-# ============== macOS / Windows / IDE ==============
+# ============== Editors / OS ==============
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# Claude Code local settings
-.claude/settings.local.json
-
-# ============== Optional: keep config templates in repo ==============
-config/watchlist.json.bak
-# config/watchlist.json is NOT tracked. src/watchlist_updater.py rewrites it
-# every week from the momentum ranking, so a tracked copy is a per-machine
-# runtime product that shows up as a diff on any machine the refresh has run
-# on — the file's own header already says hand edits get overwritten.
-#
-# It IS required at startup: main.load_watchlist() reads it with a bare
-# read_text() and dies on a missing file (staging hit exactly that), and
-# packaging/mmt-backend.spec bundles config/*.json as the templates seeded
-# into the app home. So a fresh clone must generate one — run the universe
-# refresh — before the bot or a packaged build will come up.
-config/watchlist.json
-
-# ============== Databases — private, never a source file ==============
-# Everything the bot writes already lives under data/, which is ignored above.
-# These are the second line: a trader.db copied to the repo root to inspect it
-# is still live trade history, and build.sh's secret scan already refuses to
-# ship a bundle containing one. SQLite keeps -wal/-shm sidecars beside the file
-# and they hold committed rows, so they go wherever the database goes.
-*.db
-*.sqlite
-*.sqlite3
-*.db-wal
-*.db-shm
-*.sqlite3-wal
-*.sqlite3-shm
-
-# ============== Signing material ==============
-# *.pem and *.key are at the top with the secrets. These are the rest of what a
-# signing identity is: the app is ad-hoc signed today, but a Developer ID
-# certificate exported for notarisation is a .p12 with a private key inside.
-*.p12
-*.mobileprovision
-*.cer
-*.certSigningRequest
-
-# ============== The native macOS app is not published as source ==============
-# Owner's decision (2026-09-03): the SwiftUI app ships as a DMG on the GitHub
-# release and its source stays local. macos/ was removed from all 201 commits
-# with git filter-repo on that date and force-pushed; 23 commits that touched
-# nothing else went with it, including the DMG provenance gate.
-#
-# Consequences, so nobody rediscovers them the hard way:
-#   * macos/build.sh and macos/make-dmg.sh are no longer in the repository.
-#     They exist ONLY in the working tree and in the pre-rewrite backup. Losing
-#     this checkout loses the build chain.
-#   * The app version (macos/Resources/Info.plist) is no longer under version
-#     control, so a version bump is no longer a commit. make-dmg.sh's gate was
-#     downgraded to match: it still requires a clean tree and refuses a version
-#     that is already tagged, but it can no longer tie an image to a commit.
-#   * A clone can build the backend, not the app.
-macos/
-
-# ============== The signing key — never in the repository ==============
-# "Keygen Activator/" holds the Ed25519 private key that issues licences, and
-# whoever has it can mint them for free, which makes every licence already sold
-# worthless. It lives beside the repo rather than inside version control, and
-# the folder is deliberately NOT hidden — an owner who can see it is an owner
-# who remembers to back it up. There is no recovery from losing it: a new key
-# invalidates every licence ever issued.
-#
-# *.pem above already catches the key itself; this catches the issue log and
-# anything else that ends up in there.
-Keygen Activator/
-# Its launcher too. It carries no secret, but it is the issuer's tool: shipping
-# it to customers hands them a button labelled "mint licences" that fails only
-# because the key file is missing.
-keygen.command
-
-# GitHub's Sponsor button. The software is paid now; asking the people who
-# bought it for donations is not a thing to ship.
-.github/FUNDING.yml
-
-# ============== Promo video ==============
-# Rendered from docs/screenshots by a script; it is a build product, and a
-# binary that changes wholesale on every re-render is the wrong thing to keep
-# diffs of. Attach it to a release or send it directly.
-docs/promo/
-
-# ============== Release images ==============
-# macos/.gitignore already covers dist/. This catches an image built or copied
-# anywhere else — 122 MB each, and they belong on a GitHub release, not in git.
-*.dmg
-
-# ============== Swift / Xcode local state ==============
-# Absent while the build goes through `swift build`, but both appear the first
-# time macos/Package.swift is opened in Xcode.
 .swiftpm/
 xcuserdata/
 *.xcuserstate
-
-# ============== macOS strays / merge leftovers ==============
-# ._* are AppleDouble resource forks, written whenever the repo touches a
-# non-APFS volume — a USB stick, some network shares. Icon? is the custom
-# folder icon Finder writes. *.orig and *.rej are what a failed merge or a
-# rejected patch hunk leaves behind.
+*.swp
+*.swo
 ._*
 Icon?
 *.orig
 *.rej
+.claude/settings.local.json
 
-# ============== Compiled / temp ==============
+# ============== Temp ==============
 *.tmp
 *.temp
-
-# Parameter change journal — per-install runtime record, like logs/. The
-# parameters themselves (config/parameters.json) ARE tracked: seeing what a
-# value changed to, and when, is the point of keeping them in one file.
-config/parameters_history.jsonl

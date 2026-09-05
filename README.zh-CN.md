@@ -113,9 +113,9 @@ uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # 填 key，每一行模板里都有说明
 ```
 
-然后**双击 `start-web.command`**。它会在 OpenD 没开的时候帮你打开、等网关就绪、
+然后**双击 `macos-start-web.command`**。它会在 OpenD 没开的时候帮你打开、等网关就绪、
 启动面板并打开浏览器。那个窗口会自己关掉，面板继续在后台跑。
-**双击 `stop-web.command`** 停掉全部。
+**双击 `macos-stop-web.command`** 停掉全部。
 
 ### Windows 10/11
 
@@ -127,10 +127,10 @@ copy .env.example .env
 ```
 
 用记事本打开 `.env` 填好 key。**先自己启动 OpenD 并完成登录** —— 和 Mac 的启动器不同，
-`start-web.bat` 不会帮你开 OpenD，因为它有自己的登录会话，没法无人值守地登进去。
+`windows-start-web.bat` 不会帮你开 OpenD，因为它有自己的登录会话，没法无人值守地登进去。
 
-然后**双击 `start-web.bat`**。它会先确认 OpenD 在监听，再隐藏启动面板并打开浏览器。
-关掉窗口不影响面板运行；**双击 `stop-web.bat`** 停掉全部。
+然后**双击 `windows-start-web.bat`**。它会先确认 OpenD 在监听，再隐藏启动面板并打开浏览器。
+关掉窗口不影响面板运行；**双击 `windows-stop-web.bat`** 停掉全部。
 
 > Windows 支持是新加的，还没跑过一次完整的实盘交易日。有问题告诉我 ——
 > 试用期存在的意义之一，就是让你在付钱之前先发现这些。

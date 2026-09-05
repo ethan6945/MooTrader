@@ -4,7 +4,7 @@ REM
 REM   OpenD (must already be running) -> web panel (detached) -> browser
 REM
 REM The trading scheduler is a SEPARATE process: press the play button in the
-REM panel to start it. To stop everything, run stop-web.bat.
+REM panel to start it. To stop everything, run windows-stop-web.bat.
 REM
 REM Unlike the Mac launcher this does NOT start OpenD for you. moomoo ships it
 REM as a desktop app that keeps its own login session, and there is no reliable
@@ -60,7 +60,7 @@ if exist logs\web.pid (
 
 echo   - starting the panel...
 REM Detached, so closing this window leaves the panel running -- the same
-REM behaviour as the Mac launcher. stop-web.bat is how you stop it.
+REM behaviour as the Mac launcher. windows-stop-web.bat is how you stop it.
 powershell -NoProfile -Command ^
   "$p = Start-Process -FilePath '%PY%' -ArgumentList 'web\server.py' -WindowStyle Hidden -PassThru -RedirectStandardOutput 'logs\web.out.log' -RedirectStandardError 'logs\web.err.log'; $p.Id | Out-File -Encoding ascii -NoNewline 'logs\web.pid'"
 
