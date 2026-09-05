@@ -2,7 +2,9 @@
 
 # 📈 Moo Trader
 
-**自己家里跑的美股短线交易机器人 —— 打开浏览器就能用。**
+**美股波段交易机器人。跑在你自己的电脑上，连你自己的券商账户，全程在浏览器面板里操作。**
+
+**30 天免费 · 永久授权 USD 30**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-14+-000000?logo=apple&logoColor=white)
@@ -31,6 +33,8 @@
 
 ## 它做什么
 
+进出场全部由规则决定。AI 只负责读新闻、写注释，从不扣扳机 —— 这是实盘能和回测对得上的原因。
+
 美股开盘期间，它对着一份股票清单不停地循环做这件事：
 
 ```mermaid
@@ -42,11 +46,14 @@ flowchart LR
     E --> F["📊 平仓 + 记账"]
 ```
 
-全部跑在你自己的 Mac 上，通过官方 OpenD 网关连你自己的券商账户。**默认是模拟盘** —— 切实盘需要在面板里明确操作一次（交易密码 + 当前无持仓 + 二次确认）。
+你的机器、你的券商账户，走官方 OpenD 网关，数据不发去任何别的地方。**默认模拟盘**，
+切实盘要交易密码、当前无持仓、外加二次确认。
 
-它不靠命令行操作：打开面板，按 **▶ Start**，剩下的时间基本上只需要看 Telegram —— 每一笔成交、止损、状态变化都会推给你。参数只在你点头之后才动：调参器默认由你按按钮触发（也可以切成每周自动跑），跑出来的每一条改动都要你确认。
+不需要碰命令行：打开面板按 **▶ 启动**，然后看 Telegram —— 每一笔成交、止损、状态
+变化都会推给你。参数只在你点头之后才动。
 
-**它适合：** 让一套规则替你盯盘下单，并且每一单为什么会发生都查得到。**它不是：** 荐股服务、印钞机，更不是可以拿输不起的钱去试的东西。
+**适合：** 让一套规则替你盯盘下单，而且每一单为什么发生都查得到。
+**不是：** 荐股服务、印钞机，也不是拿输不起的钱去试的东西。
 
 ---
 
@@ -108,7 +115,7 @@ flowchart LR
 ### macOS 14+
 
 ```bash
-cd MooTrader
+cd MooTrader-2.7.0
 uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # 填 key，每一行模板里都有说明
 ```
@@ -120,7 +127,7 @@ cp .env.example .env      # 填 key，每一行模板里都有说明
 ### Windows 10/11
 
 ```bat
-cd MooTrader
+cd MooTrader-2.7.0
 py -3.11 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 copy .env.example .env

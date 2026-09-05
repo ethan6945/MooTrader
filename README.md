@@ -2,7 +2,9 @@
 
 # 📈 Moo Trader
 
-**A self-hosted, AI-assisted swing-trading bot for US stocks — you run it from your browser.**
+**A swing-trading bot for US stocks that runs on your own computer, drives your own broker account, and is operated entirely from a browser panel.**
+
+**30 days free · lifetime licence USD 30**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-14+-000000?logo=apple&logoColor=white)
@@ -31,6 +33,10 @@ English · [简体中文](README.zh-CN.md)
 
 ## What it does
 
+Rules decide every entry and exit. The AI reads the news and annotates — it
+never pulls the trigger, which is what keeps live trading comparable with the
+backtest.
+
 During US market hours it works one list of stocks on a loop:
 
 ```mermaid
@@ -42,11 +48,18 @@ flowchart LR
     E --> F["📊 close + log"]
 ```
 
-Everything runs on your own computer — macOS or Windows — against your own broker account through the official OpenD gateway. **Paper trading is the default** — switching to real money takes a deliberate step in the panel (trade password, no open positions, second confirmation).
+Your machine, your broker account, through the official OpenD gateway. Nothing
+is sent anywhere else. **Paper trading is the default**, and switching to real
+money takes a trade password, no open positions and a second confirmation.
 
-You don't drive it from a terminal. You open the panel, press **▶ Start**, and then mostly read Telegram: it pushes every fill, stop and status change. Parameters only move when you say so — the tuner runs when you press its button (or weekly, if you switch it), and every change it finds waits for your tick.
+You never touch a terminal: open the panel, press **▶ Start**, and read Telegram
+— it pushes every fill, stop and status change. Parameters move only when you
+tick them.
 
-**What it is good for:** running a rule-based strategy without sitting at the screen, and seeing exactly why every order happened. **What it is not:** a signal service, a money printer, or anything you should point at money you need.
+**Good for:** running a rule-based strategy without sitting at the screen, and
+being able to see exactly why every order happened.
+**Not:** a signal service, a money printer, or anything to point at money you
+need.
 
 ---
 
@@ -121,7 +134,7 @@ bot writes stays in that folder.
 ### macOS 14+
 
 ```bash
-cd MooTrader
+cd MooTrader-2.7.0
 uv venv --python 3.11 && uv pip install -r requirements.txt
 cp .env.example .env      # fill in your keys — every line is documented
 ```
@@ -134,7 +147,7 @@ to stop everything.
 ### Windows 10/11
 
 ```bat
-cd MooTrader
+cd MooTrader-2.7.0
 py -3.11 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 copy .env.example .env

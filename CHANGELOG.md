@@ -1,5 +1,54 @@
 # CHANGELOG
 
+## 2026-09-05 — v2.7.0：开始收费，以及为此要先补上的东西
+
+第一个作为付费软件发布的版本。30 天免费试用，永久授权 USD 30。
+
+**授权。** Ed25519 签名，app 里只有公钥 —— 把它扒出来对任何人都没用，因为它只能
+验证不能签发。授权码按机器签发，贴到论坛上别人也验不过。检查点放在
+`order_gate.require()`，也就是订单能力和券商租约共用的那个最窄闸门：**未授权的副本
+照样启动、连接、选股、回测，只是碰不到券商的订单簿**。这也是试用到期后的样子 ——
+它继续告诉你它本来会怎么做。
+
+纯离线,不联网。代价是发出去的授权码收不回来:退款、拒付没有技术手段。这是明确
+选择的取舍,`src/licence.py` 的 docstring 里写着为什么。
+
+**Windows。** 之前的代码在 Windows 上会直接崩 —— `os.killpg` / `os.getpgid` 在五处、
+`/bin/bash`、`pkill`、`caffeinate` 全是 POSIX 或 macOS 专属。新建 `src/proc.py` 统一
+收敛进程树的启停:POSIX 用进程组,Windows 用 `taskkill /T`。**这不是洁癖** ——
+机器人不是单进程,只杀 pid 会留下孤儿进程,它还握着 OpenD 连接、还能下单。
+
+`windows-start-web.bat` / `windows-stop-web.bat` 已写,macOS 的两个加上 `macos-` 前缀。
+面板原本有十处硬编码「双击 start-web.command」,Windows 用户看到的是一个他们没有的
+文件;现在由服务端告诉面板该说哪个 —— 是**服务端**的平台,因为面板经常开在局域网里的
+手机上。
+
+⚠️ **Windows 尚未在真实交易日验证过。** 没有 Windows 机器可测。
+
+**其余：**
+
+- 设置面板里的 👁 / 🙈 表情换成描边 SVG 图标,显示明文时转琥珀色。
+- 授权面板的文案原本是服务端生成的英文,嵌在中文界面里;改由面板按当前语言组句。
+- 试用倒计时:剩余天数胶囊,7 天转琥珀、3 天转红。
+- `#params` 深链 —— 最值得收藏的页面原本只能点进去。
+- 版本号从 `macos/Resources/Info.plist` 移到仓库根的 `VERSION`。原来那个文件随
+  `macos/` 一起离开了仓库,**每个客户看到的版本号都会是 `dev`**。
+- README 截图重拍,全部来自独立的演示实例。原来的 GIF 录的是**真实账户** —— 余额、
+  持仓、盈亏,一旦公开就永久公开。
+- 删掉 `src/hermes_gridsearch.py`（它驱动的 `hermes_improve.py` 早已不存在）和
+  `LICENSE-MIT-historical`。
+
+**修掉的 bug：**
+
+- `keepawake._start_caffeinate` 里 `proc = subprocess.Popen(...)` 把模块名遮蔽成局部
+  变量,同一行的 `proc.spawn_kwargs()` 直接 `UnboundLocalError` —— 保持唤醒功能整个是
+  死的。
+- 试用倒计时胶囊在已授权时不隐藏,显示成一个 `—`：`.lic-count{display:flex}` 压过了
+  `hidden` 属性自带的 `display:none`。已加全局 `[hidden]{display:none!important}`。
+- 机器识别码被放进了「购买信息」块,而那个块一激活就整个隐藏 —— 客户最需要它的时候
+  （换机器、要求补发）恰好看不到。
+- `macos/Sources` 在 09-03 那次恢复时被套嵌了一层,Swift app 根本编译不了。
+
 ## 2026-09-03 — v2.6.1：平仓墓碑回到唯一的平仓写入方
 
 只有一处运行时改动，但 v2.6.0 的 DMG 带着它没修的样子出厂了。
